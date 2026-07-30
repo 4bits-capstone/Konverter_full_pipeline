@@ -1,0 +1,116 @@
+export type Stage = 'upload' | 'review' | 'metadata' | 'approval' | 'preview'
+export type ConfidenceBand = 'high' | 'med' | 'low'
+export type ReviewStatus = 'pending' | 'accepted' | 'edited' | 'needs_attention' | 'removed'
+export type ReviewType =
+  | 'caption'
+  | 'chapter_title'
+  | 'document_index'
+  | 'footnote'
+  | 'footer'
+  | 'form'
+  | 'formula'
+  | 'header'
+  | 'list'
+  | 'picture'
+  | 'section_header_1'
+  | 'section_header_2'
+  | 'section_header_3'
+  | 'section_header_4'
+  | 'section_header_5'
+  | 'table'
+  | 'title'
+  | 'text'
+  | 'unspecified'
+
+export interface DocumentSummary {
+  id: string
+  title: string
+  fileName: string
+  pages: number
+  publisher: string
+  sizeLabel?: string
+  processingState?: ProcessingState
+}
+
+export interface SourceEvidence {
+  page: number
+  html: string
+}
+
+export interface ReviewTableData {
+  headers: string[]
+  rows: string[][]
+}
+
+export interface ReviewItem {
+  id: string
+  blockId?: string
+  type: ReviewType
+  label: string
+  page: number
+  confidence: number
+  band: ConfidenceBand
+  title: string
+  kind: 'kv' | 'text' | 'table'
+  status: ReviewStatus
+  extractedText?: string
+  correctedText?: string
+  note?: string
+  keyValues?: Array<[string, string]>
+  tableData?: ReviewTableData
+  correctedTable?: ReviewTableData
+  source: SourceEvidence
+}
+
+export interface DocumentMetadata {
+  title: string
+  publisher: string
+  publishedDate: string
+  jurisdiction: string
+  citations: string
+}
+
+export interface MetadataFieldInfo {
+  band: ConfidenceBand
+  score: number
+  page: number
+  evidence: string
+  source: string
+}
+
+export interface MetadataPayload {
+  metadata: DocumentMetadata
+  fields: Record<keyof DocumentMetadata, MetadataFieldInfo>
+}
+
+export interface PublicationPayload {
+  publication: import('../lib/docling').DoclingPublication
+  metadata: DocumentMetadata
+  jsonLd: Record<string, unknown>
+}
+
+export interface ReviewUpdate {
+  status?: ReviewStatus
+  type?: ReviewType
+  label?: string
+  correctedText?: string
+  correctedTable?: ReviewTableData
+}
+
+export interface ProcessingStep {
+  id: string
+  label: string
+  detail?: string
+}
+
+export type ProcessingState = 'idle' | 'running' | 'failed' | 'complete'
+
+export interface DocumentProcessingJob {
+  state: ProcessingState
+  startedAt: number | null
+  durationMs: number
+  currentStep: number
+  progress: number
+  remainingSeconds: number
+  message?: string
+}

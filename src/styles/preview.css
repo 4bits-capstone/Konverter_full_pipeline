@@ -1,0 +1,69 @@
+@reference "./global.css";
+
+/*
+ * Preview-only scrolling behavior. Keeping this separate prevents the
+ * document reader's nested navigation rules from leaking into workflow UI.
+ */
+#main-content {
+  scroll-behavior: smooth;
+  scrollbar-gutter: stable;
+}
+
+.vlrc-accordion-panel:not([hidden]) {
+  display: block;
+  max-height: min(42vh, 360px);
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  scrollbar-gutter: stable;
+  scrollbar-width: thin;
+  scrollbar-color: var(--blue-soft) transparent;
+  scroll-padding-block: 8px;
+  scroll-snap-type: y proximity;
+  border-left: 3px solid var(--blue-soft);
+  background: #fbfbfa;
+}
+
+.vlrc-accordion-panel>ul>li {
+  scroll-snap-align: start;
+}
+
+.vlrc-accordion-panel::-webkit-scrollbar,
+.vlrc-reader-nav::-webkit-scrollbar {
+  width: 8px;
+}
+
+.vlrc-accordion-panel::-webkit-scrollbar-track,
+.vlrc-reader-nav::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+.vlrc-accordion-panel::-webkit-scrollbar-thumb,
+.vlrc-reader-nav::-webkit-scrollbar-thumb {
+  border: 2px solid transparent;
+  border-radius: 999px;
+  background: #9bb4cc;
+  background-clip: padding-box;
+}
+
+.vlrc-accordion-panel::-webkit-scrollbar-thumb:hover,
+.vlrc-reader-nav::-webkit-scrollbar-thumb:hover {
+  background: var(--blue);
+  background-clip: padding-box;
+}
+
+.vlrc-reader-nav {
+  overscroll-behavior: contain;
+  scrollbar-gutter: stable;
+  scrollbar-width: thin;
+  scrollbar-color: #9bb4cc transparent;
+}
+
+@media (max-width: 760px) {
+  #main-content {
+    scrollbar-gutter: auto;
+  }
+
+  .vlrc-accordion-panel:not([hidden]) {
+    max-height: min(48vh, 320px);
+  }
+}

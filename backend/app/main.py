@@ -1,0 +1,489 @@
+from __future__ import annotations
+
+import json
+import os
+import tempfile
+import time
+import uuid
+from contextlib import asynccontextmanager
+from pathlib import Path
+from typing import Annotated, Any
+
+import pypdfium2 as pdfium
+from fastapi import FastAPI, File, HTTPException, Response, UploadFile
+from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import FileResponse
+
+from .config import load_settings
+from .media import render_pdf_region
+from .models import (
+    ApprovalResult,
+    DocumentMetadata,
+    DocumentProcessingJob,
+    DocumentSummary,
+    MetadataPayload,
+    PublicationPayload,
+    ReviewItem,
+    ReviewPatch,
+)
+from .service import ProcessingManager, WorkflowService
+from .storage import DocumentNotFoundError, LocalDocumentStore
+
+MAX_PDF_BYTES = 200 * 1024 * 1024
+MAX_DOCUMENTS_PER_UPLOAD = 5
+
+settings = load_settings()
+settings.data_dir.mkdir(parents=True, exist_ok=True)
+store = LocalDocumentStore(settings.data_dir)
+processing = ProcessingManager(settings, store)
+workflow = WorkflowService(settings, store)
+
+
+@asynccontextmanager
+async def lifespan(_: FastAPI):
+    yield
+    processing.executor.shutdown(wait=False, cancel_futures=True)
+
+
+app = FastAPI(
+    title="Konverter API",
+    version="0.2.0",
+    description="Docling, rule-based metadata and accessible-export pipeline",
+    lifespan=lifespan,
+)
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=list(settings.cors_origins),
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
+
+def _record(document_id: str) -> dict:
+    try:
+        return store.get_record(document_id)
+    except DocumentNotFoundError as exc:
+        raise HTTPException(status_code=404, detail="Document not found") from exc
+
+
+def _summary(record: dict) -> DocumentSummary:
+    return DocumentSummary(
+        id=record["id"],
+        title=record["title"],
+        file_name=record["file_name"],
+        pages=int(record["pages"]),
+        publisher=record["publisher"],
+        size_label=record.get("size_label"),
+        processing_state=record.get("job", {}).get("state"),
+    )
+
+
+def _require_complete(document_id: str) -> dict:
+    record = _record(document_id)
+    if record["job"]["state"] != "complete":
+        raise HTTPException(
+            status_code=409, detail="Document processing is not complete"
+        )
+    return record
+
+
+def _pretty_json_download(
+    payload: Any,
+    filename: str,
+    media_type: str = "application/json",
+) -> Response:
+    return Response(
+        content=json.dumps(payload, ensure_ascii=False, indent=2, default=str) + "\n",
+        media_type=media_type,
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+    )
+
+
+def _render_cover(source_path: Path, destination: Path) -> None:
+    try:
+        render_pdf_region(source_path, destination, 1, dpi=120, padding=0)
+    except Exception:
+        # The cover is a visual enhancement; PDF processing should still be allowed.
+        destination.unlink(missing_ok=True)
+
+
+def _pdf_page_count(source_path: Path) -> int:
+    document = pdfium.PdfDocument(str(source_path))
+    try:
+        return len(document)
+    finally:
+        document.close()
+
+
+@app.get("/api/health")
+def health() -> dict[str, str]:
+    return {"status": "ok"}
+
+
+@app.post("/api/documents", response_model=list[DocumentSummary], status_code=201)
+async def upload_documents(
+    files: Annotated[list[UploadFile], File(description="One or more PDF files")],
+) -> list[DocumentSummary]:
+    if not files:
+        raise HTTPException(status_code=400, detail="Choose at least one PDF")
+    if len(files) > MAX_DOCUMENTS_PER_UPLOAD:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Upload at most {MAX_DOCUMENTS_PER_UPLOAD} documents at once",
+        )
+
+    uploaded: list[DocumentSummary] = []
+    for upload in files:
+        safe_name = Path(upload.filename or "document.pdf").name
+        if not safe_name.lower().endswith(".pdf"):
+            raise HTTPException(status_code=415, detail=f"{safe_name} is not a PDF")
+
+        descriptor, temporary_name = tempfile.mkstemp(
+            prefix="konverter-upload-",
+            suffix=".pdf",
+            dir=settings.data_dir,
+        )
+        temporary_path = Path(temporary_name)
+        size = 0
+        try:
+            with os.fdopen(descriptor, "wb") as destination:
+                first_chunk = True
+                while chunk := await upload.read(1024 * 1024):
+                    if first_chunk and not chunk.lstrip().startswith(b"%PDF-"):
+                        raise HTTPException(
+                            status_code=415, detail=f"{safe_name} is not a valid PDF"
+                        )
+                    first_chunk = False
+                    size += len(chunk)
+                    if size > MAX_PDF_BYTES:
+                        raise HTTPException(
+                            status_code=413,
+                            detail=f"{safe_name} exceeds the 200 MB limit",
+                        )
+                    destination.write(chunk)
+            try:
+                pages = _pdf_page_count(temporary_path)
+            except Exception as exc:
+                raise HTTPException(
+                    status_code=422, detail=f"{safe_name} could not be read as a PDF"
+                ) from exc
+            if pages < 1:
+                raise HTTPException(status_code=422, detail=f"{safe_name} has no pages")
+
+            document_id = uuid.uuid4().hex
+            title = Path(safe_name).stem.replace("-", " ").replace("_", " ").strip()
+            record = {
+                "id": document_id,
+                "title": title,
+                "file_name": safe_name,
+                "pages": pages,
+                "publisher": "Pending metadata extraction",
+                "size_bytes": size,
+                "size_label": f"{size / (1024 * 1024):.1f} MB",
+                "created_at": time.time(),
+                "updated_at": time.time(),
+                "approved_at": None,
+                "job": {
+                    "state": "idle",
+                    "started_at": None,
+                    "duration_ms": 0,
+                    "current_step": 0,
+                    "progress": 0,
+                    "remaining_seconds": 0,
+                    "message": "Ready to start",
+                },
+            }
+            store.create_document(document_id, temporary_path, record)
+            uploaded.append(_summary(record))
+        finally:
+            await upload.close()
+            temporary_path.unlink(missing_ok=True)
+    return uploaded
+
+
+@app.get("/api/documents/{document_id}", response_model=DocumentSummary)
+def get_document(document_id: str) -> DocumentSummary:
+    return _summary(_record(document_id))
+
+
+@app.delete("/api/documents/{document_id}", status_code=204)
+def delete_document(document_id: str) -> Response:
+    record = _record(document_id)
+    if record["job"]["state"] == "running":
+        raise HTTPException(
+            status_code=409, detail="Stop processing before removing this document"
+        )
+    store.delete_document(document_id)
+    return Response(status_code=204)
+
+
+@app.post("/api/documents/{document_id}/process", response_model=DocumentProcessingJob)
+def start_processing(document_id: str) -> DocumentProcessingJob:
+    _record(document_id)
+    return DocumentProcessingJob(**processing.start(document_id))
+
+
+@app.delete(
+    "/api/documents/{document_id}/process", response_model=DocumentProcessingJob
+)
+def stop_processing(document_id: str) -> DocumentProcessingJob:
+    _record(document_id)
+    return DocumentProcessingJob(**processing.stop(document_id))
+
+
+@app.get("/api/documents/{document_id}/status", response_model=DocumentProcessingJob)
+def processing_status(document_id: str) -> DocumentProcessingJob:
+    _record(document_id)
+    return DocumentProcessingJob(**processing.status(document_id))
+
+
+@app.get("/api/documents/{document_id}/review-items", response_model=list[ReviewItem])
+def get_review_items(document_id: str) -> list[ReviewItem]:
+    _require_complete(document_id)
+    try:
+        return [ReviewItem(**item) for item in workflow.get_review_items(document_id)]
+    except RuntimeError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+
+
+@app.patch(
+    "/api/documents/{document_id}/review-items/{item_id}", response_model=ReviewItem
+)
+def update_review_item(
+    document_id: str, item_id: str, patch: ReviewPatch
+) -> ReviewItem:
+    _require_complete(document_id)
+    try:
+        item = workflow.update_review_item(
+            document_id,
+            item_id,
+            patch.model_dump(exclude_unset=True),
+        )
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail="Review item not found") from exc
+    return ReviewItem(**item)
+
+
+@app.post(
+    "/api/documents/{document_id}/review-items/resolve-all",
+    response_model=list[ReviewItem],
+)
+def resolve_all(document_id: str) -> list[ReviewItem]:
+    _require_complete(document_id)
+    return [ReviewItem(**item) for item in workflow.resolve_all(document_id)]
+
+
+@app.get("/api/documents/{document_id}/metadata", response_model=MetadataPayload)
+def get_metadata(document_id: str) -> MetadataPayload:
+    _require_complete(document_id)
+    try:
+        return MetadataPayload(**workflow.get_metadata(document_id))
+    except RuntimeError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+
+
+@app.put("/api/documents/{document_id}/metadata", response_model=DocumentMetadata)
+def save_metadata(document_id: str, metadata: DocumentMetadata) -> DocumentMetadata:
+    _require_complete(document_id)
+    saved = workflow.save_metadata(document_id, metadata.model_dump())
+    return DocumentMetadata(**saved)
+
+
+@app.post("/api/documents/{document_id}/approval", response_model=ApprovalResult)
+def approve_document(document_id: str) -> ApprovalResult:
+    _require_complete(document_id)
+    try:
+        return ApprovalResult(approved_at=workflow.approve(document_id))
+    except ValueError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+
+
+@app.delete("/api/documents/{document_id}/approval", status_code=204)
+def revoke_approval(document_id: str) -> Response:
+    _record(document_id)
+    workflow.revoke(document_id)
+    return Response(status_code=204)
+
+
+@app.get("/api/documents/{document_id}/publication", response_model=PublicationPayload)
+def publication(document_id: str) -> PublicationPayload:
+    _record(document_id)
+    try:
+        return PublicationPayload(**workflow.publication_payload(document_id))
+    except ValueError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+
+
+@app.get("/api/documents/{document_id}/source")
+def source_pdf(document_id: str) -> FileResponse:
+    record = _record(document_id)
+    return FileResponse(
+        store.source_path(document_id),
+        media_type="application/pdf",
+        filename=record["file_name"],
+        content_disposition_type="inline",
+    )
+
+
+@app.get("/api/documents/{document_id}/review-items/{item_id}/evidence.png")
+def review_evidence(document_id: str, item_id: str) -> FileResponse:
+    record = _require_complete(document_id)
+    items = workflow.get_review_items(document_id)
+    item = next((value for value in items if value["id"] == item_id), None)
+    if item is None:
+        raise HTTPException(status_code=404, detail="Review item not found")
+
+    page_number = int(item.get("source", {}).get("page", item.get("page", 1)))
+    if page_number < 1 or page_number > int(record.get("pages", 0)):
+        raise HTTPException(status_code=422, detail="Source page is outside the PDF")
+    safe_item_id = "".join(
+        character for character in item_id if character.isalnum() or character in "-_"
+    )
+    destination = store.artifact_path(document_id, f"evidence-{safe_item_id}.png")
+    if not destination.exists():
+        try:
+            render_pdf_region(
+                store.source_path(document_id),
+                destination,
+                page_number,
+                item.get("source", {}).get("bounds"),
+            )
+        except Exception as exc:
+            destination.unlink(missing_ok=True)
+            raise HTTPException(
+                status_code=500, detail="Source evidence could not be rendered"
+            ) from exc
+    return FileResponse(
+        destination,
+        media_type="image/png",
+        filename=f"source-page-{page_number}-evidence.png",
+        content_disposition_type="inline",
+    )
+
+
+@app.get("/api/documents/{document_id}/metadata/{field_name}/evidence.png")
+def metadata_evidence(document_id: str, field_name: str) -> FileResponse:
+    record = _require_complete(document_id)
+    payload = workflow.get_metadata(document_id)
+    legacy_name = "published_date" if field_name == "publishedDate" else field_name
+    field = payload.get("fields", {}).get(field_name) or payload.get("fields", {}).get(
+        legacy_name
+    )
+    if field is None:
+        raise HTTPException(status_code=404, detail="Metadata field not found")
+
+    page_number = int(field.get("page", 1))
+    if page_number < 1 or page_number > int(record.get("pages", 0)):
+        raise HTTPException(
+            status_code=422, detail="Metadata evidence page is outside the PDF"
+        )
+    safe_field = "".join(
+        character
+        for character in field_name
+        if character.isalnum() or character in "-_"
+    )
+    destination = store.artifact_path(
+        document_id, f"metadata-evidence-{safe_field}-page-{page_number}.png"
+    )
+    if not destination.exists():
+        try:
+            render_pdf_region(
+                store.source_path(document_id),
+                destination,
+                page_number,
+                dpi=120,
+                padding=0,
+            )
+        except Exception as exc:
+            destination.unlink(missing_ok=True)
+            raise HTTPException(
+                status_code=500, detail="Metadata evidence could not be rendered"
+            ) from exc
+    return FileResponse(
+        destination,
+        media_type="image/png",
+        filename=f"{safe_field}-source-page-{page_number}.png",
+        content_disposition_type="inline",
+    )
+
+
+@app.get("/api/documents/{document_id}/figures/{image_key}.png")
+def figure_image(document_id: str, image_key: str) -> FileResponse:
+    _record(document_id)
+    if not image_key or any(
+        character not in "abcdefghijklmnopqrstuvwxyz0123456789-"
+        for character in image_key
+    ):
+        raise HTTPException(status_code=404, detail="Figure image not found")
+    path = store.artifact_path(document_id, f"figure-{image_key}.png")
+    if not path.is_file():
+        raise HTTPException(status_code=404, detail="Figure image not found")
+    return FileResponse(
+        path,
+        media_type="image/png",
+        filename=f"figure-{image_key}.png",
+        content_disposition_type="inline",
+    )
+
+
+@app.get("/api/documents/{document_id}/cover")
+def cover(document_id: str) -> FileResponse:
+    _record(document_id)
+    path = store.cover_path(document_id)
+    if not path.exists():
+        _render_cover(store.source_path(document_id), path)
+    if not path.exists():
+        raise HTTPException(status_code=404, detail="Cover preview is unavailable")
+    return FileResponse(path, media_type="image/png", filename="cover.png")
+
+
+@app.get("/api/documents/{document_id}/exports/accessible.html")
+def accessible_html(document_id: str) -> FileResponse:
+    record = _record(document_id)
+    if not record.get("approved_at"):
+        raise HTTPException(
+            status_code=409, detail="Approve the document before export"
+        )
+    path = store.artifact_path(document_id, "accessible.html")
+    return FileResponse(
+        path,
+        media_type="text/html",
+        filename=f"{Path(record['file_name']).stem}-accessible.html",
+    )
+
+
+@app.get("/api/documents/{document_id}/exports/schema.jsonld")
+def schema_json_ld(document_id: str) -> Response:
+    record = _record(document_id)
+    if not record.get("approved_at"):
+        raise HTTPException(
+            status_code=409, detail="Approve the document before export"
+        )
+    return _pretty_json_download(
+        store.read_artifact(document_id, "schema.jsonld", {}),
+        "schema.jsonld",
+        media_type="application/ld+json",
+    )
+
+
+@app.get("/api/documents/{document_id}/exports/structured.json")
+def structured_json(document_id: str) -> Response:
+    record = _record(document_id)
+    if not record.get("approved_at"):
+        raise HTTPException(
+            status_code=409, detail="Approve the document before export"
+        )
+    return _pretty_json_download(
+        store.read_artifact(document_id, "structured.json", {}),
+        "structured.json",
+    )
+
+
+@app.get("/api/documents/{document_id}/exports/docling.json")
+def raw_docling_json(document_id: str) -> Response:
+    _require_complete(document_id)
+    return _pretty_json_download(
+        store.read_artifact(document_id, "docling.json", {}),
+        "docling.json",
+    )

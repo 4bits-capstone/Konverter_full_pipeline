@@ -1,0 +1,87 @@
+import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
+import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
+import { MemoryRouter } from 'react-router-dom'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+import App from './App'
+import { KonverterProvider } from './state/KonverterContext'
+import { resetTestServices } from './test/serviceMocks'
+
+vi.mock('./services', () => import('./test/serviceMocks'))
+
+function renderApp() {
+  const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } })
+  return render(
+    <QueryClientProvider client={queryClient}>
+      <MemoryRouter initialEntries={['/upload']}>
+        <KonverterProvider>
+          <App />
+        </KonverterProvider>
+      </MemoryRouter>
+    </QueryClientProvider>,
+  )
+}
+
+afterEach(() => {
+  cleanup()
+})
+beforeEach(resetTestServices)
+
+describe('Konverter frontend', () => {
+  it('renders the upload stage and pipeline navigation', () => {
+    renderApp()
+    expect(screen.getByRole('heading', { name: 'Upload documents' })).toBeInTheDocument()
+    expect(screen.getByRole('navigation', { name: 'Review pipeline' })).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: /Review flags/i })).toBeDisabled()
+  })
+
+  it('accepts multiple PDFs and lets the reviewer choose one', async () => {
+    const { container } = renderApp()
+    const input = container.querySelector<HTMLInputElement>('input[type="file"]')
+    expect(input).toHaveAttribute('multiple')
+
+    const first = new File(['first'], 'first-report.pdf', { type: 'application/pdf', lastModified: 1 })
+    const second = new File(['second'], 'second-report.pdf', { type: 'application/pdf', lastModified: 2 })
+    fireEvent.change(input!, { target: { files: [first, second] } })
+
+    expect(await screen.findByRole('radiogroup', { name: 'Choose document to review' })).toBeInTheDocument()
+    expect(screen.getAllByRole('radio')).toHaveLength(2)
+    expect(screen.getByText('first-report.pdf')).toBeInTheDocument()
+    expect(screen.getByText('second-report.pdf')).toBeInTheDocument()
+  })
+
+  it('limits the active queue to five documents', async () => {
+    const { container } = renderApp()
+    const input = container.querySelector<HTMLInputElement>('input[type="file"]')
+    const files = Array.from({ length: 6 }, (_, index) => (
+      new File([`${index}`], `report-${index + 1}.pdf`, {
+        type: 'application/pdf',
+        lastModified: index,
+      })
+    ))
+
+    fireEvent.change(input!, { target: { files } })
+
+    expect(await screen.findAllByRole('radio')).toHaveLength(5)
+    expect(screen.queryByText('report-6.pdf')).not.toBeInTheDocument()
+    expect(screen.getByText(/Only 5 were added because the limit is 5/)).toBeInTheDocument()
+  })
+
+  it('processes an uploaded document and opens its review queue', async () => {
+    const { container } = renderApp()
+    const input = container.querySelector<HTMLInputElement>('input[type="file"]')
+    const first = new File(['first'], 'first-report.pdf', { type: 'application/pdf', lastModified: 1 })
+    fireEvent.change(input!, { target: { files: [first] } })
+    fireEvent.click(await screen.findByRole('button', { name: 'Start' }))
+    await screen.findByText('Ready to review')
+    fireEvent.click(screen.getByRole('button', { name: 'Review now' }))
+    expect(screen.getByRole('heading', { name: 'Review structure flags' })).toBeInTheDocument()
+    expect(screen.getByLabelText('Document').querySelectorAll('option')).toHaveLength(1)
+  })
+
+  it('does not expose sample or demo shortcuts', async () => {
+    renderApp()
+    await waitFor(() => {
+      expect(screen.queryByText(/sample|demo|prototype/i)).not.toBeInTheDocument()
+    })
+  })
+})

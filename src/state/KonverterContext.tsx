@@ -1,0 +1,408 @@
+import { createContext, useCallback, useContext, useEffect, useMemo, useState, type PropsWithChildren } from 'react'
+import { useQuery, useQueryClient } from '@tanstack/react-query'
+import { emptyMetadata, processingSteps } from '../config/workflow'
+import { documentService, reviewService } from '../services'
+import type { DocumentMetadata, DocumentProcessingJob, DocumentSummary, ReviewItem, ReviewStatus, ReviewTableData, ReviewType, ReviewUpdate, Stage } from '../types/konverter'
+
+type ManualCheckKey = 'headings' | 'tables' | 'citations' | 'a11y'
+
+type ToastState = { message: string; id: number } | null
+
+interface KonverterContextValue {
+  documents: DocumentSummary[]
+  activeDocument: DocumentSummary | null
+  activeDocumentId: string | null
+  addDocuments: (documents: DocumentSummary[]) => void
+  removeDocument: (id: string) => void
+  selectDocument: (id: string) => void
+  documentProcessing: Record<string, DocumentProcessingJob>
+  completedDocuments: DocumentSummary[]
+  runningDocuments: DocumentSummary[]
+  startDocumentProcessing: (id: string) => void
+  stopDocumentProcessing: (id: string) => void
+  uploaded: boolean
+  setUploaded: (value: boolean) => void
+  processingComplete: boolean
+  setProcessingComplete: (value: boolean) => void
+  metadata: DocumentMetadata
+  setMetadata: (metadata: DocumentMetadata) => void
+  metadataResolved: boolean
+  setMetadataResolved: (value: boolean) => void
+  approvedAt: string | null
+  setApprovedAt: (value: string | null) => void
+  unlocked: Record<Stage, boolean>
+  unlock: (stage: Stage) => void
+  doneStages: Set<Stage>
+  markDone: (stage: Stage) => void
+  reviewItems: ReviewItem[]
+  reviewLoading: boolean
+  setReviewStatus: (id: string, status: ReviewStatus) => Promise<void>
+  updateReviewText: (id: string, text: string) => Promise<void>
+  updateReviewTable: (id: string, table: ReviewTableData) => Promise<void>
+  updateReviewLabel: (id: string, type: ReviewType, label: string) => Promise<void>
+  saveReviewItem: (id: string, changes: ReviewUpdate) => Promise<void>
+  resolveAllReviews: () => Promise<void>
+  pendingCount: number
+  resolvedCount: number
+  manualChecks: Record<ManualCheckKey, boolean>
+  toggleManualCheck: (key: ManualCheckKey) => void
+  setAllManualChecks: (value: boolean) => void
+  approvalReady: boolean
+  toastState: ToastState
+  showToast: (message: string) => void
+  resetWorkflow: () => void
+}
+
+const KonverterContext = createContext<KonverterContextValue | null>(null)
+
+const initialUnlocked: Record<Stage, boolean> = {
+  upload: true,
+  review: false,
+  metadata: false,
+  approval: false,
+  preview: false,
+}
+
+const initialManualChecks: Record<ManualCheckKey, boolean> = {
+  headings: false,
+  tables: false,
+  citations: false,
+  a11y: false,
+}
+
+export function KonverterProvider({ children }: PropsWithChildren) {
+  const queryClient = useQueryClient()
+  const [documents, setDocuments] = useState<DocumentSummary[]>([])
+  const [activeDocumentId, setActiveDocumentId] = useState<string | null>(null)
+  const [documentProcessing, setDocumentProcessing] = useState<Record<string, DocumentProcessingJob>>({})
+  const [uploaded, setUploaded] = useState(false)
+  const [processingComplete, setProcessingComplete] = useState(false)
+  const [metadata, setMetadataState] = useState<DocumentMetadata>(emptyMetadata)
+  const [metadataResolved, setMetadataResolved] = useState(false)
+  const [approvedAt, setApprovedAt] = useState<string | null>(null)
+  const [unlocked, setUnlocked] = useState(initialUnlocked)
+  const [doneStages, setDoneStages] = useState<Set<Stage>>(new Set())
+  const [manualChecks, setManualChecks] = useState(initialManualChecks)
+  const [toastState, setToastState] = useState<ToastState>(null)
+  const reviewQueryKey = useMemo(
+    () => ['review-items', activeDocumentId ?? 'none'] as const,
+    [activeDocumentId],
+  )
+
+  const { data: reviewItems = [], isLoading: reviewLoading } = useQuery({
+    queryKey: reviewQueryKey,
+    queryFn: () => reviewService.getReviewItems(activeDocumentId ?? undefined),
+    enabled: Boolean(activeDocumentId && documentProcessing[activeDocumentId]?.state === 'complete'),
+  })
+
+  const unlock = useCallback((stage: Stage) => {
+    setUnlocked((current) => ({ ...current, [stage]: true }))
+  }, [])
+
+  const markDone = useCallback((stage: Stage) => {
+    setDoneStages((current) => new Set(current).add(stage))
+  }, [])
+
+  const showToast = useCallback((message: string) => {
+    setToastState({ message, id: Date.now() })
+  }, [])
+
+  const setMetadata = useCallback((nextMetadata: DocumentMetadata) => {
+    setMetadataState(nextMetadata)
+    setDocuments((current) => current.map((document) => (
+      document.id === activeDocumentId
+        ? {
+            ...document,
+            title: nextMetadata.title.trim() || document.title,
+            publisher: nextMetadata.publisher.trim() || document.publisher,
+          }
+        : document
+    )))
+  }, [activeDocumentId])
+
+  const addDocuments = useCallback((incoming: DocumentSummary[]) => {
+    if (!incoming.length) return
+    setDocuments((current) => {
+      const existingIds = new Set(current.map((document) => document.id))
+      return [...current, ...incoming.filter((document) => !existingIds.has(document.id))]
+    })
+    setActiveDocumentId((current) => current ?? incoming[0].id)
+    setDocumentProcessing((current) => {
+      const next = { ...current }
+      incoming.forEach((document) => {
+        if (!next[document.id]) {
+          const state = document.processingState ?? 'idle'
+          next[document.id] = {
+            state,
+            startedAt: null,
+            durationMs: state === 'complete' ? 1 : 6000,
+            currentStep: state === 'complete' ? processingSteps.length - 1 : 0,
+            progress: state === 'complete' ? 100 : 0,
+            remainingSeconds: 0,
+            message: state === 'complete' ? 'Ready for review' : undefined,
+          }
+        }
+      })
+      return next
+    })
+  }, [])
+
+  const removeDocument = useCallback((id: string) => {
+    setDocuments((current) => {
+      const next = current.filter((document) => document.id !== id)
+      setActiveDocumentId((activeId) => activeId === id ? next[0]?.id ?? null : activeId)
+      return next
+    })
+    setDocumentProcessing((current) => {
+      const next = { ...current }
+      delete next[id]
+      return next
+    })
+    void documentService.removeDocument(id)
+  }, [])
+
+  const selectDocument = useCallback((id: string) => {
+    setActiveDocumentId(id)
+  }, [])
+
+  const startDocumentProcessing = useCallback((id: string) => {
+    const documentIndex = Math.max(0, documents.findIndex((document) => document.id === id))
+    const durationMs = 5200 + (documentIndex % 4) * 1600
+    setDocumentProcessing((current) => ({
+      ...current,
+      [id]: {
+        state: 'running',
+        startedAt: Date.now(),
+        durationMs,
+        currentStep: 0,
+        progress: 1,
+        remainingSeconds: Math.ceil(durationMs / 1000),
+      },
+    }))
+    setUploaded(true)
+    void documentService.startProcessing(id)
+      .then((job) => setDocumentProcessing((current) => ({ ...current, [id]: job })))
+      .catch(() => setDocumentProcessing((current) => ({
+        ...current,
+        [id]: {
+          ...(current[id] ?? { startedAt: null, durationMs: 0, currentStep: 0, progress: 0, remainingSeconds: 0 }),
+          state: 'failed',
+        },
+      })))
+  }, [documents])
+
+  const stopDocumentProcessing = useCallback((id: string) => {
+    setDocumentProcessing((current) => ({
+      ...current,
+      [id]: {
+        state: 'idle',
+        startedAt: null,
+        durationMs: current[id]?.durationMs ?? 6000,
+        currentStep: 0,
+        progress: 0,
+        remainingSeconds: 0,
+      },
+    }))
+    void documentService.stopProcessing(id)
+  }, [])
+
+  const runningDocumentIds = Object.entries(documentProcessing)
+    .filter(([, job]) => job.state === 'running')
+    .map(([id]) => id)
+    .join('|')
+
+  useEffect(() => {
+    if (!runningDocumentIds) return
+    let cancelled = false
+
+    const refreshProcessingJobs = async () => {
+      const ids = runningDocumentIds.split('|')
+      const results = await Promise.allSettled(ids.map(async (id) => {
+        const job = await documentService.getProcessingStatus(id)
+        const document = job.state === 'complete' ? await documentService.getDocument(id) : null
+        return { id, job, document }
+      }))
+      if (cancelled) return
+      setDocumentProcessing((current) => {
+        const next = { ...current }
+        results.forEach((result) => {
+          if (result.status === 'fulfilled') next[result.value.id] = result.value.job
+        })
+        return next
+      })
+      const completedSummaries = results.flatMap((result) => (
+        result.status === 'fulfilled' && result.value.document ? [result.value.document] : []
+      ))
+      if (completedSummaries.length) {
+        const summariesById = new Map(completedSummaries.map((document) => [document.id, document]))
+        setDocuments((current) => current.map((document) => summariesById.get(document.id) ?? document))
+      }
+    }
+
+    void refreshProcessingJobs()
+    const timer = window.setInterval(() => void refreshProcessingJobs(), 1500)
+    return () => {
+      cancelled = true
+      window.clearInterval(timer)
+    }
+  }, [runningDocumentIds])
+
+  const refreshReviews = useCallback(async () => {
+    await queryClient.invalidateQueries({ queryKey: ['review-items'] })
+  }, [queryClient])
+
+  const cacheReviewItem = useCallback((updated: ReviewItem) => {
+    queryClient.setQueryData<ReviewItem[]>(reviewQueryKey, (current = []) => (
+      current.map((item) => item.id === updated.id ? updated : item)
+    ))
+  }, [queryClient, reviewQueryKey])
+
+  const setReviewStatus = useCallback(async (id: string, status: ReviewStatus) => {
+    const updated = await reviewService.setStatus(id, status, activeDocumentId ?? undefined)
+    setApprovedAt(null)
+    cacheReviewItem(updated)
+  }, [activeDocumentId, cacheReviewItem])
+
+  const updateReviewText = useCallback(async (id: string, text: string) => {
+    const updated = await reviewService.updateText(id, text, activeDocumentId ?? undefined)
+    setApprovedAt(null)
+    cacheReviewItem(updated)
+  }, [activeDocumentId, cacheReviewItem])
+
+  const updateReviewTable = useCallback(async (id: string, table: ReviewTableData) => {
+    const updated = await reviewService.updateTable(id, table, activeDocumentId ?? undefined)
+    setApprovedAt(null)
+    cacheReviewItem(updated)
+  }, [activeDocumentId, cacheReviewItem])
+
+  const updateReviewLabel = useCallback(async (id: string, type: ReviewType, label: string) => {
+    const updated = await reviewService.updateLabel(id, type, label, activeDocumentId ?? undefined)
+    setApprovedAt(null)
+    cacheReviewItem(updated)
+  }, [activeDocumentId, cacheReviewItem])
+
+  const saveReviewItem = useCallback(async (id: string, changes: ReviewUpdate) => {
+    const updated = await reviewService.saveItem(id, changes, activeDocumentId ?? undefined)
+    setApprovedAt(null)
+    cacheReviewItem(updated)
+  }, [activeDocumentId, cacheReviewItem])
+
+  const resolveAllReviews = useCallback(async () => {
+    const updated = await reviewService.resolveAll(activeDocumentId ?? undefined)
+    setApprovedAt(null)
+    queryClient.setQueryData(reviewQueryKey, updated)
+  }, [activeDocumentId, queryClient, reviewQueryKey])
+
+  const pendingCount = useMemo(
+    () => reviewItems.filter((item) => item.status === 'pending' || item.status === 'needs_attention').length,
+    [reviewItems],
+  )
+  const resolvedCount = reviewItems.length - pendingCount
+
+  const toggleManualCheck = useCallback((key: ManualCheckKey) => {
+    setManualChecks((current) => ({ ...current, [key]: !current[key] }))
+  }, [])
+
+  const setAllManualChecks = useCallback((value: boolean) => {
+    setManualChecks({ headings: value, tables: value, citations: value, a11y: value })
+  }, [])
+
+  const approvalReady = pendingCount === 0 && metadataResolved && Object.values(manualChecks).every(Boolean)
+  const activeDocument = useMemo(
+    () => documents.find((document) => document.id === activeDocumentId) ?? null,
+    [activeDocumentId, documents],
+  )
+  const completedDocuments = useMemo(
+    () => documents.filter((document) => documentProcessing[document.id]?.state === 'complete'),
+    [documentProcessing, documents],
+  )
+  const runningDocuments = useMemo(
+    () => documents.filter((document) => documentProcessing[document.id]?.state === 'running'),
+    [documentProcessing, documents],
+  )
+
+  useEffect(() => {
+    const hasCompletedDocument = completedDocuments.length > 0
+    setProcessingComplete(hasCompletedDocument)
+    if (hasCompletedDocument) {
+      unlock('review')
+      markDone('upload')
+    }
+  }, [completedDocuments.length, markDone, unlock])
+
+  const resetWorkflow = useCallback(() => {
+    documents.forEach((document) => void documentService.removeDocument(document.id))
+    void refreshReviews()
+    setDocuments([])
+    setActiveDocumentId(null)
+    setDocumentProcessing({})
+    setUploaded(false)
+    setProcessingComplete(false)
+    setMetadataState(emptyMetadata)
+    setMetadataResolved(false)
+    setApprovedAt(null)
+    setUnlocked(initialUnlocked)
+    setDoneStages(new Set())
+    setManualChecks(initialManualChecks)
+  }, [documents, refreshReviews])
+
+  const value = useMemo<KonverterContextValue>(() => ({
+    documents,
+    activeDocument,
+    activeDocumentId,
+    addDocuments,
+    removeDocument,
+    selectDocument,
+    documentProcessing,
+    completedDocuments,
+    runningDocuments,
+    startDocumentProcessing,
+    stopDocumentProcessing,
+    uploaded,
+    setUploaded,
+    processingComplete,
+    setProcessingComplete,
+    metadata,
+    setMetadata,
+    metadataResolved,
+    setMetadataResolved,
+    approvedAt,
+    setApprovedAt,
+    unlocked,
+    unlock,
+    doneStages,
+    markDone,
+    reviewItems,
+    reviewLoading,
+    setReviewStatus,
+    updateReviewText,
+    updateReviewTable,
+    updateReviewLabel,
+    saveReviewItem,
+    resolveAllReviews,
+    pendingCount,
+    resolvedCount,
+    manualChecks,
+    toggleManualCheck,
+    setAllManualChecks,
+    approvalReady,
+    toastState,
+    showToast,
+    resetWorkflow,
+  }), [
+    documents, activeDocument, activeDocumentId, addDocuments, removeDocument, selectDocument,
+    documentProcessing, completedDocuments, runningDocuments, startDocumentProcessing, stopDocumentProcessing,
+    uploaded, processingComplete, metadata, setMetadata, metadataResolved, approvedAt, unlocked, unlock,
+    doneStages, markDone, reviewItems, reviewLoading, setReviewStatus, updateReviewText, updateReviewTable, updateReviewLabel, saveReviewItem,
+    resolveAllReviews, pendingCount, resolvedCount, manualChecks, toggleManualCheck,
+    setAllManualChecks, approvalReady, toastState, showToast, resetWorkflow,
+  ])
+
+  return <KonverterContext.Provider value={value}>{children}</KonverterContext.Provider>
+}
+
+export function useKonverter(): KonverterContextValue {
+  const value = useContext(KonverterContext)
+  if (!value) throw new Error('useKonverter must be used inside KonverterProvider')
+  return value
+}
