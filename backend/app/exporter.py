@@ -312,8 +312,6 @@ def build_publication(
             continue
 
         if label.startswith("section_header_"):
-            # Chapter-opening H1 text duplicates the chapter title rendered by
-            # the reader. H2-H5 keep their reviewed semantic level.
             level = min(5, max(1, int(label.rsplit("_", 1)[1])))
             heading = {
                 "type": "heading",
@@ -516,65 +514,317 @@ def build_publication(
     }
 
 
+def _iso_published_date(value: Any) -> str | None:
+    """Normalise the reviewed date to ISO 8601 (YYYY[-MM[-DD]]) when possible."""
+    raw = re.sub(
+        r"^published\s+(?:on\s+)?",
+        "",
+        str(value or "").strip().rstrip("."),
+        flags=re.IGNORECASE,
+    )
+    raw = re.sub(r"(\d)(?:st|nd|rd|th)\b", r"\1", raw, flags=re.IGNORECASE).strip()
+    if not raw:
+        return None
+    if re.fullmatch(
+        r"(?:19|20)\d{2}(?:-(?:0[1-9]|1[0-2])(?:-(?:0[1-9]|[12]\d|3[01]))?)?", raw
+    ):
+        return raw
+    for pattern, formatter in (
+        ("%Y-%m-%d", "%Y-%m-%d"),
+        ("%Y/%m/%d", "%Y-%m-%d"),
+        ("%d/%m/%Y", "%Y-%m-%d"),
+        ("%d-%m-%Y", "%Y-%m-%d"),
+        ("%d.%m.%Y", "%Y-%m-%d"),
+        ("%d %B %Y", "%Y-%m-%d"),
+        ("%d %b %Y", "%Y-%m-%d"),
+        ("%B %d, %Y", "%Y-%m-%d"),
+        ("%B %d %Y", "%Y-%m-%d"),
+        ("%b %d, %Y", "%Y-%m-%d"),
+        ("%B %Y", "%Y-%m"),
+        ("%b %Y", "%Y-%m"),
+    ):
+        try:
+            return datetime.strptime(raw, pattern).strftime(formatter)
+        except ValueError:
+            continue
+    return None
+
+
+def _split_values(value: Any) -> list[str]:
+    return [part.strip() for part in str(value or "").split(";") if part.strip()]
+
+
+ISBN_PATTERN = re.compile(
+    r"\bISBNs?\b[:\s]*([0-9][0-9\- ]{7,20}[0-9Xx])", re.IGNORECASE
+)
+ISSN_PATTERN = re.compile(r"\bISSN\b[:\s]*([0-9]{4}-?[0-9]{3}[0-9Xx])", re.IGNORECASE)
+SERIES_PATTERN = re.compile(r"^Series:\s*(.+)$", re.IGNORECASE)
+
+
+def _citation_entry(value: str) -> Any:
+    """Type legislation and case citations so downstream AI can use them."""
+    if re.search(r"\bAct\s+(?:19|20)\d{2}\b", value):
+        return {"@type": "Legislation", "name": value}
+    if re.search(r"\b\S+\s+v\s+\S+", value):
+        return {"@type": "CreativeWork", "name": value}
+    return value
+
+
+def _prune(node: dict[str, Any]) -> dict[str, Any]:
+    """Omit properties whose values are unknown rather than guessing."""
+    return {
+        key: value for key, value in node.items() if value not in (None, "", [], {})
+    }
+
+
+def _accessibility_properties(publication: dict[str, Any]) -> dict[str, Any]:
+    """Claim only the accessibility the generated HTML actually provides.
+
+    The exported page always contains images (cover, logo) with alt text and
+    offers structural navigation, so those claims are constant. Text
+    sufficiency and the alternativeText claim depend on every figure in this
+    particular document carrying a caption (which becomes its alt text).
+    """
+    figures = [
+        block
+        for section in publication.get("sections", [])
+        for block in section.get("blocks", [])
+        if block.get("type") == "figure"
+    ]
+    all_figures_captioned = all(str(f.get("caption", "")).strip() for f in figures)
+    features = ["structuralNavigation", "tableOfContents", "readingOrder"]
+    if all_figures_captioned:
+        features.append("alternativeText")
+    return {
+        "accessMode": ["textual", "visual"],
+        "accessModeSufficient": [{"@type": "ItemList", "itemListElement": ["textual"]}]
+        if all_figures_captioned
+        else None,
+        "accessibilityFeature": features,
+        "accessibilityHazard": [
+            "noFlashingHazard",
+            "noMotionSimulationHazard",
+            "noSoundHazard",
+        ],
+    }
+
+
 def build_json_ld(
     document_id: str,
     publication: dict[str, Any],
     metadata: dict[str, Any],
+    *,
+    site_url: str = "",
+    site_name: str = "",
+    page_url_template: str = "",
+    generated_at: str | None = None,
 ) -> dict[str, Any]:
-    publishers = [
-        value.strip()
-        for value in str(metadata.get("publisher", "")).split(";")
-        if value.strip()
-    ]
-    jurisdictions = [
-        value.strip()
-        for value in str(metadata.get("jurisdiction", "")).split(";")
-        if value.strip()
-    ]
-    citations = [
-        value.strip()
-        for value in str(metadata.get("citations", "")).split(";")
-        if value.strip()
-    ]
-    return {
-        "@context": "https://schema.org",
-        "@type": "Report",
-        "@id": f"urn:uuid:{document_id}",
-        "name": metadata.get("title") or publication.get("sourceName"),
-        "description": " ".join(
-            str(value).strip()
-            for value in publication.get("summary", [])
-            if str(value).strip()
-        )
-        or None,
-        "publisher": [{"@type": "Organization", "name": value} for value in publishers],
-        "datePublished": metadata.get("published_date") or None,
-        "spatialCoverage": [
-            {"@type": "AdministrativeArea", "name": value} for value in jurisdictions
-        ],
-        "citation": citations,
-        "encoding": [
+    """Schema.org graph combining document metadata with page/site context.
+
+    Generation rules:
+    - Node ids are page-specific: with KONVERTER_PAGE_URL_TEMPLATE configured
+      the WebPage/breadcrumb ids are absolute URLs; otherwise they are
+      document-scoped fragments that resolve against the hosting URL.
+    - The WebSite describes the hosting site (KONVERTER_SITE_URL/_NAME). The
+      document's publisher is linked as site owner only when the configured
+      site name matches the publisher; hosting elsewhere leaves them separate.
+    - The report's own datePublished stays distinct from the generated page's
+      datePublished/dateModified (the approval timestamp).
+    - author is only emitted when the source identifies one (the current
+      metadata schema has no author field, so it is omitted).
+    - citation carries only the human-confirmed citation list; ISBN/ISSN move
+      to identifier and a series statement becomes isPartOf/reportNumber.
+    - Unknown values are omitted, never guessed.
+    """
+    publishers = _split_values(metadata.get("publisher"))
+    jurisdictions = _split_values(metadata.get("jurisdiction"))
+    authors = _split_values(metadata.get("authors"))
+    raw_date = str(metadata.get("published_date") or "").strip()
+    title = str(metadata.get("title") or publication.get("sourceName") or "").strip()
+    report_id = f"urn:uuid:{document_id}"
+    html_url = f"/api/documents/{document_id}/exports/accessible.html"
+
+    page_url = ""
+    if page_url_template:
+        page_url = page_url_template.replace(
+            "{slug}", _slug(title) or document_id
+        ).replace("{id}", document_id)
+    page_id = page_url or f"#webpage-{document_id}"
+    breadcrumb_id = (
+        f"{page_url}#breadcrumb" if page_url else f"#breadcrumb-{document_id}"
+    )
+
+    citations: list[Any] = []
+    identifiers: list[dict[str, Any]] = []
+    series_name: str | None = None
+    report_number: str | None = None
+    for value in _split_values(metadata.get("citations")):
+        isbn = ISBN_PATTERN.search(value)
+        issn = ISSN_PATTERN.search(value)
+        series = SERIES_PATTERN.match(value)
+        if isbn:
+            identifiers.append(
+                {
+                    "@type": "PropertyValue",
+                    "propertyID": "ISBN",
+                    "value": isbn.group(1).strip(),
+                }
+            )
+        elif issn:
+            identifiers.append(
+                {
+                    "@type": "PropertyValue",
+                    "propertyID": "ISSN",
+                    "value": issn.group(1).strip(),
+                }
+            )
+        elif series:
+            statement = series.group(1).strip()
+            numbered = re.fullmatch(r"(.+?)[\s,]+(?:no\.?\s*)?(\d+)", statement)
+            if numbered:
+                series_name, report_number = (
+                    numbered.group(1).strip(),
+                    numbered.group(2),
+                )
+            else:
+                series_name = statement
+        else:
+            citations.append(_citation_entry(value))
+
+    site_is_owner = bool(
+        site_url
+        and site_name
+        and publishers
+        and site_name.strip().lower() == publishers[0].strip().lower()
+    )
+    organisation_nodes = [
+        _prune(
             {
-                "@type": "MediaObject",
-                "encodingFormat": "application/pdf",
-                "contentUrl": f"/api/documents/{document_id}/source",
-            },
-            {
-                "@type": "MediaObject",
-                "encodingFormat": "text/html",
-                "contentUrl": f"/api/documents/{document_id}/exports/accessible.html",
-            },
-        ],
-        "hasPart": [
-            {
-                "@type": "CreativeWork",
-                "@id": f"urn:uuid:{document_id}#{section['id']}",
-                "headline": section["displayTitle"],
-                "position": index + 1,
+                "@type": "Organization",
+                "@id": (
+                    f"{site_url}/#organization"
+                    if site_is_owner and index == 0
+                    else f"#organization-{document_id}"
+                    + ("" if index == 0 else f"-{index + 1}")
+                ),
+                "name": value,
+                "url": f"{site_url}/" if site_is_owner and index == 0 else None,
             }
-            for index, section in enumerate(publication.get("sections", []))
-        ],
-    }
+        )
+        for index, value in enumerate(publishers)
+    ]
+    organisation_refs = [{"@id": node["@id"]} for node in organisation_nodes]
+
+    description = " ".join(
+        str(value).strip()
+        for value in publication.get("summary", [])
+        if str(value).strip()
+    )
+    language = (
+        "en-AU"
+        if any("australia" in value.lower() for value in jurisdictions)
+        else "en"
+    )
+
+    report = _prune(
+        {
+            "@type": "Report",
+            "@id": report_id,
+            "name": title,
+            "description": description or None,
+            "inLanguage": language,
+            # Only present when the source metadata identifies authors.
+            "author": [{"@type": "Person", "name": value} for value in authors],
+            "publisher": organisation_refs,
+            "datePublished": _iso_published_date(raw_date) or raw_date or None,
+            "dateModified": generated_at,
+            "reportNumber": report_number,
+            "isPartOf": {"@type": "CreativeWorkSeries", "name": series_name}
+            if series_name
+            else None,
+            "identifier": identifiers,
+            "spatialCoverage": [
+                {"@type": "AdministrativeArea", "name": value}
+                for value in jurisdictions
+            ],
+            "citation": citations,
+            "isAccessibleForFree": True,
+            **_accessibility_properties(publication),
+            "encoding": [
+                {
+                    "@type": "MediaObject",
+                    "encodingFormat": "application/pdf",
+                    "contentUrl": f"/api/documents/{document_id}/source",
+                },
+                {
+                    "@type": "MediaObject",
+                    "encodingFormat": "text/html",
+                    "contentUrl": html_url,
+                },
+            ],
+            "mainEntityOfPage": {"@id": page_id},
+            "hasPart": [
+                {
+                    "@type": "Chapter",
+                    "@id": f"{report_id}#{section['id']}",
+                    "isPartOf": {"@id": report_id},
+                    "name": section["displayTitle"],
+                    "position": index + 1,
+                }
+                for index, section in enumerate(publication.get("sections", []))
+            ],
+        }
+    )
+
+    web_page = _prune(
+        {
+            "@type": "WebPage",
+            "@id": page_id,
+            "url": page_url or None,
+            "name": f"{title} - {site_name}" if site_name else title,
+            "mainEntity": {"@id": report_id},
+            "isPartOf": {"@id": f"{site_url}/#website"} if site_url else None,
+            "breadcrumb": {"@id": breadcrumb_id} if site_url else None,
+            "inLanguage": language,
+            "datePublished": generated_at,
+            "dateModified": generated_at,
+            "potentialAction": [
+                {"@type": "ReadAction", "target": [page_url or html_url]}
+            ],
+        }
+    )
+
+    graph: list[dict[str, Any]] = [report, web_page, *organisation_nodes]
+    if site_url:
+        graph.append(
+            _prune(
+                {
+                    "@type": "WebSite",
+                    "@id": f"{site_url}/#website",
+                    "url": f"{site_url}/",
+                    "name": site_name or None,
+                    "publisher": organisation_refs[:1] if site_is_owner else None,
+                    "inLanguage": language,
+                }
+            )
+        )
+        graph.append(
+            {
+                "@type": "BreadcrumbList",
+                "@id": breadcrumb_id,
+                "itemListElement": [
+                    {
+                        "@type": "ListItem",
+                        "position": 1,
+                        "name": "Home",
+                        "item": f"{site_url}/",
+                    },
+                    {"@type": "ListItem", "position": 2, "name": title},
+                ],
+            }
+        )
+
+    return {"@context": "https://schema.org", "@graph": graph}
 
 
 def _data_uri(path: Path) -> str:
@@ -634,13 +884,28 @@ def _render_block(
         return f"<{tag}>{items}</{tag}>"
     if block_type == "table":
         caption = html.escape(str(block.get("caption", "Extracted table")))
-        rows = "".join(
+        rows = block.get("rows", [])
+        header_rows = [
+            row for row in rows if row and all(cell.get("columnHeader") for cell in row)
+        ][:1]
+        body_rows = [row for row in rows if row not in header_rows]
+        head_html = (
+            "<thead>"
+            + "".join(
+                f"<tr>{''.join(_render_table_cell(cell) for cell in row)}</tr>"
+                for row in header_rows
+            )
+            + "</thead>"
+            if header_rows
+            else ""
+        )
+        body_html = "".join(
             f"<tr>{''.join(_render_table_cell(cell) for cell in row)}</tr>"
-            for row in block.get("rows", [])
+            for row in body_rows
         )
         return (
             f'<div class="table-scroll" tabindex="0" role="region" aria-label="{caption}; scroll horizontally when needed">'
-            f'<table id="{html.escape(str(block.get("id", "")))}"><caption>{caption}</caption><tbody>{rows}</tbody></table></div>'
+            f'<table id="{html.escape(str(block.get("id", "")))}"><caption>{caption}</caption>{head_html}<tbody>{body_html}</tbody></table></div>'
         )
     if block_type == "figure":
         caption = html.escape(str(block.get("caption", "Figure")))
@@ -755,8 +1020,8 @@ def build_accessible_html(
             '<nav class="vlrc-reader-nav" aria-label="In this section"><h2>In this section</h2>'
             f"<ul>{heading_links}</ul></nav>"
             '<div class="vlrc-reader-content">'
-            f'<div class="chapter-label">{title} · reviewed Docling output</div>'
-            f"<h1>{html.escape(str(section['displayTitle']))}</h1>"
+            f'<div class="chapter-label">{title}</div>'
+            f'<h1 tabindex="-1">{html.escape(str(section["displayTitle"]))}</h1>'
             f'<div class="docling-content-blocks">{"".join(_render_block(block, figure_directory) for block in section.get("blocks", []))}</div>'
             f"{render_footnotes(section)}"
             f'<nav class="reader-pagination" aria-label="Document section pagination">{previous_link}{next_link}</nav>'
@@ -815,6 +1080,11 @@ body{{margin:0}}
 a{{color:#165487}}
 .skip-link{{position:absolute;left:1rem;top:-5rem;z-index:10;padding:.75rem 1rem;background:#fff;color:#165487;font-weight:700}}
 .skip-link:focus{{top:1rem}}
+a:focus-visible,button:focus-visible,summary:focus-visible,[tabindex="0"]:focus-visible{{outline:3px solid #165487;outline-offset:2px;border-radius:2px}}
+.vlrc-masthead a:focus-visible,.vlrc-accordion-item[open]>summary:focus-visible{{outline-color:#fff}}
+.back-to-top{{position:fixed;right:22px;bottom:22px;z-index:60;display:none;align-items:center;gap:8px;min-height:44px;min-width:44px;padding:10px 16px;border:0;border-radius:999px;background:#165487;color:#fff;font:700 13px/1 "IBM Plex Sans","Segoe UI",system-ui,sans-serif;cursor:pointer;box-shadow:0 8px 22px rgba(22,35,61,.28)}}
+.back-to-top.is-visible{{display:inline-flex}}
+.back-to-top:hover{{background:#12466f}}
 .vlrc-preview{{width:100%;min-height:100vh;margin:0;background:#fff}}
 .vlrc-masthead{{min-height:96px;padding:18px 28px;background:linear-gradient(115deg,#155a91 0%,#234a8f 45%,#7a2b2b 100%);color:#fff;display:flex;align-items:center;justify-content:space-between;gap:20px}}
 .vlrc-masthead img{{display:block;width:150px;height:auto}}
@@ -889,7 +1159,7 @@ body.reader-open #publication-landing{{display:none}}
 @media(max-width:52rem){{.vlrc-publication-layout{{grid-template-columns:1fr}}.vlrc-publication-aside{{position:static;display:grid;grid-template-columns:minmax(150px,210px) 1fr;align-items:start}}.vlrc-reader-layout{{grid-template-columns:1fr}}.vlrc-reader-nav{{position:static;max-height:none;border-right:0;border-bottom:1px solid #d8dce1}}}}
 @media(max-width:36rem){{.vlrc-preview{{width:100%;margin:0;box-shadow:none}}.vlrc-masthead{{min-height:80px;padding:15px 18px}}.vlrc-preview-body{{padding-left:18px;padding-right:18px}}.vlrc-publication-aside{{display:flex}}.publication-cover{{width:min(100%,280px);align-self:center}}.vlrc-reader-content{{padding:26px 18px 36px}}.numbered-paragraph{{grid-template-columns:minmax(3rem,max-content) minmax(0,1fr)}}}}
 @media(prefers-reduced-motion:reduce){{html{{scroll-behavior:auto}}}}
-@media print{{body{{background:#fff}}.vlrc-preview{{width:100%;margin:0;box-shadow:none}}#publication-landing{{display:block!important}}.vlrc-reader{{display:block!important;break-before:page}}.vlrc-publication-aside,.vlrc-reader-nav,.reader-pagination{{display:none}}.table-scroll{{overflow:visible}}}}
+@media print{{.back-to-top{{display:none!important}}body{{background:#fff}}.vlrc-preview{{width:100%;margin:0;box-shadow:none}}#publication-landing{{display:block!important}}.vlrc-reader{{display:block!important;break-before:page}}.vlrc-publication-aside,.vlrc-reader-nav,.reader-pagination{{display:none}}.table-scroll{{overflow:visible}}}}
 </style>
 </head>
 <body>
@@ -900,11 +1170,11 @@ body.reader-open #publication-landing{{display:none}}
     <div class="vlrc-publication-layout">
       <div class="vlrc-publication-main">
         <div class="jurisdiction">{jurisdiction}</div>
-        <h1>{title}</h1>
+        <h1 tabindex="-1">{title}</h1>
         <p class="vlrc-published-date published-date">Published on {published_date}.</p>
         {summary_html}
         <section class="vlrc-contents" aria-label="Document chapters">
-          <div class="vlrc-accordion" aria-label="Document chapters and subheadings">{landing_sections}</div>
+          <div class="vlrc-accordion">{landing_sections}</div>
         </section>
       </div>
       <aside class="vlrc-publication-aside" aria-label="Publication files">
@@ -916,6 +1186,7 @@ body.reader-open #publication-landing{{display:none}}
   </section>
   {reader_sections}
 </main>
+<button class="back-to-top" type="button" aria-label="Back to top of page">↑ Top</button>
 <footer class="source-footer">Accessible HTML generated from reviewed Docling data. Schema.org JSON-LD is embedded in this page.</footer>
 <script>
 (() => {{
@@ -955,6 +1226,18 @@ body.reader-open #publication-landing{{display:none}}
     reader?.querySelectorAll('[data-reader-heading]').forEach((candidate) => candidate.removeAttribute('aria-current'));
     link.setAttribute('aria-current', 'location');
   }}));
+  const backToTop = document.querySelector('.back-to-top');
+  if (backToTop) {{
+    const prefersReducedMotion = window.matchMedia('(prefers-reduced-motion: reduce)');
+    const toggle = () => backToTop.classList.toggle('is-visible', window.scrollY > 480);
+    window.addEventListener('scroll', toggle, {{ passive: true }});
+    toggle();
+    backToTop.addEventListener('click', () => {{
+      window.scrollTo({{ top: 0, behavior: prefersReducedMotion.matches ? 'auto' : 'smooth' }});
+      const activeReader = document.querySelector('[data-reader].is-active');
+      (activeReader ?? landing)?.querySelector('h1')?.focus({{ preventScroll: true }});
+    }});
+  }}
 }})();
 </script>
 </body>

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import os
+import shutil
 import threading
 import time
 from pathlib import Path
@@ -45,6 +46,19 @@ class LocalDocumentStore:
             self._write_json(path / "record.json", record)
             return path
 
+    def list_records(self) -> list[dict[str, Any]]:
+        with self._lock:
+            records: list[dict[str, Any]] = []
+            for path in self.documents_dir.iterdir():
+                record_path = path / "record.json"
+                if path.is_dir() and record_path.is_file():
+                    try:
+                        records.append(self._read_json(record_path))
+                    except (OSError, ValueError):
+                        continue
+            records.sort(key=lambda record: float(record.get("created_at", 0)))
+            return records
+
     def get_record(self, document_id: str) -> dict[str, Any]:
         with self._lock:
             return self._read_json(self.document_dir(document_id) / "record.json")
@@ -60,11 +74,18 @@ class LocalDocumentStore:
 
     def delete_document(self, document_id: str) -> None:
         with self._lock:
-            path = self.document_dir(document_id)
-            for child in path.iterdir():
-                if child.is_file():
-                    child.unlink()
-            path.rmdir()
+            shutil.rmtree(self.document_dir(document_id))
+
+    def delete_artifacts(self, document_id: str, *patterns: str) -> None:
+        """Remove cached artifacts matching the given glob patterns."""
+        with self._lock:
+            directory = self.document_dir(document_id)
+            for pattern in patterns:
+                if "/" in pattern or "\\" in pattern or pattern.startswith("."):
+                    raise ValueError("Invalid artifact pattern")
+                for path in directory.glob(pattern):
+                    if path.is_file() and path.name != "source.pdf":
+                        path.unlink(missing_ok=True)
 
     def source_path(self, document_id: str) -> Path:
         return self.document_dir(document_id) / "source.pdf"

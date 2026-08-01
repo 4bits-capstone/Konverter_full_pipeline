@@ -6,7 +6,8 @@ import threading
 import time
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Callable
+from collections.abc import Callable
+from typing import Any
 
 from .config import Settings
 from .metadata_rules import empty_metadata_payload, extract_metadata_from_docling
@@ -91,6 +92,9 @@ class HeadingResolver:
         self.chapter_contents_refs: set[str] = set()
         self.lower_level_by_size: dict[float, int] = {}
         self.h2_font_floor: float | None = None
+        # Last emitted heading level, used to prevent skipped levels
+        # (e.g. an H4 directly after a chapter title) in the nested output.
+        self._last_heading_level = 1
         if all_items is not None and ordered_references is not None:
             self._discover_chapter_outlines(all_items, ordered_references)
             self._build_lower_style_levels(all_items)
@@ -101,10 +105,12 @@ class HeadingResolver:
         text = str(item.get("text", "")).strip()
 
         if reference == self.main_title_ref:
+            self._last_heading_level = 1
             return "title"
 
         if reference in self.chapter_title_refs or raw == "title":
             self._select_chapter(text)
+            self._last_heading_level = 1
             return "chapter_title"
 
         if raw != "section_header":
@@ -112,8 +118,10 @@ class HeadingResolver:
 
         chapter_key = self._chapter_key(text)
         if self.current_chapter_key and chapter_key == self.current_chapter_key:
+            self._last_heading_level = 1
             return "section_header_1"
         if chapter_key in self.current_outline:
+            self._last_heading_level = 2
             return "section_header_2"
 
         # Fallback for PDFs that do not expose a separate visual chapter title.
@@ -123,18 +131,26 @@ class HeadingResolver:
             self._is_numbered_chapter(text) or self._is_named_back_matter_chapter(text)
         ):
             self._select_chapter(text)
+            self._last_heading_level = 1
             return "chapter_title"
         if self._is_numbered_chapter(text) and chapter_key != self.current_chapter_key:
             self._select_chapter(text)
+            self._last_heading_level = 1
             return "chapter_title"
         if (
             self._is_named_back_matter_chapter(text)
             and chapter_key != self.current_chapter_key
         ):
             self._select_chapter(text)
+            self._last_heading_level = 1
             return "chapter_title"
 
-        return f"section_header_{self._infer_lower_level(item)}"
+        inferred = self._infer_lower_level(item)
+        # Never skip heading levels: a heading can go at most one level
+        # deeper than the previous one, and never above H2 in the body.
+        level = max(2, min(inferred, self._last_heading_level + 1, 5))
+        self._last_heading_level = level
+        return f"section_header_{level}"
 
     def is_chapter_contents(self, reference: str) -> bool:
         return reference in self.chapter_contents_refs
@@ -399,7 +415,8 @@ class HeadingResolver:
     def _is_named_back_matter_chapter(value: str) -> bool:
         return bool(
             re.fullmatch(
-                r"(?:appendices|bibliography)",
+                r"(?:appendices|bibliography|glossary|references|"
+                r"acknowledg(?:e)?ments)",
                 value.strip(),
                 re.IGNORECASE,
             )

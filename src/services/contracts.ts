@@ -13,6 +13,7 @@ import type {
 
 export interface DocumentService {
   uploadDocuments(files: File[]): Promise<DocumentSummary[]>
+  listDocuments(): Promise<DocumentSummary[]>
   getDocument(documentId?: string): Promise<DocumentSummary>
   removeDocument(documentId: string): Promise<void>
   startProcessing(documentId: string): Promise<DocumentProcessingJob>

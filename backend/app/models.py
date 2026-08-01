@@ -29,6 +29,8 @@ class DocumentSummary(ApiModel):
     publisher: str
     size_label: str | None = None
     processing_state: ProcessingState | None = None
+    approved_at: str | None = None
+    metadata_confirmed: bool = False
 
 
 class DocumentProcessingJob(ApiModel):
@@ -101,17 +103,17 @@ class ReviewItem(ApiModel):
 class ReviewPatch(ApiModel):
     status: ReviewStatus | None = None
     type: ReviewType | None = None
-    label: str | None = None
-    corrected_text: str | None = None
+    label: str | None = Field(default=None, max_length=120)
+    corrected_text: str | None = Field(default=None, max_length=200_000)
     corrected_table: ReviewTableData | None = None
 
 
 class DocumentMetadata(ApiModel):
-    title: str = ""
-    publisher: str = ""
-    published_date: str = ""
-    jurisdiction: str = ""
-    citations: str = ""
+    title: str = Field(default="", max_length=2_000)
+    publisher: str = Field(default="", max_length=2_000)
+    published_date: str = Field(default="", max_length=200)
+    jurisdiction: str = Field(default="", max_length=2_000)
+    citations: str = Field(default="", max_length=20_000)
 
 
 class MetadataFieldInfo(ApiModel):
@@ -127,10 +129,17 @@ class MetadataPayload(ApiModel):
     fields: dict[str, MetadataFieldInfo]
 
 
+class DocumentConfidence(ApiModel):
+    score: float | None = None
+    band: ConfidenceBand | None = None
+    source: str = ""
+
+
 class PublicationPayload(ApiModel):
     publication: dict[str, Any]
     metadata: DocumentMetadata
     json_ld: dict[str, Any]
+    confidence: DocumentConfidence | None = None
 
 
 class ApprovalResult(ApiModel):

@@ -30,6 +30,8 @@ export interface DocumentSummary {
   publisher: string
   sizeLabel?: string
   processingState?: ProcessingState
+  approvedAt?: string | null
+  metadataConfirmed?: boolean
 }
 
 export interface SourceEvidence {
@@ -83,10 +85,17 @@ export interface MetadataPayload {
   fields: Record<keyof DocumentMetadata, MetadataFieldInfo>
 }
 
+export interface DocumentConfidence {
+  score: number | null
+  band: ConfidenceBand | null
+  source: string
+}
+
 export interface PublicationPayload {
   publication: import('../lib/docling').DoclingPublication
   metadata: DocumentMetadata
   jsonLd: Record<string, unknown>
+  confidence?: DocumentConfidence | null
 }
 
 export interface ReviewUpdate {

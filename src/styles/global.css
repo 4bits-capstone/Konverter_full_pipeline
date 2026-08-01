@@ -58,8 +58,10 @@
   --accent: var(--blue);
   --accent-ink: var(--blue-dark);
   --accent-soft: var(--blue-soft);
-  --seal: var(--red);
-  --seal-soft: var(--red-soft);
+  /* Approval actions read as positive confirmation, not danger. */
+  --seal: var(--hi);
+  --seal-2: var(--hi-2);
+  --seal-soft: var(--hi-soft);
   --lo: #A93034;
   --lo-soft: #F7E9E9;
   --lo-line: #E4B6B7;
@@ -67,6 +69,7 @@
   --md-soft: #F6EEDD;
   --md-line: #E4CFA0;
   --hi: #1E7A54;
+  --hi-2: #166245;
   --hi-soft: #E3F1EA;
   --hi-line: #BADCC9;
   --brand-gradient: linear-gradient(90deg, #004383 0%, #6A2F63 55%, #A93034 100%);

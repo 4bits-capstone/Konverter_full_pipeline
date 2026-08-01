@@ -12,7 +12,7 @@ from typing import Any
 
 from .config import Settings
 from .exporter import build_accessible_html, build_json_ld, build_publication
-from .media import render_pdf_region
+from .media import render_pdf_region, render_pdf_regions, render_pdf_regions
 from .pipeline import LABEL_DISPLAY, KonverterPipeline, _plain_text_from_table
 from .storage import LocalDocumentStore
 
@@ -38,11 +38,15 @@ def re_split_row(value: str) -> list[str]:
     return [value]
 
 
+def _strip_list_marker(line: str) -> str:
+    return re.sub(r"^\s*(?:[•\-–*]|\d+[.)])\s*", "", line)
+
+
 def _list_items(value: str) -> list[str]:
     return [
-        " ".join(line.lstrip("•-– ").replace("|", " ").split())
+        " ".join(_strip_list_marker(line).replace("|", " ").split())
         for line in value.splitlines()
-        if " ".join(line.lstrip("•-– ").replace("|", " ").split())
+        if " ".join(_strip_list_marker(line).replace("|", " ").split())
     ]
 
 
@@ -66,6 +70,27 @@ def _list_items_from_table(table: dict[str, Any] | None) -> list[str]:
 
 def _is_generic_header(value: str) -> bool:
     return not value or bool(re.fullmatch(r"column\s+\d+", value, re.IGNORECASE))
+
+
+# Structures that must be a single line of text in the generated output.
+SINGLE_LINE_TYPES = {
+    "title",
+    "chapter_title",
+    "caption",
+    "section_header_1",
+    "section_header_2",
+    "section_header_3",
+    "section_header_4",
+    "section_header_5",
+}
+
+
+def _single_line(value: str) -> str:
+    """Collapse list markers and line breaks into one clean heading line."""
+    parts = [
+        " ".join(_strip_list_marker(line).split()) for line in str(value).splitlines()
+    ]
+    return " ".join(part for part in parts if part).strip()
 
 
 def _text_from_table(table: dict[str, Any] | None, target_type: str) -> str:
@@ -141,6 +166,18 @@ class ProcessingManager:
 
         with self._lock:
             self._cancelled.discard(document_id)
+        # Reprocessing regenerates blocks and review items, so every cached
+        # crop and generated output from the previous run is now stale.
+        self.store.delete_artifacts(
+            document_id,
+            "evidence-*.png",
+            "metadata-evidence-*.png",
+            "figure-*.png",
+            "publication.json",
+            "schema.jsonld",
+            "structured.json",
+            "accessible.html",
+        )
         started_at = int(time.time() * 1000)
         estimate_seconds = self.store.estimate_seconds(
             int(record.get("pages", 0)),
@@ -157,7 +194,9 @@ class ProcessingManager:
             "remaining_seconds": estimate_seconds,
             "message": "Queued for extraction",
         }
-        self.store.update_record(document_id, job=job, approved_at=None)
+        self.store.update_record(
+            document_id, job=job, approved_at=None, metadata_confirmed=False
+        )
         self.executor.submit(self._run, document_id)
         return self.status(document_id)
 
@@ -285,9 +324,20 @@ class ProcessingManager:
 
 
 class WorkflowService:
+    GENERATED_ARTIFACTS = (
+        "publication.json",
+        "schema.jsonld",
+        "structured.json",
+        "accessible.html",
+    )
+
     def __init__(self, settings: Settings, store: LocalDocumentStore):
         self.settings = settings
         self.store = store
+
+    def _discard_generated(self, document_id: str) -> None:
+        self.store.delete_artifacts(document_id, *self.GENERATED_ARTIFACTS)
+        self.store.update_record(document_id, approved_at=None)
 
     def get_review_items(self, document_id: str) -> list[dict[str, Any]]:
         items = self.store.read_artifact(document_id, "review_items.json")
@@ -375,6 +425,10 @@ class WorkflowService:
                     if block.get("table_data")
                     else block.get("text", "")
                 )
+            if target_type in SINGLE_LINE_TYPES:
+                # Headings, titles and captions are one line of text; strip
+                # any bullets or line breaks left over from the old label.
+                text = _single_line(text)
             block["text"] = text
             block.pop("table_data", None)
             block.pop("list_items", None)
@@ -392,7 +446,7 @@ class WorkflowService:
 
         self.store.write_artifact(document_id, "blocks.json", blocks)
         self.store.write_artifact(document_id, "review_items.json", items)
-        self.store.update_record(document_id, approved_at=None)
+        self._discard_generated(document_id)
         return item
 
     def resolve_all(self, document_id: str) -> list[dict[str, Any]]:
@@ -401,7 +455,7 @@ class WorkflowService:
             if item["status"] in {"pending", "needs_attention"}:
                 item["status"] = "accepted"
         self.store.write_artifact(document_id, "review_items.json", items)
-        self.store.update_record(document_id, approved_at=None)
+        self._discard_generated(document_id)
         return items
 
     def get_metadata(self, document_id: str) -> dict[str, Any]:
@@ -425,11 +479,12 @@ class WorkflowService:
         payload["metadata"] = metadata
         self.store.write_artifact(document_id, "metadata.json", payload)
         record = self.store.get_record(document_id)
+        self._discard_generated(document_id)
         self.store.update_record(
             document_id,
             title=metadata.get("title") or record["title"],
             publisher=metadata.get("publisher") or record["publisher"],
-            approved_at=None,
+            metadata_confirmed=True,
         )
         return metadata
 
@@ -440,6 +495,11 @@ class WorkflowService:
         ]
         if pending:
             raise ValueError(f"{len(pending)} review item(s) are still unresolved")
+        record = self.store.get_record(document_id)
+        if not record.get("metadata_confirmed"):
+            raise ValueError(
+                "Confirm the document metadata on the metadata page before approval"
+            )
         metadata_payload = self.get_metadata(document_id)
         metadata = metadata_payload["metadata"]
         if (
@@ -448,10 +508,11 @@ class WorkflowService:
         ):
             raise ValueError("Title and publisher must be confirmed before approval")
 
-        record = self.store.get_record(document_id)
         blocks = self.store.read_artifact(document_id, "blocks.json", [])
         publication = build_publication(blocks, record)
         block_by_id = {str(block.get("id", "")): block for block in blocks}
+        figure_jobs: list[dict[str, Any]] = []
+        pending_figures: list[tuple[dict[str, Any], str, Any]] = []
         for section in publication.get("sections", []):
             for figure in section.get("blocks", []):
                 if figure.get("type") != "figure":
@@ -466,21 +527,35 @@ class WorkflowService:
                     document_id,
                     f"figure-{image_key}.png",
                 )
-                if not destination.exists():
-                    try:
-                        render_pdf_region(
-                            self.store.source_path(document_id),
-                            destination,
-                            int(source_block.get("page", 1)),
-                            source_block.get("source_bounds"),
-                            dpi=168,
-                            padding=18,
-                        )
-                    except Exception:
-                        destination.unlink(missing_ok=True)
-                        continue
-                figure["imageKey"] = image_key
-        json_ld = build_json_ld(document_id, publication, metadata)
+                if destination.exists():
+                    figure["imageKey"] = image_key
+                    continue
+                figure_jobs.append(
+                    {
+                        "destination": destination,
+                        "page": int(source_block.get("page", 1)),
+                        "bounds": source_block.get("source_bounds"),
+                        "dpi": 168,
+                        "padding": 18,
+                    }
+                )
+                pending_figures.append((figure, image_key, destination))
+        if figure_jobs:
+            rendered = set(
+                render_pdf_regions(self.store.source_path(document_id), figure_jobs)
+            )
+            for figure, image_key, destination in pending_figures:
+                if destination in rendered:
+                    figure["imageKey"] = image_key
+        json_ld = build_json_ld(
+            document_id,
+            publication,
+            metadata,
+            site_url=self.settings.site_url,
+            site_name=self.settings.site_name,
+            page_url_template=self.settings.page_url_template,
+            generated_at=datetime.now(timezone.utc).isoformat(timespec="seconds"),
+        )
         project_root = Path(__file__).resolve().parents[2]
         cover_path = self.store.cover_path(document_id)
         if not cover_path.exists():
@@ -522,7 +597,34 @@ class WorkflowService:
         return approved_at
 
     def revoke(self, document_id: str) -> None:
-        self.store.update_record(document_id, approved_at=None)
+        self._discard_generated(document_id)
+
+    def _document_confidence(self, document_id: str) -> dict[str, Any] | None:
+        doc_confidence = (
+            self.store.read_artifact(document_id, "doc_confidence.json", {}) or {}
+        )
+        score = doc_confidence.get("mean_score")
+        source = "Docling mean confidence"
+        if score is None:
+            blocks = self.store.read_artifact(document_id, "blocks.json", [])
+            values = [
+                float(block["confidence"])
+                for block in blocks
+                if block.get("confidence") is not None
+            ]
+            if not values:
+                return None
+            score = sum(values) / len(values)
+            source = "Mean layout-cluster confidence"
+        score = float(score)
+        band = (
+            "high"
+            if score >= self.settings.high_confidence_threshold
+            else "med"
+            if score >= self.settings.medium_confidence_threshold
+            else "low"
+        )
+        return {"score": round(score, 4), "band": band, "source": source}
 
     def publication_payload(self, document_id: str) -> dict[str, Any]:
         record = self.store.get_record(document_id)
@@ -536,4 +638,5 @@ class WorkflowService:
             ),
             "metadata": self.get_metadata(document_id)["metadata"],
             "json_ld": self.store.read_artifact(document_id, "schema.jsonld", {}),
+            "confidence": self._document_confidence(document_id),
         }

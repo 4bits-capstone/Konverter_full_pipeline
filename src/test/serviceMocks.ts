@@ -31,6 +31,10 @@ export function resetTestServices(): void {
 }
 
 export const documentService: DocumentService = {
+  // Tests always start from an empty client-side queue.
+  async listDocuments() {
+    return []
+  },
   async uploadDocuments(files) {
     const uploaded = files.map((file, index) => ({
       id: `${file.name}-${file.lastModified}-${index}`,

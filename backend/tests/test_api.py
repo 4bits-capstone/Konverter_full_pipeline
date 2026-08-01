@@ -141,6 +141,13 @@ def upload_and_process(client, file_name: str = "report.pdf") -> str:
     return document_id
 
 
+def confirm_metadata(client, document_id: str) -> dict:
+    metadata = client.get(f"/api/documents/{document_id}/metadata").json()["metadata"]
+    response = client.put(f"/api/documents/{document_id}/metadata", json=metadata)
+    assert response.status_code == 200
+    return metadata
+
+
 def test_upload_review_correct_and_export(tmp_path):
     with load_client(tmp_path) as client:
         document_id = upload_and_process(client)
@@ -188,7 +195,19 @@ def test_upload_review_correct_and_export(tmp_path):
         assert client.post(f"/api/documents/{document_id}/approval").status_code == 200
         publication = client.get(f"/api/documents/{document_id}/publication")
         assert publication.status_code == 200
-        assert publication.json()["jsonLd"]["@type"] == "Report"
+        json_ld = publication.json()["jsonLd"]
+        graph = json_ld["@graph"]
+        report = next(node for node in graph if node["@type"] == "Report")
+        assert json_ld["@context"] == "https://schema.org"
+        page_ref = report["mainEntityOfPage"]["@id"]
+        assert page_ref == f"#webpage-{document_id}"
+        web_page = next(node for node in graph if node["@type"] == "WebPage")
+        assert web_page["@id"] == page_ref
+        assert web_page["mainEntity"] == {"@id": report["@id"]}
+        chapters = report.get("hasPart", [])
+        assert all(part["@type"] == "Chapter" and "name" in part for part in chapters)
+        assert "size" not in report and "author" not in report
+        assert any(node["@type"] == "Organization" for node in graph)
 
         accessible = client.get(f"/api/documents/{document_id}/exports/accessible.html")
         assert accessible.status_code == 200
@@ -233,6 +252,10 @@ def test_table_to_footnote_and_remove_from_output(tmp_path):
         )
         assert removed.json()["status"] == "removed"
         client.post(f"/api/documents/{document_id}/review-items/resolve-all")
+        # Approval is blocked until the metadata has been explicitly confirmed.
+        blocked = client.post(f"/api/documents/{document_id}/approval")
+        assert blocked.status_code == 409
+        confirm_metadata(client, document_id)
         assert client.post(f"/api/documents/{document_id}/approval").status_code == 200
         accessible = client.get(f"/api/documents/{document_id}/exports/accessible.html")
         assert footnote_text.encode() not in accessible.content
@@ -250,3 +273,94 @@ def test_upload_is_limited_to_five_documents(tmp_path):
 
         assert response.status_code == 400
         assert "at most 5 documents" in response.json()["detail"]
+
+
+def test_revoke_discards_output_and_reapproval_works(tmp_path):
+    with load_client(tmp_path) as client:
+        document_id = upload_and_process(client)
+        client.post(f"/api/documents/{document_id}/review-items/resolve-all")
+        confirm_metadata(client, document_id)
+        assert client.post(f"/api/documents/{document_id}/approval").status_code == 200
+        assert (
+            client.get(
+                f"/api/documents/{document_id}/exports/accessible.html"
+            ).status_code
+            == 200
+        )
+
+        # Revoking removes the generated output and blocks exports.
+        assert client.delete(f"/api/documents/{document_id}/approval").status_code == 204
+        assert (
+            client.get(
+                f"/api/documents/{document_id}/exports/accessible.html"
+            ).status_code
+            == 409
+        )
+        assert client.get(f"/api/documents/{document_id}/publication").status_code == 409
+
+        # Approving again succeeds without any further edits.
+        assert client.post(f"/api/documents/{document_id}/approval").status_code == 200
+        assert (
+            client.get(
+                f"/api/documents/{document_id}/exports/accessible.html"
+            ).status_code
+            == 200
+        )
+
+
+def test_review_edit_after_approval_discards_generated_html(tmp_path):
+    with load_client(tmp_path) as client:
+        document_id = upload_and_process(client)
+        client.post(f"/api/documents/{document_id}/review-items/resolve-all")
+        confirm_metadata(client, document_id)
+        assert client.post(f"/api/documents/{document_id}/approval").status_code == 200
+
+        review = client.get(f"/api/documents/{document_id}/review-items").json()
+        client.patch(
+            f"/api/documents/{document_id}/review-items/{review[0]['id']}",
+            json={"correctedText": "Updated heading"},
+        )
+
+        # Returning to review discards the previously generated output.
+        assert (
+            client.get(
+                f"/api/documents/{document_id}/exports/accessible.html"
+            ).status_code
+            == 409
+        )
+        summary = client.get(f"/api/documents/{document_id}").json()
+        assert summary["approvedAt"] is None
+
+
+def test_documents_can_be_listed_and_state_survives(tmp_path):
+    with load_client(tmp_path) as client:
+        first = upload_and_process(client, "first.pdf")
+        second = upload_and_process(client, "second.pdf")
+        client.post(f"/api/documents/{first}/review-items/resolve-all")
+        confirm_metadata(client, first)
+        client.post(f"/api/documents/{first}/approval")
+
+        listed = client.get("/api/documents").json()
+        assert [entry["fileName"] for entry in listed] == ["first.pdf", "second.pdf"]
+        by_id = {entry["id"]: entry for entry in listed}
+        assert by_id[first]["approvedAt"] is not None
+        assert by_id[first]["metadataConfirmed"] is True
+        # Approving one document never marks the other one approved.
+        assert by_id[second]["approvedAt"] is None
+        assert by_id[second]["metadataConfirmed"] is False
+
+
+def test_converting_table_to_heading_flattens_to_one_line(tmp_path):
+    with load_client(tmp_path) as client:
+        document_id = upload_and_process(client, "heading-conversion.pdf")
+        review = client.get(f"/api/documents/{document_id}/review-items").json()
+        table_item = next(item for item in review if item["type"] == "table")
+
+        converted = client.patch(
+            f"/api/documents/{document_id}/review-items/{table_item['id']}",
+            json={"type": "section_header_2", "label": "H2"},
+        )
+        assert converted.status_code == 200
+        corrected = converted.json()["correctedText"]
+        assert "\n" not in corrected
+        assert "|" not in corrected

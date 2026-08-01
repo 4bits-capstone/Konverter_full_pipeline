@@ -129,7 +129,15 @@ export function UploadPage() {
               <p className="dz-hint"><span className="mono">PDF only</span> · up to 200 MB per file · maximum 5 documents</p>
             </div>
         ) : (
-          <>
+          <div
+            className="processing-queue-dropzone"
+            onDragOver={(event) => event.preventDefault()}
+            onDrop={(event) => {
+              // The queue accepts dropped PDFs too, not just the empty state.
+              event.preventDefault()
+              if (event.dataTransfer.files.length) acceptFiles(event.dataTransfer.files)
+            }}
+          >
             <div className="processing-queue-toolbar">
               <div>
                 <h3>Processing queue</h3>
@@ -214,9 +222,9 @@ export function UploadPage() {
 
             <div className="processing-queue-footer">
               <button className="btn btn-outline" onClick={chooseFiles}><RefreshCcw />Re-upload or add more documents</button>
-              <span>Processing jobs continue if you open a completed document for review.</span>
+              <span>Drop more PDFs anywhere in this list, or keep reviewing — processing continues in the background.</span>
             </div>
-          </>
+          </div>
         )}
       </div>
     </section>

@@ -15,6 +15,9 @@ function requireDocumentId(documentId?: string): string {
 }
 
 export const fastApiDocumentService: DocumentService = {
+  listDocuments() {
+    return apiRequest('/documents')
+  },
   async uploadDocuments(files) {
     const body = new FormData()
     files.forEach((file) => body.append('files', file))
@@ -90,7 +93,12 @@ export const fastApiMetadataService: MetadataService = {
 
 export const fastApiApprovalService: ApprovalService = {
   approve(documentId) {
-    return apiRequest(`/documents/${requireDocumentId(documentId)}/approval`, { method: 'POST' })
+    // Output generation renders every figure in the document, so allow far
+    // more time than a normal API call before giving up.
+    return apiRequest(`/documents/${requireDocumentId(documentId)}/approval`, {
+      method: 'POST',
+      timeoutMs: 5 * 60 * 1000,
+    })
   },
   revoke(documentId) {
     return apiRequest(`/documents/${encodeURIComponent(documentId)}/approval`, { method: 'DELETE' })

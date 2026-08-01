@@ -9,13 +9,12 @@ from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Annotated, Any
 
-import pypdfium2 as pdfium
-from fastapi import FastAPI, File, HTTPException, Response, UploadFile
+from fastapi import FastAPI, File, HTTPException, Request, Response, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
 
 from .config import load_settings
-from .media import render_pdf_region
+from .media import pdf_page_count, render_pdf_region
 from .models import (
     ApprovalResult,
     DocumentMetadata,
@@ -76,6 +75,8 @@ def _summary(record: dict) -> DocumentSummary:
         publisher=record["publisher"],
         size_label=record.get("size_label"),
         processing_state=record.get("job", {}).get("state"),
+        approved_at=record.get("approved_at"),
+        metadata_confirmed=bool(record.get("metadata_confirmed")),
     )
 
 
@@ -108,17 +109,24 @@ def _render_cover(source_path: Path, destination: Path) -> None:
         destination.unlink(missing_ok=True)
 
 
-def _pdf_page_count(source_path: Path) -> int:
-    document = pdfium.PdfDocument(str(source_path))
-    try:
-        return len(document)
-    finally:
-        document.close()
+@app.middleware("http")
+async def security_headers(request: Request, call_next):
+    response = await call_next(request)
+    response.headers.setdefault("X-Content-Type-Options", "nosniff")
+    response.headers.setdefault("X-Frame-Options", "DENY")
+    response.headers.setdefault("Referrer-Policy", "no-referrer")
+    return response
 
 
 @app.get("/api/health")
 def health() -> dict[str, str]:
     return {"status": "ok"}
+
+
+@app.get("/api/documents", response_model=list[DocumentSummary])
+def list_documents() -> list[DocumentSummary]:
+    """List stored documents so a reloaded client can pick up where it left off."""
+    return [_summary(record) for record in store.list_records()]
 
 
 @app.post("/api/documents", response_model=list[DocumentSummary], status_code=201)
@@ -150,7 +158,9 @@ async def upload_documents(
             with os.fdopen(descriptor, "wb") as destination:
                 first_chunk = True
                 while chunk := await upload.read(1024 * 1024):
-                    if first_chunk and not chunk.lstrip().startswith(b"%PDF-"):
+                    # The PDF header may legally appear anywhere in the first
+                    # 1024 bytes, so search instead of requiring offset zero.
+                    if first_chunk and b"%PDF-" not in chunk[:1024]:
                         raise HTTPException(
                             status_code=415, detail=f"{safe_name} is not a valid PDF"
                         )
@@ -163,13 +173,21 @@ async def upload_documents(
                         )
                     destination.write(chunk)
             try:
-                pages = _pdf_page_count(temporary_path)
+                pages = pdf_page_count(temporary_path)
             except Exception as exc:
                 raise HTTPException(
                     status_code=422, detail=f"{safe_name} could not be read as a PDF"
                 ) from exc
             if pages < 1:
                 raise HTTPException(status_code=422, detail=f"{safe_name} has no pages")
+            if pages > settings.max_pages:
+                raise HTTPException(
+                    status_code=422,
+                    detail=(
+                        f"{safe_name} has {pages} pages; the configured limit is "
+                        f"{settings.max_pages} (KONVERTER_MAX_PAGES)"
+                    ),
+                )
 
             document_id = uuid.uuid4().hex
             title = Path(safe_name).stem.replace("-", " ").replace("_", " ").strip()
@@ -184,6 +202,7 @@ async def upload_documents(
                 "created_at": time.time(),
                 "updated_at": time.time(),
                 "approved_at": None,
+                "metadata_confirmed": False,
                 "job": {
                     "state": "idle",
                     "started_at": None,

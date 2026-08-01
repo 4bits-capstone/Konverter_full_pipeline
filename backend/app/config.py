@@ -37,17 +37,21 @@ class Settings:
     do_table_structure: bool
     docling_device: str
     worker_count: int
+    max_pages: int
     high_confidence_threshold: float
     medium_confidence_threshold: float
     baseline_seconds_per_page: float
     baseline_startup_seconds: float
+    site_url: str
+    site_name: str
+    page_url_template: str
 
 
 def load_settings() -> Settings:
     default_data = Path(__file__).resolve().parents[1] / "runtime"
     origins = os.getenv("KONVERTER_CORS_ORIGINS", "http://localhost:5173")
-    high_threshold = _as_threshold("KONVERTER_HIGH_CONFIDENCE", 0.85)
-    medium_threshold = _as_threshold("KONVERTER_MEDIUM_CONFIDENCE", 0.65)
+    high_threshold = _as_threshold("KONVERTER_HIGH_CONFIDENCE", 0.75)
+    medium_threshold = _as_threshold("KONVERTER_MEDIUM_CONFIDENCE", 0.55)
     if medium_threshold >= high_threshold:
         raise ValueError(
             "KONVERTER_MEDIUM_CONFIDENCE must be lower than KONVERTER_HIGH_CONFIDENCE"
@@ -61,6 +65,7 @@ def load_settings() -> Settings:
         do_table_structure=_as_bool("KONVERTER_DO_TABLE_STRUCTURE", True),
         docling_device=_as_docling_device("KONVERTER_DOCLING_DEVICE", "cpu"),
         worker_count=max(1, int(os.getenv("KONVERTER_WORKERS", "1"))),
+        max_pages=max(1, int(os.getenv("KONVERTER_MAX_PAGES", "2000"))),
         high_confidence_threshold=high_threshold,
         medium_confidence_threshold=medium_threshold,
         baseline_seconds_per_page=max(
@@ -69,4 +74,7 @@ def load_settings() -> Settings:
         baseline_startup_seconds=max(
             1.0, float(os.getenv("KONVERTER_BASELINE_STARTUP_SECONDS", "30"))
         ),
+        site_url=os.getenv("KONVERTER_SITE_URL", "").strip().rstrip("/"),
+        site_name=os.getenv("KONVERTER_SITE_NAME", "").strip(),
+        page_url_template=os.getenv("KONVERTER_PAGE_URL_TEMPLATE", "").strip(),
     )

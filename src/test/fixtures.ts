@@ -79,8 +79,10 @@ export const testPublicationPayload: PublicationPayload = {
   metadata: testMetadata,
   jsonLd: {
     '@context': 'https://schema.org',
-    '@type': 'Report',
-    name: testMetadata.title,
+    '@graph': [
+      { '@type': 'Report', '@id': 'urn:uuid:test-document', name: testMetadata.title },
+      { '@type': 'WebPage', '@id': '#webpage', mainEntity: { '@id': 'urn:uuid:test-document' } },
+    ],
   },
   publication: {
     schemaName: 'Konverter accessible document',

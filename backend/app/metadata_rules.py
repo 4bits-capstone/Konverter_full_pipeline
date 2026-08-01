@@ -2,7 +2,8 @@ from __future__ import annotations
 
 import re
 from pathlib import Path
-from typing import Any, Iterable
+from collections.abc import Callable
+from typing import Any
 
 from .config import Settings
 
@@ -232,7 +233,17 @@ def extract_title(
             best = candidate
 
     if best and best[0] >= 5:
-        return metadata_field(best[3], best[2], "cover_title_rule", 0.88)
+        chosen = best[3].casefold()
+        pages_with_title = {
+            page_number
+            for page_number, line in lines
+            if chosen and chosen in normalise_title(line).casefold()
+        }
+        repeats = len(pages_with_title)
+        score = 0.82 if repeats <= 1 else min(0.93, 0.86 + 0.03 * (repeats - 1))
+        field = metadata_field(best[3], best[2], "cover_title_rule", score)
+        field["corroboration"] = f"seen on {repeats} of the first {LAST_PAGE} pages"
+        return field
 
     fallback = _filename_title(pdf_path)
     return metadata_field(
@@ -272,18 +283,22 @@ def extract_publisher(pages: list[dict[str, Any]]) -> dict[str, Any]:
                     0.98,
                 )
 
-    for page_number, line in page_lines(pages):
-        if re.search(
-            r"\bVictorian Law Reform Commission\b",
-            line,
-            re.IGNORECASE,
-        ):
-            return metadata_field(
-                "Victorian Law Reform Commission",
-                page_number,
-                "organisation_name_rule",
-                0.85,
-            )
+    organisation_pages = [
+        page_number
+        for page_number, line in page_lines(pages)
+        if re.search(r"\bVictorian Law Reform Commission\b", line, re.IGNORECASE)
+    ]
+    if organisation_pages:
+        occurrences = len(organisation_pages)
+        score = 0.78 if occurrences == 1 else 0.84 if occurrences == 2 else 0.90
+        field = metadata_field(
+            "Victorian Law Reform Commission",
+            organisation_pages[0],
+            "organisation_name_rule",
+            score,
+        )
+        field["corroboration"] = f"organisation name found {occurrences} time(s)"
+        return field
 
     return metadata_field(None, None, "not_found", 0.0)
 
@@ -387,15 +402,23 @@ def extract_jurisdiction(pages: list[dict[str, Any]]) -> dict[str, Any]:
         ),
         (r"\bNorthern Territory\b|\(NT\)", "Northern Territory, Australia"),
     ]
+    hits: dict[str, list[int]] = {}
     for page_number, line in page_lines(pages):
         for pattern, value in state_rules:
             if re.search(pattern, line, re.IGNORECASE):
-                return metadata_field(
-                    value,
-                    page_number,
-                    "jurisdiction_keyword_rule",
-                    0.92,
-                )
+                hits.setdefault(value, []).append(page_number)
+    if hits:
+        value, page_numbers = max(hits.items(), key=lambda item: len(item[1]))
+        occurrences = len(page_numbers)
+        score = 0.72 if occurrences == 1 else 0.84 if occurrences == 2 else 0.93
+        field = metadata_field(
+            value,
+            page_numbers[0],
+            "jurisdiction_keyword_rule",
+            score,
+        )
+        field["corroboration"] = f"jurisdiction keyword matched {occurrences} time(s)"
+        return field
     return metadata_field(None, None, "not_found", 0.0)
 
 
@@ -449,12 +472,29 @@ def extract_citations(pages: list[dict[str, Any]]) -> dict[str, Any]:
         ):
             add(match.group(0), page_number, "case")
 
-    return {
+    kinds = {citation["type"] for citation in citations}
+    if citations:
+        score = min(
+            0.95,
+            0.55
+            + 0.06 * min(len(citations), 4)
+            + (0.08 if kinds & {"isbn", "series"} else 0.0)
+            + 0.04 * max(0, len(kinds) - 1),
+        )
+    else:
+        score = 0.0
+    field = {
         "value": citations[:50],
         "source_page": citations[0]["source_page"] if citations else None,
         "method": "line_bounded_citation_rules",
-        "confidence": 0.9 if citations else 0.0,
+        "confidence": round(score, 2),
     }
+    if citations:
+        field["corroboration"] = (
+            f"{len(citations)} citation(s) across {len(kinds)} type(s): "
+            + ", ".join(sorted(kinds))
+        )
+    return field
 
 
 def _band(score: float, settings: Settings) -> str:
