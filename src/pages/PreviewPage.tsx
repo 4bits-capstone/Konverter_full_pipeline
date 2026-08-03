@@ -691,9 +691,7 @@ export function PreviewPage() {
                   </nav>
 
                   <div className="vlrc-reader-content">
-                    <div className="chapter-label">
-                      {pageMetadata.title} · reviewed Docling output
-                    </div>
+                    <div className="chapter-label">{pageMetadata.title}</div>
                     <h1 id="chapter-title" ref={chapterTitleRef} tabIndex={-1}>
                       {selectedSection.displayTitle}
                     </h1>

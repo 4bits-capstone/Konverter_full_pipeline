@@ -124,9 +124,6 @@ class HeadingResolver:
             self._last_heading_level = 2
             return "section_header_2"
 
-        # Fallback for PDFs that do not expose a separate visual chapter title.
-        # When a chapter title page is present, the numbered content heading
-        # matches current_chapter_key above and remains the chapter H1.
         if not self.current_chapter_key and (
             self._is_numbered_chapter(text) or self._is_named_back_matter_chapter(text)
         ):
@@ -146,8 +143,6 @@ class HeadingResolver:
             return "chapter_title"
 
         inferred = self._infer_lower_level(item)
-        # Never skip heading levels: a heading can go at most one level
-        # deeper than the previous one, and never above H2 in the body.
         level = max(2, min(inferred, self._last_heading_level + 1, 5))
         self._last_heading_level = level
         return f"section_header_{level}"

@@ -72,7 +72,6 @@ def _is_generic_header(value: str) -> bool:
     return not value or bool(re.fullmatch(r"column\s+\d+", value, re.IGNORECASE))
 
 
-# Structures that must be a single line of text in the generated output.
 SINGLE_LINE_TYPES = {
     "title",
     "chapter_title",
@@ -166,8 +165,6 @@ class ProcessingManager:
 
         with self._lock:
             self._cancelled.discard(document_id)
-        # Reprocessing regenerates blocks and review items, so every cached
-        # crop and generated output from the previous run is now stale.
         self.store.delete_artifacts(
             document_id,
             "evidence-*.png",
@@ -426,8 +423,6 @@ class WorkflowService:
                     else block.get("text", "")
                 )
             if target_type in SINGLE_LINE_TYPES:
-                # Headings, titles and captions are one line of text; strip
-                # any bullets or line breaks left over from the old label.
                 text = _single_line(text)
             block["text"] = text
             block.pop("table_data", None)
@@ -462,9 +457,6 @@ class WorkflowService:
         payload = self.store.read_artifact(document_id, "metadata.json")
         if payload is None:
             raise RuntimeError("Metadata is not ready yet")
-        # Nested dictionary keys are not transformed by Pydantic's alias
-        # generator. Normalise the Python key here so the API contract remains
-        # camelCase, including for metadata artifacts created by older runs.
         normalised = {**payload}
         fields = dict(normalised.get("fields") or {})
         if "publishedDate" not in fields and "published_date" in fields:

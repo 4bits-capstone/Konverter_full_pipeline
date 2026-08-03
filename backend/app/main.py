@@ -158,8 +158,6 @@ async def upload_documents(
             with os.fdopen(descriptor, "wb") as destination:
                 first_chunk = True
                 while chunk := await upload.read(1024 * 1024):
-                    # The PDF header may legally appear anywhere in the first
-                    # 1024 bytes, so search instead of requiring offset zero.
                     if first_chunk and b"%PDF-" not in chunk[:1024]:
                         raise HTTPException(
                             status_code=415, detail=f"{safe_name} is not a valid PDF"
