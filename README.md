@@ -57,7 +57,12 @@ KONVERTER_MAX_PAGES=2000          # reject larger uploads
 KONVERTER_SITE_URL=               # optional, hosting site, e.g. https://www.lawreform.vic.gov.au
 KONVERTER_SITE_NAME=              # optional, hosting site name
 KONVERTER_PAGE_URL_TEMPLATE=      # optional, e.g. https://…/publication/{slug}/
+KONVERTER_LOG_LEVEL=INFO          # DEBUG | INFO | WARNING | ERROR
 ```
+
+Pipeline logging (processing start/stage/completion, JSON-LD generation) uses
+only the Python standard library, so no extra install step is needed — it's
+covered by the base backend install above.
 
 ## Verify
 
