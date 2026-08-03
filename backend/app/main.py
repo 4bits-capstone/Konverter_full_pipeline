@@ -14,6 +14,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
 
 from .config import load_settings
+from .logging_utils import configure_logging
 from .media import pdf_page_count, render_pdf_region
 from .models import (
     ApprovalResult,
@@ -32,6 +33,7 @@ MAX_PDF_BYTES = 200 * 1024 * 1024
 MAX_DOCUMENTS_PER_UPLOAD = 5
 
 settings = load_settings()
+configure_logging(settings.log_level)
 settings.data_dir.mkdir(parents=True, exist_ok=True)
 store = LocalDocumentStore(settings.data_dir)
 processing = ProcessingManager(settings, store)

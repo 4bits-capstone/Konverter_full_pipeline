@@ -12,6 +12,7 @@ from typing import Any
 
 from .config import Settings
 from .exporter import build_accessible_html, build_json_ld, build_publication
+from .logging_utils import document_logger, sanitize_for_log
 from .media import render_pdf_region, render_pdf_regions, render_pdf_regions
 from .pipeline import LABEL_DISPLAY, KonverterPipeline, _plain_text_from_table
 from .storage import LocalDocumentStore
@@ -244,6 +245,9 @@ class ProcessingManager:
     def _set_stage(self, document_id: str, step: int, message: str) -> None:
         if self._is_cancelled(document_id):
             raise InterruptedError("Processing was stopped")
+        # message is a static, developer-authored description (never extracted
+        # document text), so it is safe to log as-is.
+        document_logger(__name__, document_id).info("stage %s: %s", step, message)
         record = self.store.get_record(document_id)
         self.store.update_record(
             document_id,
@@ -251,13 +255,16 @@ class ProcessingManager:
         )
 
     def _run(self, document_id: str) -> None:
+        log = document_logger(__name__, document_id)
         started = time.monotonic()
+        log.info("processing started")
         try:
             output = self.pipeline.process(
                 self.store.source_path(document_id),
                 lambda step, message: self._set_stage(document_id, step, message),
             )
             if self._is_cancelled(document_id):
+                log.info("processing stopped by user")
                 return
 
             actual_seconds = max(output.elapsed_seconds, time.monotonic() - started)
@@ -267,12 +274,19 @@ class ProcessingManager:
                 actual_seconds,
                 self.settings.baseline_startup_seconds,
             )
+            log.info(
+                "processing completed in %.1fs (pages=%s)",
+                actual_seconds,
+                record.get("pages", 0),
+            )
         except InterruptedError:
+            log.info("processing stopped by user")
             return
         except Exception as exc:
             record = self.store.get_record(document_id)
             if record["job"]["state"] == "idle":
                 return
+            log.error("processing failed: %s", sanitize_for_log(exc))
             self.store.update_record(
                 document_id,
                 job={
@@ -539,6 +553,7 @@ class WorkflowService:
             for figure, image_key, destination in pending_figures:
                 if destination in rendered:
                     figure["imageKey"] = image_key
+        document_logger(__name__, document_id).info("generating JSON-LD (Schema.org)")
         json_ld = build_json_ld(
             document_id,
             publication,

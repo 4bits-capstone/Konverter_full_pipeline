@@ -45,6 +45,7 @@ class Settings:
     site_url: str
     site_name: str
     page_url_template: str
+    log_level: str
 
 
 def load_settings() -> Settings:
@@ -77,4 +78,5 @@ def load_settings() -> Settings:
         site_url=os.getenv("KONVERTER_SITE_URL", "").strip().rstrip("/"),
         site_name=os.getenv("KONVERTER_SITE_NAME", "").strip(),
         page_url_template=os.getenv("KONVERTER_PAGE_URL_TEMPLATE", "").strip(),
+        log_level=os.getenv("KONVERTER_LOG_LEVEL", "INFO").strip().upper(),
     )
