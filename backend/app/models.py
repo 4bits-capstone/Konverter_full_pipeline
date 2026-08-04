@@ -49,6 +49,7 @@ ReviewKind = Literal["kv", "text", "table"]
 
 ReviewType = Literal[
     "caption",
+    "callout",
     "chapter_title",
     "document_index",
     "footnote",

@@ -10,13 +10,20 @@ from collections.abc import Callable
 from typing import Any
 
 from .config import Settings
+from .hierarchy_integration import apply_hierarchy, attach_hierarchy_metadata
 from .metadata_rules import empty_metadata_payload, extract_metadata_from_docling
+from .visual_structure import (
+    annotate_pdf_artifacts,
+    detect_callout_regions,
+    group_visual_callouts,
+)
 
 StageCallback = Callable[[int, str], None]
 
 
 LABEL_DISPLAY = {
     "caption": "Caption",
+    "callout": "Callout",
     "chapter_title": "Chapter title",
     "document_index": "Document index",
     "footnote": "Footnote",
@@ -39,6 +46,7 @@ LABEL_DISPLAY = {
 
 RAW_LABEL_MAP = {
     "caption": "caption",
+    "callout": "callout",
     "checkbox_selected": "form",
     "checkbox_unselected": "form",
     "document_index": "document_index",
@@ -55,6 +63,20 @@ RAW_LABEL_MAP = {
     "text": "text",
     "unspecified": "unspecified",
 }
+
+
+def _effective_raw_label(item: dict[str, Any]) -> str:
+    """Return the postprocessed label, restoring only hierarchy-backed headers."""
+    raw = str(item.get("label", "unspecified")).lower()
+    metadata = item.get("meta") or {}
+    original = str(metadata.get("konverter_original_label", "")).lower()
+    if (
+        raw == "text"
+        and original == "section_header"
+        and isinstance(metadata.get("hf__heading_level"), int)
+    ):
+        return "section_header"
+    return raw
 
 
 def _first_page(item: dict[str, Any]) -> int:
@@ -92,6 +114,8 @@ class HeadingResolver:
         self.chapter_contents_refs: set[str] = set()
         self.lower_level_by_size: dict[float, int] = {}
         self.h2_font_floor: float | None = None
+        self._hierarchy_base_level: int | None = None
+        self._pending_split_chapter_page: int | None = None
         # Last emitted heading level, used to prevent skipped levels
         # (e.g. an H4 directly after a chapter title) in the nested output.
         self._last_heading_level = 1
@@ -100,7 +124,7 @@ class HeadingResolver:
             self._build_lower_style_levels(all_items)
 
     def label_for(self, item: dict[str, Any]) -> str:
-        raw = str(item.get("label", "unspecified")).lower()
+        raw = _effective_raw_label(item)
         reference = str(item.get("self_ref", ""))
         text = str(item.get("text", "")).strip()
 
@@ -109,15 +133,27 @@ class HeadingResolver:
             return "title"
 
         if reference in self.chapter_title_refs or raw == "title":
-            self._select_chapter(text)
+            self._select_chapter(text, item)
             self._last_heading_level = 1
             return "chapter_title"
 
         if raw != "section_header":
             return RAW_LABEL_MAP.get(raw, "unspecified")
 
+        if self._pending_split_chapter_page is not None:
+            pending_page = self._pending_split_chapter_page
+            self._pending_split_chapter_page = None
+            if _first_page(item) == pending_page and text:
+                self.current_chapter_key = self._chapter_key(text)
+                self.current_outline = self.chapter_outlines.get(
+                    self.current_chapter_key, set()
+                )
+                self._last_heading_level = 1
+                return "chapter_title_continuation"
+
         chapter_key = self._chapter_key(text)
         if self.current_chapter_key and chapter_key == self.current_chapter_key:
+            self._set_hierarchy_base(item)
             self._last_heading_level = 1
             return "section_header_1"
         if chapter_key in self.current_outline:
@@ -127,18 +163,18 @@ class HeadingResolver:
         if not self.current_chapter_key and (
             self._is_numbered_chapter(text) or self._is_named_back_matter_chapter(text)
         ):
-            self._select_chapter(text)
+            self._select_chapter(text, item)
             self._last_heading_level = 1
             return "chapter_title"
         if self._is_numbered_chapter(text) and chapter_key != self.current_chapter_key:
-            self._select_chapter(text)
+            self._select_chapter(text, item)
             self._last_heading_level = 1
             return "chapter_title"
         if (
             self._is_named_back_matter_chapter(text)
             and chapter_key != self.current_chapter_key
         ):
-            self._select_chapter(text)
+            self._select_chapter(text, item)
             self._last_heading_level = 1
             return "chapter_title"
 
@@ -150,11 +186,33 @@ class HeadingResolver:
     def is_chapter_contents(self, reference: str) -> bool:
         return reference in self.chapter_contents_refs
 
-    def _select_chapter(self, text: str) -> None:
+    def _select_chapter(
+        self,
+        text: str,
+        item: dict[str, Any] | None = None,
+    ) -> None:
         self.current_chapter_key = self._chapter_key(text)
         self.current_outline = self.chapter_outlines.get(
             self.current_chapter_key, set()
         )
+        self._hierarchy_base_level = None
+        self._pending_split_chapter_page = (
+            _first_page(item)
+            if item is not None
+            and re.fullmatch(
+                r"chapter\s+\d+[.:)]?",
+                text.strip(),
+                re.IGNORECASE,
+            )
+            else None
+        )
+        if item is not None and _effective_raw_label(item) == "section_header":
+            self._set_hierarchy_base(item)
+
+    def _set_hierarchy_base(self, item: dict[str, Any]) -> None:
+        level = (item.get("meta") or {}).get("hf__heading_level")
+        if isinstance(level, int):
+            self._hierarchy_base_level = min(5, max(1, level))
 
     def _infer_lower_level(self, item: dict[str, Any]) -> int:
         text = str(item.get("text", "")).strip()
@@ -163,6 +221,15 @@ class HeadingResolver:
             return min(5, 2 + numbered.group(1).count("."))
 
         metadata = item.get("meta") or {}
+        hierarchy_level = metadata.get("hf__heading_level")
+        if isinstance(hierarchy_level, int):
+            if self._hierarchy_base_level is not None:
+                return min(
+                    5,
+                    max(2, hierarchy_level - self._hierarchy_base_level + 1),
+                )
+            return min(5, max(2, hierarchy_level))
+
         font_size = metadata.get("hf__heading_font_size")
         if isinstance(font_size, (int, float)):
             normalized_size = round(float(font_size), 3)
@@ -191,7 +258,7 @@ class HeadingResolver:
             if not title_item or reference == self.main_title_ref:
                 continue
 
-            raw_label = str(title_item.get("label", "")).lower()
+            raw_label = _effective_raw_label(title_item)
             title = str(title_item.get("text", "")).strip()
             chapter_key = self._chapter_key(title)
             title_page = self._item_page(title_item, all_items)
@@ -230,7 +297,7 @@ class HeadingResolver:
                 if candidate_page != title_page:
                     continue
 
-                raw_label = str(candidate.get("label", "")).lower()
+                raw_label = _effective_raw_label(candidate)
                 if raw_label in {"list", "form_area", "key_value_area", "group"}:
                     child_refs = [
                         str(child.get("$ref", ""))
@@ -273,9 +340,7 @@ class HeadingResolver:
             page = self._item_page(item, all_items)
             if page is not None and page > title_page + 2:
                 return False
-            if str(
-                item.get("label", "")
-            ).lower() == "section_header" and self._is_numbered_chapter(
+            if _effective_raw_label(item) == "section_header" and self._is_numbered_chapter(
                 str(item.get("text", ""))
             ):
                 return self._chapter_key(str(item.get("text", ""))) == chapter_key
@@ -291,7 +356,7 @@ class HeadingResolver:
         pending_page_ref: str | None = None
 
         for reference, item in candidates:
-            raw_label = str(item.get("label", "")).lower()
+            raw_label = _effective_raw_label(item)
             text = re.sub(r"\s+", " ", str(item.get("text", ""))).strip()
             if not text or raw_label not in {"list_item", "text"}:
                 pending_page_ref = None
@@ -328,7 +393,7 @@ class HeadingResolver:
             round(float(font_size), 3)
             for item in all_items.values()
             if (
-                str(item.get("label", "")).lower() == "section_header"
+                _effective_raw_label(item) == "section_header"
                 and self._chapter_key(str(item.get("text", ""))) in outline_keys
                 and isinstance(
                     font_size := (item.get("meta") or {}).get("hf__heading_font_size"),
@@ -339,7 +404,7 @@ class HeadingResolver:
         self.h2_font_floor = min(h2_sizes) if h2_sizes else None
         sizes: set[float] = set()
         for item in all_items.values():
-            if str(item.get("label", "")).lower() != "section_header":
+            if _effective_raw_label(item) != "section_header":
                 continue
             key = self._chapter_key(str(item.get("text", "")))
             if key in chapter_keys or key in outline_keys:
@@ -404,13 +469,20 @@ class HeadingResolver:
 
     @staticmethod
     def _is_numbered_chapter(value: str) -> bool:
-        return bool(re.match(r"^(?:chapter\s+)?\d+\.\s+\S", value, re.IGNORECASE))
+        return bool(
+            re.match(
+                r"^(?:chapter\s+\d+[.:)]?(?:\s+\S.*)?|\d+\.\s+\S)",
+                value.strip(),
+                re.IGNORECASE,
+            )
+        )
 
     @staticmethod
     def _is_named_back_matter_chapter(value: str) -> bool:
         return bool(
             re.fullmatch(
-                r"(?:appendices|bibliography|glossary|references|"
+                r"(?:appendix(?:\s+[a-z0-9ivxlcdm]+)?|appendices|"
+                r"bibliography|glossary|references|"
                 r"acknowledg(?:e)?ments)",
                 value.strip(),
                 re.IGNORECASE,
@@ -470,12 +542,19 @@ class KonverterPipeline:
         converter = self._get_docling_converter()
         with self._docling_lock:
             result = converter.convert(pdf_path)
+        hierarchy = apply_hierarchy(result, pdf_path)
         raw_document = result.document.export_to_dict()
+        attach_hierarchy_metadata(raw_document, hierarchy)
+        warnings = list(hierarchy.warnings)
+        warnings.extend(annotate_pdf_artifacts(raw_document, pdf_path))
+        callout_regions, callout_warnings = detect_callout_regions(pdf_path)
+        warnings.extend(callout_warnings)
         cluster_confidences = self._cluster_confidences(result)
         confidence_by_ref = self._confidence_by_reference(
             raw_document, cluster_confidences
         )
         blocks = self._blocks_from_document(raw_document, confidence_by_ref)
+        blocks = group_visual_callouts(blocks, callout_regions)
         confidence = getattr(result, "confidence", None)
         doc_confidence = {
             "layout_score": getattr(confidence, "layout_score", None),
@@ -485,7 +564,7 @@ class KonverterPipeline:
             "table_score": getattr(confidence, "table_score", None),
             "parse_score": getattr(confidence, "parse_score", None),
         }
-        return raw_document, blocks, doc_confidence, []
+        return raw_document, blocks, doc_confidence, warnings
 
     def _get_docling_converter(self) -> Any:
         if self._docling_converter is not None:
@@ -652,10 +731,7 @@ class KonverterPipeline:
                 if reference:
                     all_items[reference] = item
 
-        ordered_references = [
-            str(child.get("$ref", ""))
-            for child in document.get("body", {}).get("children", [])
-        ]
+        ordered_references = self._ordered_document_references(document, all_items)
         resolver = HeadingResolver(
             self._main_title_reference(all_items, ordered_references),
             all_items,
@@ -669,10 +745,15 @@ class KonverterPipeline:
             if not item or reference in consumed:
                 return
             consumed.add(reference)
-            raw_label = str(item.get("label", "unspecified")).lower()
+            raw_label = _effective_raw_label(item)
             children = [
                 str(child.get("$ref", "")) for child in item.get("children", [])
             ]
+
+            if (item.get("meta") or {}).get("konverter_exclude_from_output"):
+                for child in children:
+                    visit(child)
+                return
 
             if resolver.is_chapter_contents(reference):
                 consumed.update(child for child in children if child)
@@ -682,9 +763,18 @@ class KonverterPipeline:
                 child_items = [all_items.get(child) for child in children]
                 child_items = [child for child in child_items if child]
                 consumed.update(child for child in children if child)
-                list_texts = [
-                    str(child.get("text", "")).strip() for child in child_items
-                ]
+                list_entries = []
+                for child in child_items:
+                    value = str(child.get("text", "")).strip()
+                    marker = str(child.get("marker", "")).strip()
+                    list_entries.append(
+                        {
+                            "text": value,
+                            "marker": marker,
+                            "enumerated": bool(child.get("enumerated")),
+                        }
+                    )
+                list_texts = [entry["text"] for entry in list_entries]
                 confidences = [
                     confidence_by_ref.get(str(child.get("self_ref", "")))
                     for child in child_items
@@ -697,9 +787,18 @@ class KonverterPipeline:
                         "id": reference,
                         "label": "list",
                         "text": "\n".join(
-                            f"• {value}" for value in list_texts if value
+                            (
+                                f"{entry['marker']} {entry['text']}".strip()
+                                if entry["marker"]
+                                else f"• {entry['text']}"
+                            )
+                            for entry in list_entries
+                            if entry["text"]
                         ),
                         "list_items": [value for value in list_texts if value],
+                        "list_entries": [
+                            entry for entry in list_entries if entry["text"]
+                        ],
                         "page": _first_page(child_items[0]) if child_items else 1,
                         "confidence": min(valid_confidences)
                         if valid_confidences
@@ -768,6 +867,9 @@ class KonverterPipeline:
                     "source_bounds": self._combined_source_bounds(document, [item]),
                 }
             )
+            if raw_label in {"section_header", "title"}:
+                for child in children:
+                    visit(child)
 
         for child in document.get("body", {}).get("children", []):
             visit(str(child.get("$ref", "")))
@@ -792,6 +894,7 @@ class KonverterPipeline:
             for index, block in enumerate(blocks)
             if block["label"] not in {"header", "footer"} or block.get("text")
         ]
+        ordered_blocks = self._merge_split_chapter_titles(ordered_blocks)
         if not any(block["label"] == "title" for block in ordered_blocks):
             source_name = (
                 str(document.get("name", "Document")).replace("_", " ").strip()
@@ -810,6 +913,65 @@ class KonverterPipeline:
             for index, block in enumerate(ordered_blocks):
                 block["order"] = index
         return ordered_blocks
+
+    @staticmethod
+    def _merge_split_chapter_titles(
+        blocks: list[dict[str, Any]],
+    ) -> list[dict[str, Any]]:
+        """Join ``Chapter N`` and its same-page subtitle into one section title."""
+        merged: list[dict[str, Any]] = []
+        for block in blocks:
+            if block.get("label") != "chapter_title_continuation":
+                merged.append(block)
+                continue
+            previous = merged[-1] if merged else None
+            if (
+                previous is not None
+                and previous.get("label") == "chapter_title"
+                and int(previous.get("page", 1)) == int(block.get("page", 1))
+            ):
+                number = str(previous.get("text", "")).rstrip(" .:–—-")
+                subtitle = str(block.get("text", "")).strip()
+                previous["text"] = f"{number}: {subtitle}" if subtitle else number
+                previous["confidence"] = min(
+                    value
+                    for value in (
+                        previous.get("confidence"),
+                        block.get("confidence"),
+                        1.0,
+                    )
+                    if value is not None
+                )
+                continue
+            block["label"] = "section_header_2"
+            merged.append(block)
+        for index, block in enumerate(merged):
+            block["order"] = index
+        return merged
+
+    @staticmethod
+    def _ordered_document_references(
+        document: dict[str, Any],
+        all_items: dict[str, dict[str, Any]],
+    ) -> list[str]:
+        """Return depth-first reading order after hierarchy reconstruction."""
+        ordered: list[str] = []
+        seen: set[str] = set()
+
+        def collect(reference: str) -> None:
+            if not reference or reference in seen:
+                return
+            seen.add(reference)
+            ordered.append(reference)
+            item = all_items.get(reference)
+            if not item:
+                return
+            for child in item.get("children", []):
+                collect(str(child.get("$ref", "")))
+
+        for child in document.get("body", {}).get("children", []):
+            collect(str(child.get("$ref", "")))
+        return ordered
 
     @classmethod
     def _combined_source_bounds(
@@ -866,7 +1028,9 @@ class KonverterPipeline:
             item = all_items.get(reference)
             if not item:
                 continue
-            raw_label = str(item.get("label", "")).lower()
+            if (item.get("meta") or {}).get("konverter_exclude_from_output"):
+                continue
+            raw_label = _effective_raw_label(item)
             if raw_label not in {"title", "section_header"}:
                 continue
             page = _first_page(item)

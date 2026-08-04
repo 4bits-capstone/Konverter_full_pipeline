@@ -489,6 +489,7 @@ export function KonverterProvider({ children }: PropsWithChildren) {
       (item) =>
         item.type === "table" ||
         item.type === "document_index" ||
+        item.type === "callout" ||
         item.type === "picture",
     );
     if (hasVisualFlags) keys.push("tables");

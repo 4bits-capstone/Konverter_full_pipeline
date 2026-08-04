@@ -102,6 +102,48 @@ def test_split_page_number_and_heading_on_chapter_page_still_becomes_h2():
     assert resolver.label_for(items["#/texts/8"]) == "section_header_3"
 
 
+def test_hierarchical_postprocessor_levels_are_rebased_inside_a_chapter():
+    items = {
+        "#/texts/0": item("#/texts/0", "title", "Example report", 1),
+        "#/texts/1": item("#/texts/1", "title", "Current law", 10),
+        "#/texts/2": item("#/texts/2", "section_header", "2. Current law", 11),
+        "#/texts/3": item("#/texts/3", "section_header", "Scope", 11),
+        "#/texts/4": item("#/texts/4", "section_header", "Exceptions", 12),
+    }
+    items["#/texts/2"]["meta"] = {"hf__heading_level": 2}
+    items["#/texts/3"]["meta"] = {"hf__heading_level": 3}
+    items["#/texts/4"]["meta"] = {"hf__heading_level": 4}
+    order = list(items)
+    resolver = HeadingResolver("#/texts/0", items, order)
+
+    assert resolver.label_for(items["#/texts/1"]) == "chapter_title"
+    assert resolver.label_for(items["#/texts/2"]) == "section_header_1"
+    assert resolver.label_for(items["#/texts/3"]) == "section_header_2"
+    assert resolver.label_for(items["#/texts/4"]) == "section_header_3"
+
+
+def test_split_chapter_number_and_subtitle_form_one_chapter_heading():
+    items = {
+        "#/texts/0": item("#/texts/0", "title", "Example report", 1),
+        "#/texts/1": item("#/texts/1", "section_header", "Chapter 2", 19),
+        "#/texts/2": item(
+            "#/texts/2",
+            "section_header",
+            "Residential Tenancies in Victoria",
+            19,
+        ),
+        "#/texts/3": item("#/texts/3", "section_header", "Private rental market", 19),
+    }
+    resolver = HeadingResolver("#/texts/0", items, list(items))
+
+    assert resolver.label_for(items["#/texts/1"]) == "chapter_title"
+    assert (
+        resolver.label_for(items["#/texts/2"])
+        == "chapter_title_continuation"
+    )
+    assert resolver.label_for(items["#/texts/3"]) == "section_header_2"
+
+
 def test_confidence_matching_uses_only_clusters_from_the_same_page():
     document = {
         "pages": {
@@ -197,6 +239,71 @@ def test_cataloguing_title_stops_before_merged_publication_details(
     assert payload["metadata"]["title"] == "Committals"
     assert payload["fields"]["title"]["score"] == 0.98
     assert "ISBN" not in payload["metadata"]["title"]
+
+
+def test_bail_act_cataloguing_style_beats_decorative_cover_fragments(
+    monkeypatch,
+    tmp_path,
+):
+    monkeypatch.setenv("KONVERTER_DATA_DIR", str(tmp_path))
+    document = {
+        "texts": [
+            item(
+                "#/texts/0",
+                "text",
+                "www.lawreform.vic.gov.au REVIEW OF THE BAIL ACT",
+                1,
+            ),
+            item("#/texts/1", "text", "Final Report VIEW OF", 1),
+            item("#/texts/2", "text", "E BAIL ACT", 1),
+            item(
+                "#/texts/3",
+                "text",
+                "Review of the Bail Act : Final Report.",
+                2,
+            ),
+            item("#/texts/4", "text", "©August 2007 Victorian Law Reform Commission.", 2),
+        ]
+    }
+
+    payload = extract_metadata_from_docling(
+        document,
+        tmp_path / "Review_of_the_Bail_Act_Report_Web.pdf",
+        load_settings(),
+    )
+
+    assert payload["metadata"]["title"] == "Review of the Bail Act"
+    assert payload["metadata"]["published_date"] == "2007-08"
+
+
+def test_residential_cataloguing_style_is_title_cased(monkeypatch, tmp_path):
+    monkeypatch.setenv("KONVERTER_DATA_DIR", str(tmp_path))
+    document = {
+        "texts": [
+            item(
+                "#/texts/0",
+                "section_header",
+                "Residential Tenancy Databases Report",
+                1,
+            ),
+            item(
+                "#/texts/1",
+                "text",
+                "National Library of Australia Residential tenancy databases: report.",
+                2,
+            ),
+            item("#/texts/2", "text", "© March 2006 Victorian Law Reform Commission.", 2),
+        ]
+    }
+
+    payload = extract_metadata_from_docling(
+        document,
+        tmp_path / "ResidentialTenancyDatabases_FinalReport.pdf",
+        load_settings(),
+    )
+
+    assert payload["metadata"]["title"] == "Residential Tenancy Databases"
+    assert payload["metadata"]["published_date"] == "2006-03"
 
 
 def test_docling_device_can_be_configured_for_cuda(monkeypatch, tmp_path):

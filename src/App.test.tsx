@@ -45,8 +45,8 @@ describe('Konverter frontend', () => {
 
     expect(await screen.findByRole('radiogroup', { name: 'Choose document to review' })).toBeInTheDocument()
     expect(screen.getAllByRole('radio')).toHaveLength(2)
-    expect(screen.getByText('first-report.pdf')).toBeInTheDocument()
-    expect(screen.getByText('second-report.pdf')).toBeInTheDocument()
+    expect(screen.getAllByText('first-report.pdf')).not.toHaveLength(0)
+    expect(screen.getAllByText('second-report.pdf')).not.toHaveLength(0)
   })
 
   it('limits the active queue to five documents', async () => {

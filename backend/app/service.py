@@ -392,6 +392,7 @@ class WorkflowService:
             raise KeyError(item["block_id"])
 
         target_type = changes.get("type") or item["type"]
+        original_type = item["type"]
         if "type" in changes and changes["type"] is not None:
             block["label"] = target_type
             item["type"] = target_type
@@ -399,6 +400,14 @@ class WorkflowService:
                 target_type, target_type
             )
             item["title"] = f"{item['label']} structure needs confirmation"
+
+        if target_type != "callout":
+            block.pop("callout_title", None)
+            block.pop("callout_kind", None)
+            block.pop("callout_blocks", None)
+        elif original_type != "callout":
+            block["callout_title"] = "Highlighted information"
+            block["callout_kind"] = "information"
 
         target_is_table = target_type in {"table", "document_index"}
         if target_is_table:
@@ -410,6 +419,7 @@ class WorkflowService:
             block["table_data"] = table
             block["text"] = _plain_text_from_table(table)
             block.pop("list_items", None)
+            block.pop("list_entries", None)
             item["kind"] = "table"
             item["corrected_table"] = table
             item["corrected_text"] = None
@@ -425,6 +435,7 @@ class WorkflowService:
             block["text"] = text
             block.pop("table_data", None)
             block["list_items"] = list_items
+            block.pop("list_entries", None)
             item["kind"] = "text"
             item["corrected_text"] = text
             item["corrected_table"] = None
@@ -441,6 +452,9 @@ class WorkflowService:
             block["text"] = text
             block.pop("table_data", None)
             block.pop("list_items", None)
+            block.pop("list_entries", None)
+            if target_type == "callout" and changes.get("corrected_text") is not None:
+                block.pop("callout_blocks", None)
             item["kind"] = "text"
             item["corrected_text"] = text
             item["corrected_table"] = None

@@ -128,8 +128,12 @@ describe('PreviewPage', () => {
     expect(jsonLdScript).toHaveAttribute('type', 'application/ld+json')
     expect(JSON.parse(jsonLdScript?.textContent ?? '{}')).toMatchObject({
       '@context': 'https://schema.org',
-      '@type': 'Report',
-      name: 'Accessibility Standards Report',
+      '@graph': expect.arrayContaining([
+        expect.objectContaining({
+          '@type': 'Report',
+          name: 'Accessibility Standards Report',
+        }),
+      ]),
     })
 
     fireEvent.click(screen.getByRole('link', { name: 'Purpose' }))

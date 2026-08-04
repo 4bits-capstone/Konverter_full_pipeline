@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import re
 from pathlib import Path
-from collections.abc import Callable
+from collections.abc import Callable, Iterable
 from typing import Any
 
 from .config import Settings
@@ -50,6 +50,8 @@ def pages_from_docling(document: dict[str, Any]) -> list[dict[str, Any]]:
     """Build rule input from the existing Docling result without reconverting."""
     pages: dict[int, list[str]] = {}
     for item in document.get("texts") or []:
+        if (item.get("meta") or {}).get("konverter_exclude_from_output"):
+            continue
         page_number = _first_page(item)
         if page_number is None or not FIRST_PAGE <= page_number <= LAST_PAGE:
             continue
@@ -96,6 +98,18 @@ def metadata_field(
 
 def normalise_title(title: Any) -> str:
     value = clean_line(title)
+    value = re.sub(
+        r"^.*?(?:https?://|www\.)\S+\s+",
+        "",
+        value,
+        flags=re.IGNORECASE,
+    )
+    value = re.sub(
+        r"^National Library of Australia(?:\s+Cataloguing-in-Publication)?\s*",
+        "",
+        value,
+        flags=re.IGNORECASE,
+    )
     value = re.split(
         r"\s*/\s*Victorian Law Reform Commission\b",
         value,
@@ -117,7 +131,11 @@ def normalise_title(title: Any) -> str:
     )
     value = re.sub(r"\s+([:;,.])", r"\1", value).strip(" .:;|-–—")
     value = re.sub(r"\b([A-Z])\s+([a-z]{3,})\b", r"\1\2", value)
-    if value.isupper() or re.search(r"[a-z][A-Z]\b", value):
+    if (
+        value.isupper()
+        or re.search(r"[a-z][A-Z]\b", value)
+        or (len(value.split()) <= 12 and value == value.capitalize())
+    ):
         value = value.title()
 
     words = value.split()
@@ -154,95 +172,151 @@ def _filename_title(pdf_path: Path) -> str:
     return normalise_title(title)
 
 
+def _pdf_metadata(pdf_path: Path) -> dict[str, str]:
+    try:
+        import fitz
+
+        with fitz.open(pdf_path) as document:
+            return {
+                str(key): clean_line(value)
+                for key, value in (document.metadata or {}).items()
+                if clean_line(value)
+            }
+    except Exception:
+        return {}
+
+
+def _valid_title_candidate(value: str) -> bool:
+    words = value.split()
+    if not (2 <= len(words) <= 18 and 5 <= len(value) <= 180):
+        return False
+    return not bool(
+        re.search(
+            r"(?:microsoft\s+word|\.doc\b|@|www\.|isbn|copyright|"
+            r"\bthis report\b|\breflects the law\b|\bestablished under\b|"
+            r"\bfinal report view\b)",
+            value,
+            re.IGNORECASE,
+        )
+    )
+
+
 def extract_title(
     pages: list[dict[str, Any]],
     pdf_path: Path,
 ) -> dict[str, Any]:
     lines = list(page_lines(pages))
-    for position, (page_number, line) in enumerate(lines):
-        match = re.match(
-            r"(?:title\s*:\s*)?(.+?)(?::\s*report)?\s*/\s*"
+    candidates: list[dict[str, Any]] = []
+
+    def add(
+        value: Any,
+        page_number: int | None,
+        method: str,
+        score: float,
+        position: int = 999,
+    ) -> None:
+        title = normalise_title(value)
+        if _valid_title_candidate(title):
+            candidates.append(
+                {
+                    "title": title,
+                    "page": page_number,
+                    "method": method,
+                    "score": score,
+                    "position": position,
+                }
+            )
+
+    pdf_title = _pdf_metadata(pdf_path).get("title", "")
+    if pdf_title:
+        add(pdf_title, 1, "pdf_metadata_title", 12.5, 0)
+
+    for position, (page_number, line) in enumerate(lines[:120]):
+        catalogued = re.match(
+            r"(?:title\s*:\s*)?(.+?)(?::\s*(?:final\s+)?report)?\s*/\s*"
             r"Victorian Law Reform Commission\b",
             line,
             re.IGNORECASE,
         )
-        if match:
-            title = normalise_title(match.group(1))
-            if title:
-                return metadata_field(
-                    title,
-                    page_number,
-                    "cataloguing_title_rule",
-                    0.98,
-                )
+        if catalogued:
+            add(catalogued.group(1), page_number, "cataloguing_title_rule", 16, position)
 
-        match = re.match(r"title\s*:\s*(.+)$", line, re.IGNORECASE)
-        if match:
-            title = normalise_title(match.group(1))
-            if title:
-                return metadata_field(
-                    title,
-                    page_number,
-                    "labelled_title_rule",
-                    0.96,
-                )
+        labelled = re.match(r"title\s*:\s*(.+)$", line, re.IGNORECASE)
+        if labelled:
+            add(labelled.group(1), page_number, "labelled_title_rule", 15, position)
 
-        if re.fullmatch(r"title\s*:?", line, re.IGNORECASE):
-            next_line = lines[position + 1] if position + 1 < len(lines) else None
-            if next_line and next_line[0] == page_number:
-                title = normalise_title(next_line[1])
-                if title:
-                    return metadata_field(
-                        title,
-                        page_number,
-                        "labelled_title_rule",
-                        0.96,
-                    )
-
-    ignore = re.compile(
-        rf"^(?:published by|contents?|warning|commission|"
-        rf"victorian law reform commission|report\s+{MONTHS}|"
-        rf"a community law reform project|gpo\s*box|level\s+\d+|"
-        rf"telephone|freecall|facsimile|email|web|www\.|chair|commissioners?)\b",
-        re.IGNORECASE,
-    )
-    best: tuple[int, int, int, str] | None = None
-    for position, (page_number, line) in enumerate(lines[:80]):
-        if ignore.search(line) or len(line) < 5 or len(line) > 180:
-            continue
-        if re.search(
-            r"(?:@|www\.|\.gov|copyright|ISBN|Series:)",
+        cip_line = re.sub(
+            r"^National Library of Australia(?:\s+Cataloguing-in-Publication)?\s*",
+            "",
             line,
+            flags=re.IGNORECASE,
+        )
+        report_match = re.fullmatch(
+            r"(.+?)\s*:\s*(?:final\s+)?report\.?",
+            cip_line,
             re.IGNORECASE,
-        ):
-            continue
+        )
+        if report_match:
+            add(report_match.group(1), page_number, "cataloguing_report_title_rule", 15, position)
+        else:
+            trailing_report = re.fullmatch(
+                r"(.+?)\s+(?:final\s+)?report\.?",
+                cip_line,
+                re.IGNORECASE,
+            )
+            if trailing_report:
+                add(trailing_report.group(1), page_number, "cover_report_title_rule", 11.5, position)
 
-        score = 4 if position < 12 else 0
-        if re.search(r"\b(?:final\s+)?report(?:\s+\d+)?\b", line, re.IGNORECASE):
-            score += 4
-        if 2 <= len(line.split()) <= 14:
-            score += 2
-        if re.search(r"\b(?:the|of|and|in|for|act|justice|law)\b", line, re.IGNORECASE):
-            score += 1
+        contact_title = re.search(
+            r"(?:https?://|www\.)\S+\s+([A-Z][A-Z\s'’&-]{5,})$",
+            line,
+        )
+        if contact_title:
+            add(contact_title.group(1), page_number, "cover_title_after_contact_rule", 13, position)
 
-        title = normalise_title(line)
-        if len(title.split()) < 2:
-            continue
-        candidate = (score, -position, page_number, title)
-        if best is None or candidate > best:
-            best = candidate
+        letters = [character for character in line if character.isalpha()]
+        uppercase_ratio = (
+            sum(character.isupper() for character in letters) / len(letters)
+            if letters
+            else 0
+        )
+        if uppercase_ratio >= 0.86 and 2 <= len(line.split()) <= 16:
+            add(line, page_number, "cover_uppercase_title_rule", 10.5, position)
 
-    if best and best[0] >= 5:
-        chosen = best[3].casefold()
-        pages_with_title = {
-            page_number
-            for page_number, line in lines
-            if chosen and chosen in normalise_title(line).casefold()
-        }
-        repeats = len(pages_with_title)
-        score = 0.82 if repeats <= 1 else min(0.93, 0.86 + 0.03 * (repeats - 1))
-        field = metadata_field(best[3], best[2], "cover_title_rule", score)
-        field["corroboration"] = f"seen on {repeats} of the first {LAST_PAGE} pages"
+    if candidates:
+        for candidate in candidates:
+            key = candidate["title"].casefold()
+            matched_pages = {
+                page_number
+                for page_number, line in lines
+                if key and key in normalise_title(line).casefold()
+            }
+            candidate["matches"] = len(matched_pages)
+            candidate["score"] += min(3, len(matched_pages)) * 0.7
+            if candidate["page"] == 1:
+                candidate["score"] += 0.5
+            candidate["score"] -= min(candidate["position"], 60) * 0.005
+
+        best = max(candidates, key=lambda candidate: candidate["score"])
+        base_confidence = {
+            "cataloguing_title_rule": 0.98,
+            "labelled_title_rule": 0.97,
+            "cataloguing_report_title_rule": 0.97,
+            "pdf_metadata_title": 0.96,
+            "cover_title_after_contact_rule": 0.94,
+            "cover_report_title_rule": 0.91,
+            "cover_uppercase_title_rule": 0.88,
+        }.get(best["method"], 0.86)
+        confidence = min(0.99, base_confidence + 0.01 * max(0, best["matches"] - 1))
+        field = metadata_field(
+            best["title"],
+            best["page"],
+            best["method"],
+            confidence,
+        )
+        field["corroboration"] = (
+            f"title matched {best['matches']} time(s) in the first {LAST_PAGE} pages"
+        )
         return field
 
     fallback = _filename_title(pdf_path)
@@ -254,7 +328,10 @@ def extract_title(
     )
 
 
-def extract_publisher(pages: list[dict[str, Any]]) -> dict[str, Any]:
+def extract_publisher(
+    pages: list[dict[str, Any]],
+    pdf_path: Path | None = None,
+) -> dict[str, Any]:
     for page_number, line in page_lines(pages):
         match = re.search(
             r"\bpublished by\s+(?:the\s+)?(.+)$",
@@ -299,6 +376,11 @@ def extract_publisher(pages: list[dict[str, Any]]) -> dict[str, Any]:
         )
         field["corroboration"] = f"organisation name found {occurrences} time(s)"
         return field
+
+    if pdf_path is not None:
+        author = _pdf_metadata(pdf_path).get("author", "")
+        if re.search(r"\b(?:commission|department|ministry|government)\b", author, re.IGNORECASE):
+            return metadata_field(author, 1, "pdf_metadata_author_rule", 0.76)
 
     return metadata_field(None, None, "not_found", 0.0)
 
@@ -367,6 +449,20 @@ def extract_date(
                     confidence,
                 )
 
+    subject = _pdf_metadata(pdf_path).get("subject", "")
+    subject_match = re.search(
+        rf"\b((?:\d{{1,2}}\s+)?{MONTHS}\s+\d{{4}})\b",
+        subject,
+        re.IGNORECASE,
+    )
+    if subject_match:
+        return metadata_field(
+            _normalise_date(subject_match.group(1)),
+            1,
+            "pdf_metadata_subject_date_rule",
+            0.88,
+        )
+
     for page_number, line in lines:
         match = re.search(r"©[^\n]*?\b((?:19|20)\d{2})\b", line)
         if match:
@@ -428,7 +524,9 @@ def extract_citations(pages: list[dict[str, Any]]) -> dict[str, Any]:
 
     def add(value: str, page_number: int, kind: str) -> None:
         cleaned = re.sub(r"\s+", " ", value).strip(" .;,")
-        key = cleaned.casefold()
+        if kind == "legislation":
+            cleaned = re.sub(r"^The\s+", "", cleaned, flags=re.IGNORECASE)
+        key = re.sub(r"[^a-z0-9]", "", cleaned.casefold())
         if cleaned and key not in seen:
             seen.add(key)
             citations.append(
@@ -570,7 +668,7 @@ def extract_metadata_from_docling(
     return _payload(
         {
             "title": extract_title(pages, pdf_path),
-            "publisher": extract_publisher(pages),
+            "publisher": extract_publisher(pages, pdf_path),
             "published_date": extract_date(pages, pdf_path),
             "jurisdiction": extract_jurisdiction(pages),
             "citations": extract_citations(pages),

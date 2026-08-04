@@ -19,6 +19,7 @@ dependencies = [
 [project.optional-dependencies]
 docling = [
   "docling>=2.60,<3",
+  "docling-hierarchical-pdf>=0.1.8,<0.2",
 ]
 dev = [
   "httpx>=0.28,<1",

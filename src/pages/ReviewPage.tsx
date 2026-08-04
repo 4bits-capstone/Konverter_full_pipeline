@@ -87,6 +87,12 @@ const structureLabels: Array<{
     description: "Text identifying or explaining a table, picture, or figure.",
   },
   {
+    value: "callout",
+    label: "Callout",
+    description:
+      "A visually bounded case study, information panel, recommendation box, or similar highlighted passage.",
+  },
+  {
     value: "document_index",
     label: "Document index",
     description: "A table of contents or document index.",

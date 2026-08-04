@@ -1844,6 +1844,58 @@
   line-height: 1.72;
 }
 
+.docling-callout {
+  margin: 28px 0;
+  overflow: hidden;
+  border: 1px solid #c7c9cc;
+  background: #efedef;
+  color: var(--ink);
+}
+
+.docling-callout > h3 {
+  margin: 0;
+  padding: 11px 18px;
+  background: #c8c8c8;
+  color: #111;
+  font: 700 17px/1.3 "Raleway", sans-serif;
+}
+
+.docling-callout-content {
+  padding: 18px 22px 8px;
+}
+
+.docling-callout-content > :first-child {
+  margin-top: 0;
+}
+
+.docling-callout--case-study > h3 {
+  background: transparent;
+  color: #68656a;
+  font-style: italic;
+  font-weight: 600;
+}
+
+.docling-callout--recommendations {
+  border-color: #111;
+  background: #efefef;
+}
+
+.docling-callout--recommendations > h3 {
+  background: #050505;
+  color: #fff;
+  letter-spacing: 0.03em;
+  text-transform: uppercase;
+}
+
+.docling-callout--recommendations ol {
+  padding-left: 2.25rem;
+}
+
+.docling-callout--recommendations li {
+  margin-bottom: 1rem;
+  padding-left: 0.35rem;
+}
+
 .docling-numbered-group {
   margin-bottom: 8px;
 }
@@ -2860,6 +2912,12 @@
   background: #fff0de;
   border-color: #e9c394;
   color: #7a4a0b;
+}
+
+.structure-chip[data-label="callout"] {
+  background: #ece8df;
+  border-color: #c8b997;
+  color: #5f4a1f;
 }
 
 .structure-chip[data-label="footnote"] {

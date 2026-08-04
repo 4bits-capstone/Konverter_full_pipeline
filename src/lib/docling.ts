@@ -11,7 +11,7 @@ export interface DoclingHeadingBlock {
   type: 'heading'
   id: string
   text: string
-  level: 2 | 3 | 4 | 5
+  level: 1 | 2 | 3 | 4 | 5
   page?: number
 }
 
@@ -26,6 +26,16 @@ export interface DoclingListBlock {
   type: 'list'
   style: 'unordered' | 'ordered' | 'numbered-paragraphs'
   items: Array<{ text: string; marker?: string }>
+  start?: number
+  page?: number
+}
+
+export interface DoclingCalloutBlock {
+  type: 'callout'
+  id: string
+  title: string
+  variant: 'case-study' | 'information' | 'recommendations'
+  blocks: DoclingBlock[]
   page?: number
 }
 
@@ -76,6 +86,7 @@ export type DoclingBlock =
   | DoclingHeadingBlock
   | DoclingParagraphBlock
   | DoclingListBlock
+  | DoclingCalloutBlock
   | DoclingTableBlock
   | DoclingFigureBlock
   | DoclingCaptionBlock

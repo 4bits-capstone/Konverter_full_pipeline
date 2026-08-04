@@ -40,6 +40,24 @@ npm run dev
 
 Open `http://localhost:5173`. API documentation is at `http://localhost:8000/docs`.
 
+## Heading hierarchy and visual structure
+
+The Docling install also includes
+[`docling-hierarchical-pdf`](https://github.com/krrome/docling-hierarchical-pdf).
+Konverter runs its bookmark/numbering/style resolver before building review
+blocks, then maps the resolved structure into the application contract:
+
+- `Title`: one document title
+- `Chapter title`: the top-level preview/accessible-HTML section
+- `H1`–`H5`: headings within that section
+- `Callout`: shaded case studies, information panels, and recommendation boxes
+
+The included postprocessor is a patched 0.1.8-compatible implementation. It
+limits numbered list-item promotion to short heading candidates, reconstructs
+the parent tree in one pass, and keeps headers/footers outside the content tree.
+Large, low-contrast, rotated, or repeated decorative PDF text is filtered before
+review and export so chapter-number watermarks are not treated as content.
+
 ## Confidence settings
 
 ```dotenv

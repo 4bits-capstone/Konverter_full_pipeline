@@ -7,7 +7,9 @@ import type {
 } from '../lib/docling'
 
 function Heading({ block }: { block: DoclingHeadingBlock }) {
-  if (block.level === 2) return <h2 id={block.id}>{block.text}</h2>
+  // The reader's chapter title is its single H1, so resolved H1/H2 content
+  // both begin at the accessible H2 level rather than falling through to H6.
+  if (block.level <= 2) return <h2 id={block.id}>{block.text}</h2>
   if (block.level === 3) return <h3 id={block.id}>{block.text}</h3>
   if (block.level === 4) return <h4 id={block.id}>{block.text}</h4>
   if (block.level === 5) return <h5 id={block.id}>{block.text}</h5>
@@ -79,8 +81,29 @@ function ContentBlock({
 
     const items = block.items.map((item, index) => <li key={`${item.text}-${index}`}>{item.text}</li>)
     return block.style === 'ordered'
-      ? <ol className="reader-source-list">{items}</ol>
+      ? <ol className="reader-source-list" start={block.start}>{items}</ol>
       : <ul className="reader-source-list">{items}</ul>
+  }
+
+  if (block.type === 'callout') {
+    const titleId = `${block.id}-title`
+    return (
+      <aside
+        className={`docling-callout docling-callout--${block.variant}`}
+        aria-labelledby={titleId}
+      >
+        <h3 id={titleId}>{block.title}</h3>
+        <div className="docling-callout-content">
+          {block.blocks.map((child, index) => (
+            <ContentBlock
+              block={child}
+              figureUrl={figureUrl}
+              key={`${child.type}-${index}`}
+            />
+          ))}
+        </div>
+      </aside>
+    )
   }
 
   if (block.type === 'table') {

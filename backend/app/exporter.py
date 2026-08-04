@@ -217,6 +217,101 @@ def _reader_sections(sections: list[dict[str, Any]]) -> list[dict[str, Any]]:
     ]
 
 
+def _list_publication_blocks(
+    block: dict[str, Any],
+    page: int,
+) -> list[dict[str, Any]]:
+    """Preserve ordered markers and numbered paragraphs from Docling lists."""
+    entries = block.get("list_entries") or [
+        {"text": value, "marker": "", "enumerated": False}
+        for value in (block.get("list_items") or _split_lines(str(block.get("text", ""))))
+    ]
+    output: list[dict[str, Any]] = []
+    pending: list[dict[str, str]] = []
+    pending_style: str | None = None
+    pending_start: int | None = None
+
+    def flush() -> None:
+        nonlocal pending_style, pending_start
+        if not pending:
+            return
+        output.append(
+            {
+                "type": "list",
+                "style": pending_style or "unordered",
+                "items": list(pending),
+                "start": pending_start,
+                "page": page,
+            }
+        )
+        pending.clear()
+        pending_style = None
+        pending_start = None
+
+    for entry in entries:
+        text = re.sub(r"^[•\-–·]\s*", "", str(entry.get("text", ""))).strip()
+        marker = str(entry.get("marker", "")).strip()
+        enumerated = bool(entry.get("enumerated")) or bool(
+            re.fullmatch(r"\d+[.)]", marker)
+        )
+        numbered_paragraph = re.match(r"^(\d+(?:\.\d+)+)\s+(.+)$", text, re.DOTALL)
+        if numbered_paragraph and not marker:
+            flush()
+            output.append(
+                {
+                    "type": "paragraph",
+                    "text": numbered_paragraph.group(2),
+                    "number": numbered_paragraph.group(1),
+                    "page": page,
+                }
+            )
+            continue
+        style = "ordered" if enumerated else "unordered"
+        if pending and style != pending_style:
+            flush()
+        pending_style = style
+        if style == "ordered" and pending_start is None:
+            marker_number = re.match(r"(\d+)", marker)
+            pending_start = int(marker_number.group(1)) if marker_number else 1
+        if text:
+            pending.append({"text": text, "marker": marker})
+    flush()
+    return output
+
+
+def _callout_publication_content(
+    block: dict[str, Any],
+    page: int,
+) -> list[dict[str, Any]]:
+    output: list[dict[str, Any]] = []
+    children = block.get("callout_blocks") or []
+    if not children:
+        return [
+            {"type": "paragraph", "text": value.strip(), "page": page}
+            for value in re.split(r"\n\s*\n", str(block.get("text", "")))
+            if value.strip()
+        ]
+    for child in children:
+        label = str(child.get("label", "text"))
+        child_page = int(child.get("page", page))
+        text = str(child.get("text", "")).strip()
+        if label in {"list", "list_item"}:
+            output.extend(_list_publication_blocks(child, child_page))
+        elif label == "formula":
+            output.append({"type": "formula", "text": text, "page": child_page})
+        elif text and not label.startswith("section_header_"):
+            numbered = re.match(r"^(\d+(?:\.\d+)+)\s+(.+)$", text, re.DOTALL)
+            output.append(
+                {
+                    "type": "paragraph",
+                    "text": numbered.group(2) if numbered else text,
+                    "number": numbered.group(1) if numbered else None,
+                    "page": child_page,
+                }
+            )
+    return output
+
+
 def build_publication(
     blocks: list[dict[str, Any]],
     record: dict[str, Any],
@@ -374,40 +469,26 @@ def build_publication(
             )
             continue
 
+        if label == "callout":
+            current["blocks"].append(
+                {
+                    "type": "callout",
+                    "id": _unique_slug(
+                        f"callout-{block.get('callout_title') or len(current['blocks']) + 1}",
+                        counts,
+                    ),
+                    "title": str(
+                        block.get("callout_title") or "Highlighted information"
+                    ),
+                    "variant": str(block.get("callout_kind") or "information"),
+                    "blocks": _callout_publication_content(block, page),
+                    "page": page,
+                }
+            )
+            continue
+
         if label in {"list", "list_item"}:
-            list_items = block.get("list_items") or _split_lines(text)
-            pending_list_items: list[str] = []
-
-            def flush_pending_list() -> None:
-                if pending_list_items:
-                    current["blocks"].append(
-                        {
-                            "type": "list",
-                            "style": "unordered",
-                            "items": [{"text": value} for value in pending_list_items],
-                            "page": page,
-                        }
-                    )
-                    pending_list_items.clear()
-
-            for value in list_items:
-                item_text = re.sub(r"^[•\-–]\s*", "", str(value)).strip()
-                numbered_item = re.match(
-                    r"^(\d+(?:\.\d+)+)\s+(.+)$", item_text, re.DOTALL
-                )
-                if numbered_item:
-                    flush_pending_list()
-                    current["blocks"].append(
-                        {
-                            "type": "paragraph",
-                            "text": numbered_item.group(2),
-                            "number": numbered_item.group(1),
-                            "page": page,
-                        }
-                    )
-                elif item_text:
-                    pending_list_items.append(item_text)
-            flush_pending_list()
+            current["blocks"].extend(_list_publication_blocks(block, page))
             continue
 
         if label == "picture":
@@ -490,6 +571,7 @@ def build_publication(
                 "caption",
                 "footnote",
                 "formula",
+                "callout",
                 "section_header_1",
                 "section_header_2",
                 "section_header_3",
@@ -876,12 +958,39 @@ def _render_block(
                 )
                 for item in block.get("items", [])
             )
-        tag = "ol" if block.get("style") == "ordered" else "ul"
+        ordered = block.get("style") == "ordered"
+        tag = "ol" if ordered else "ul"
+        raw_start = block.get("start", 1)
+        try:
+            start_value = max(1, int(raw_start if raw_start is not None else 1))
+        except (TypeError, ValueError):
+            start_value = 1
+        start = (
+            f' start="{start_value}"' if ordered and start_value != 1 else ""
+        )
         items = "".join(
             f"<li>{html.escape(str(item.get('text', '')))}</li>"
             for item in block.get("items", [])
         )
-        return f"<{tag}>{items}</{tag}>"
+        return f"<{tag}{start}>{items}</{tag}>"
+    if block_type == "callout":
+        callout_id = html.escape(str(block.get("id", "callout")))
+        title = html.escape(str(block.get("title", "Highlighted information")))
+        variant = re.sub(
+            r"[^a-z-]",
+            "",
+            str(block.get("variant", "information")).lower(),
+        ) or "information"
+        content = "".join(
+            _render_block(child, figure_directory)
+            for child in block.get("blocks", [])
+        )
+        return (
+            f'<aside class="document-callout document-callout--{variant}" '
+            f'aria-labelledby="{callout_id}-title">'
+            f'<h3 id="{callout_id}-title">{title}</h3>'
+            f'<div class="document-callout-content">{content}</div></aside>'
+        )
     if block_type == "table":
         caption = html.escape(str(block.get("caption", "Extracted table")))
         rows = block.get("rows", [])
@@ -1133,6 +1242,15 @@ summary::-webkit-details-marker{{display:none}}
 .docling-content-blocks h2{{margin:38px 0 14px;font-size:24px;line-height:1.2}}
 .docling-content-blocks h3{{margin:30px 0 12px;font-size:20px;line-height:1.25}}
 .docling-content-blocks h4,.docling-content-blocks h5,.docling-content-blocks h6{{margin:24px 0 10px;font-size:17px;line-height:1.3}}
+.document-callout{{margin:28px 0;border:1px solid #c7c9cc;background:#efedef;color:#20242a}}
+.document-callout>h3{{margin:0;padding:11px 18px;background:#c8c8c8;color:#111;font-size:17px;line-height:1.3}}
+.document-callout-content{{padding:18px 22px 8px}}
+.document-callout-content>p:first-child{{margin-top:0}}
+.document-callout--case-study>h3{{background:transparent;color:#666;font-style:italic;font-weight:600}}
+.document-callout--recommendations{{border-color:#111;background:#efefef}}
+.document-callout--recommendations>h3{{background:#050505;color:#fff;text-transform:uppercase;letter-spacing:.03em}}
+.document-callout--recommendations ol{{padding-left:2.25rem}}
+.document-callout--recommendations li{{padding-left:.35rem;margin-bottom:1rem}}
 .numbered-paragraph{{display:grid;grid-template-columns:minmax(3.5rem,max-content) minmax(0,1fr);gap:.625rem;margin:0 0 1rem}}
 .numbered-paragraph>span{{font:700 11.5px/1.9 monospace;color:#7a2b2b}}
 .numbered-paragraph p{{margin:0}}

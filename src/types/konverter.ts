@@ -3,6 +3,7 @@ export type ConfidenceBand = 'high' | 'med' | 'low'
 export type ReviewStatus = 'pending' | 'accepted' | 'edited' | 'needs_attention' | 'removed'
 export type ReviewType =
   | 'caption'
+  | 'callout'
   | 'chapter_title'
   | 'document_index'
   | 'footnote'
