@@ -30,6 +30,32 @@ def _split_lines(value: str) -> list[str]:
     ]
 
 
+_ORDERED_LIST_MARKER = re.compile(
+    r"^(?P<marker>\((?:\d+|[A-Za-z]|[ivxlcdmIVXLCDM]+)\)|"
+    r"(?:\d+|[A-Za-z]|[ivxlcdmIVXLCDM]+)[.)])\s+"
+)
+_BULLET_LIST_MARKER = re.compile(r"^(?P<marker>[•\-–*·])\s+")
+
+
+def _parsed_list_entry(value: str) -> dict[str, Any] | None:
+    raw = str(value).replace("\t", "  ").strip()
+    ordered = _ORDERED_LIST_MARKER.match(raw)
+    bullet = _BULLET_LIST_MARKER.match(raw)
+    match = ordered or bullet
+    marker = match.group("marker") if match else ""
+    text = raw[match.end() :].strip() if match else raw
+    if not text:
+        return None
+    marker_number = re.fullmatch(r"\(?(\d+)[.)]", marker)
+    return {
+        "text": text,
+        "marker": marker,
+        "enumerated": ordered is not None,
+        "level": 0,
+        "value": int(marker_number.group(1)) if marker_number else None,
+    }
+
+
 def _section_key(value: str) -> str:
     return (
         re.sub(
@@ -43,115 +69,114 @@ def _section_key(value: str) -> str:
     )
 
 
-def _precise_summary(values: list[str]) -> str:
-    sentences: list[tuple[int, str]] = []
+def _summary_from_values(values: list[str], max_chars: int) -> str:
+    """Build a compact description and prefer complete sentences."""
+    sentences: list[str] = []
     seen: set[str] = set()
-    for order, value in enumerate(values):
-        normalized = re.sub(r"\s+", " ", value).strip()
+    for value in values:
+        normalized = re.sub(r"\s+", " ", str(value)).strip()
         for sentence in re.split(r"(?<=[.!?])\s+", normalized):
             sentence = sentence.strip()
             key = sentence.casefold()
-            if len(sentence) < 45 or key in seen:
+            if len(sentence) < 35 or key in seen:
                 continue
             seen.add(key)
-            score = 0
-            if re.match(
-                r"^(?:this|the)\s+(?:report|publication|review|commission)\b",
-                sentence,
-                re.IGNORECASE,
-            ):
-                score += 7
-            score += 3 * len(
-                re.findall(
-                    r"\b(?:recommend|propos|establish|enable|examin|explain|set out|conclud|find|reform|address)\w*",
-                    sentence,
-                    re.IGNORECASE,
-                )
-            )
-            if re.search(r"\b\d+\b", sentence):
-                score += 2
-            if 75 <= len(sentence) <= 260:
-                score += 2
-            if re.match(r"^(?:it|they|these|this approach)\b", sentence, re.IGNORECASE):
-                score -= 3
-            sentences.append((score * 10_000 - order, sentence))
+            candidate = " ".join([*sentences, sentence])
+            if len(candidate) > max_chars:
+                break
+            sentences.append(sentence)
+        if sentences and len(" ".join(sentences)) >= max_chars * 0.65:
+            break
+    if sentences:
+        return " ".join(sentences)
 
-    if not sentences:
-        normalized = re.sub(r"\s+", " ", " ".join(values)).strip()
-        return normalized if len(normalized) <= 320 else f"{normalized[:317].rstrip()}…"
-
-    selected = [sentence for _, sentence in sorted(sentences, reverse=True)[:2]]
-    selected.sort(
-        key=lambda sentence: next(
-            index
-            for index, value in enumerate(values)
-            if sentence in re.sub(r"\s+", " ", value).strip()
-        )
+    normalized = re.sub(r"\s+", " ", " ".join(values)).strip()
+    if len(normalized) <= max_chars:
+        return normalized
+    sentence_end = max(
+        normalized.rfind(". ", 0, max_chars),
+        normalized.rfind("? ", 0, max_chars),
+        normalized.rfind("! ", 0, max_chars),
     )
-    summary = " ".join(selected)
-    if len(summary) <= 360:
-        return summary
-    first = selected[0]
-    return first if len(first) <= 360 else f"{first[:357].rstrip()}…"
+    if sentence_end >= max_chars // 2:
+        return normalized[: sentence_end + 1]
+    word_end = normalized.rfind(" ", 0, max_chars - 1)
+    return f"{normalized[: max(word_end, max_chars - 2)].rstrip()}…"
 
 
-def _publication_summary(blocks: list[dict[str, Any]], source_name: str) -> str:
-    ordered = sorted(blocks, key=lambda value: int(value.get("order", 0)))
-    executive_index = next(
-        (
-            index
-            for index, block in enumerate(ordered)
-            if str(block.get("label", "")).startswith("section_header_")
-            and str(block.get("text", "")).strip().casefold() == "executive summary"
-        ),
-        -1,
+def _summary_heading(value: str) -> str:
+    value = re.sub(
+        r"^\s*(?:(?:chapter|section)\s+)?(?:\d+(?:\.\d+)*|[A-Z])(?:[.):\-–—]|\s)+",
+        "",
+        value,
+        flags=re.IGNORECASE,
     )
-    if executive_index >= 0:
+    return re.sub(r"[^a-z0-9]+", " ", value.casefold()).strip()
+
+
+def _heading_level(label: str) -> int | None:
+    if label == "chapter_title":
+        return 0
+    match = re.fullmatch(r"section_header_([1-5])", label)
+    return int(match.group(1)) if match else None
+
+
+def _publication_summary(
+    blocks: list[dict[str, Any]],
+    source_name: str,
+    max_chars: int = 600,
+) -> str:
+    ordered = sorted(
+        (block for block in blocks if not block.get("removed")),
+        key=lambda value: int(value.get("order", 0)),
+    )
+    priorities = (
+        re.compile(r"^executive summary$"),
+        re.compile(r"^summary$"),
+        re.compile(r"^scope of report$"),
+        re.compile(r"^scope of the report$"),
+        re.compile(r"^scope of this report$"),
+        re.compile(r"^overview$"),
+        re.compile(r"^introduction$"),
+    )
+    ranked: list[tuple[int, int, int]] = []
+    for index, block in enumerate(ordered):
+        level = _heading_level(str(block.get("label", "")))
+        if level is None:
+            continue
+        heading = _summary_heading(str(block.get("text", "")))
+        for priority, pattern in enumerate(priorities):
+            if pattern.fullmatch(heading):
+                ranked.append((priority, index, level))
+                break
+
+    for _, index, source_level in sorted(ranked):
         candidates: list[str] = []
-        for block in ordered[executive_index + 1 :]:
+        for block in ordered[index + 1 :]:
             label = str(block.get("label", ""))
-            text = str(block.get("text", "")).strip()
-            if label == "chapter_title" or (
-                label == "section_header_1"
-                and text.casefold() in {"recommendation", "recommendations"}
-            ):
+            level = _heading_level(label)
+            if level is not None and level <= source_level:
                 break
-            if label == "text" and len(text) >= 80:
-                candidates.append(text)
-            candidates.extend(
-                str(item).strip()
-                for item in block.get("list_items") or []
-                if len(str(item).strip()) >= 80
-            )
-        if candidates:
-            return _precise_summary(candidates)
-
-    first_chapter_index = next(
-        (
-            index
-            for index, block in enumerate(ordered)
-            if block.get("label") == "chapter_title"
-            and re.match(
-                r"^(?:chapter\s+)?1\.\s+", str(block.get("text", "")), re.IGNORECASE
-            )
-        ),
-        -1,
-    )
-    if first_chapter_index >= 0:
-        candidates = []
-        for block in ordered[first_chapter_index + 1 :]:
-            if block.get("label") == "chapter_title":
-                break
+            if label in {"header", "footer", "title", "document_index"}:
+                continue
             text = str(block.get("text", "")).strip()
-            if block.get("label") == "text" and len(text) >= 80:
+            if label == "text" and len(text) >= 45:
                 candidates.append(text)
             for item in block.get("list_items") or []:
                 item_text = re.sub(r"^\d+(?:\.\d+)+\s+", "", str(item)).strip()
-                if len(item_text) >= 80:
+                if len(item_text) >= 45:
                     candidates.append(item_text)
         if candidates:
-            return _precise_summary(candidates)
+            return _summary_from_values(candidates, max_chars)
 
+    fallback = [
+        str(block.get("text", "")).strip()
+        for block in ordered
+        if block.get("label") == "text"
+        and len(str(block.get("text", "")).strip()) >= 80
+    ]
+    if fallback:
+        return _summary_from_values(fallback[:3], max_chars)
     return f"This publication presents the reviewed content of {source_name}."
 
 
@@ -222,12 +247,18 @@ def _list_publication_blocks(
     page: int,
 ) -> list[dict[str, Any]]:
     """Preserve ordered markers and numbered paragraphs from Docling lists."""
-    entries = block.get("list_entries") or [
-        {"text": value, "marker": "", "enumerated": False}
-        for value in (block.get("list_items") or _split_lines(str(block.get("text", ""))))
-    ]
+    entries = block.get("list_entries")
+    if not entries:
+        source_lines = str(block.get("text", "")).splitlines()
+        if not source_lines:
+            source_lines = [str(value) for value in block.get("list_items") or []]
+        entries = [
+            entry
+            for value in source_lines
+            if (entry := _parsed_list_entry(value)) is not None
+        ]
     output: list[dict[str, Any]] = []
-    pending: list[dict[str, str]] = []
+    pending: list[dict[str, Any]] = []
     pending_style: str | None = None
     pending_start: int | None = None
 
@@ -249,11 +280,24 @@ def _list_publication_blocks(
         pending_start = None
 
     for entry in entries:
-        text = re.sub(r"^[•\-–·]\s*", "", str(entry.get("text", ""))).strip()
+        parsed_text = _parsed_list_entry(str(entry.get("text", "")))
         marker = str(entry.get("marker", "")).strip()
+        if marker:
+            text = str(entry.get("text", "")).strip()
+        elif parsed_text:
+            marker = str(parsed_text.get("marker", ""))
+            text = str(parsed_text.get("text", ""))
+        else:
+            text = str(entry.get("text", "")).strip()
         enumerated = bool(entry.get("enumerated")) or bool(
-            re.fullmatch(r"\d+[.)]", marker)
+            re.fullmatch(
+                r"\((?:\d+|[A-Za-z]|[ivxlcdmIVXLCDM]+)\)|"
+                r"(?:\d+|[A-Za-z]|[ivxlcdmIVXLCDM]+)[.)]",
+                marker,
+            )
         )
+        marker_number = re.fullmatch(r"\(?(\d+)[.)]", marker)
+        marker_value = int(marker_number.group(1)) if marker_number else None
         numbered_paragraph = re.match(r"^(\d+(?:\.\d+)+)\s+(.+)$", text, re.DOTALL)
         if numbered_paragraph and not marker:
             flush()
@@ -267,28 +311,98 @@ def _list_publication_blocks(
             )
             continue
         style = "ordered" if enumerated else "unordered"
-        if pending and style != pending_style:
+        level = max(0, int(entry.get("level", 0) or 0))
+        if pending and level == 0 and pending_style != style:
             flush()
-        pending_style = style
+        if pending_style is None:
+            pending_style = style
         if style == "ordered" and pending_start is None:
-            marker_number = re.match(r"(\d+)", marker)
-            pending_start = int(marker_number.group(1)) if marker_number else 1
+            pending_start = marker_value or 1
         if text:
-            pending.append({"text": text, "marker": marker})
+            pending.append(
+                {
+                    "text": text,
+                    "marker": marker,
+                    "level": level,
+                    "ordered": enumerated,
+                    "value": marker_value,
+                }
+            )
     flush()
     return output
 
 
-def _callout_publication_content(
+def _table_publication_block(
     block: dict[str, Any],
     page: int,
+    counts: Counter[str],
+) -> dict[str, Any]:
+    table = block.get("table_data") or {
+        "headers": ["Column 1"],
+        "rows": [[str(block.get("text", ""))]],
+    }
+    rows: list[list[dict[str, Any]]] = []
+    headers = list(table.get("headers", []))
+    if headers:
+        rows.append(
+            [
+                {
+                    "text": str(value),
+                    "rowSpan": 1,
+                    "colSpan": 1,
+                    "columnHeader": True,
+                    "rowHeader": False,
+                    "startColumn": index,
+                }
+                for index, value in enumerate(headers)
+            ]
+        )
+    rows.extend(
+        [
+            [
+                {
+                    "text": str(value),
+                    "rowSpan": 1,
+                    "colSpan": 1,
+                    "columnHeader": False,
+                    "rowHeader": False,
+                    "startColumn": index,
+                }
+                for index, value in enumerate(row)
+            ]
+            for row in table.get("rows", [])
+        ]
+    )
+    return {
+        "type": "table",
+        "id": _unique_slug(f"table-{str(block.get('id', ''))}", counts),
+        "caption": str(table.get("caption") or block.get("caption") or "").strip(),
+        "rows": rows,
+        "page": page,
+    }
+
+
+def _box_section_publication_content(
+    block: dict[str, Any],
+    page: int,
+    counts: Counter[str],
 ) -> list[dict[str, Any]]:
     output: list[dict[str, Any]] = []
-    children = block.get("callout_blocks") or []
+    children = block.get("box_section_blocks") or block.get("callout_blocks") or []
     if not children:
+        text = str(block.get("text", ""))
+        lines = [line for line in text.splitlines() if line.strip()]
+        if len(lines) > 1 and any(
+            _ORDERED_LIST_MARKER.match(line.strip())
+            or _BULLET_LIST_MARKER.match(line.strip())
+            for line in lines
+        ):
+            return _list_publication_blocks(
+                {"text": text, "list_entries": []}, page
+            )
         return [
             {"type": "paragraph", "text": value.strip(), "page": page}
-            for value in re.split(r"\n\s*\n", str(block.get("text", "")))
+            for value in re.split(r"\n\s*\n", text)
             if value.strip()
         ]
     for child in children:
@@ -297,9 +411,56 @@ def _callout_publication_content(
         text = str(child.get("text", "")).strip()
         if label in {"list", "list_item"}:
             output.extend(_list_publication_blocks(child, child_page))
+        elif label == "table":
+            output.append(_table_publication_block(child, child_page, counts))
+        elif label == "picture":
+            output.append(
+                {
+                    "type": "figure",
+                    "id": _unique_slug(
+                        f"figure-{str(child.get('id', ''))}", counts
+                    ),
+                    "caption": text or "Figure",
+                    "page": child_page,
+                    "sourceBlockId": str(child.get("id", "")),
+                }
+            )
+        elif label == "footnote":
+            output.append(
+                {
+                    "type": "footnote",
+                    "id": _unique_slug(
+                        f"box-footnote-{str(child.get('id', ''))}", counts
+                    ),
+                    "text": text,
+                    "page": child_page,
+                }
+            )
+        elif label.startswith("section_header_"):
+            level = min(5, max(1, int(label.rsplit("_", 1)[1])))
+            output.append(
+                {
+                    "type": "heading",
+                    "id": _unique_slug(text, counts),
+                    "text": text,
+                    "level": level,
+                    "page": child_page,
+                }
+            )
         elif label == "formula":
             output.append({"type": "formula", "text": text, "page": child_page})
-        elif text and not label.startswith("section_header_"):
+        elif label == "caption":
+            output.append({"type": "caption", "text": text, "page": child_page})
+        elif label == "form":
+            output.append(
+                {
+                    "type": "group",
+                    "label": "Form fields",
+                    "items": [{"text": value} for value in _split_lines(text)],
+                    "page": child_page,
+                }
+            )
+        elif text:
             numbered = re.match(r"^(\d+(?:\.\d+)+)\s+(.+)$", text, re.DOTALL)
             output.append(
                 {
@@ -315,6 +476,7 @@ def _callout_publication_content(
 def build_publication(
     blocks: list[dict[str, Any]],
     record: dict[str, Any],
+    summary_max_chars: int = 600,
 ) -> dict[str, Any]:
     blocks = [block for block in blocks if not block.get("removed")]
     counts: Counter[str] = Counter()
@@ -422,66 +584,28 @@ def build_publication(
             continue
 
         if label == "table":
-            table = block.get("table_data") or {
-                "headers": ["Column 1"],
-                "rows": [[text]],
-            }
-            rows: list[list[dict[str, Any]]] = []
-            headers = list(table.get("headers", []))
-            if headers:
-                rows.append(
-                    [
-                        {
-                            "text": str(value),
-                            "rowSpan": 1,
-                            "colSpan": 1,
-                            "columnHeader": True,
-                            "rowHeader": False,
-                            "startColumn": index,
-                        }
-                        for index, value in enumerate(headers)
-                    ]
-                )
-            rows.extend(
-                [
-                    [
-                        {
-                            "text": str(value),
-                            "rowSpan": 1,
-                            "colSpan": 1,
-                            "columnHeader": False,
-                            "rowHeader": False,
-                            "startColumn": index,
-                        }
-                        for index, value in enumerate(row)
-                    ]
-                    for row in table.get("rows", [])
-                ]
-            )
-            current["blocks"].append(
-                {
-                    "type": "table",
-                    "id": _unique_slug(f"table-{len(current['blocks']) + 1}", counts),
-                    "caption": "Extracted table",
-                    "rows": rows,
-                    "page": page,
-                }
-            )
+            current["blocks"].append(_table_publication_block(block, page, counts))
             continue
 
-        if label == "callout":
+        if label in {"box_section", "callout"}:
             current["blocks"].append(
                 {
-                    "type": "callout",
+                    "type": "box_section",
                     "id": _unique_slug(
-                        f"callout-{block.get('callout_title') or len(current['blocks']) + 1}",
+                        f"box-section-{block.get('box_section_title') or block.get('callout_title') or len(current['blocks']) + 1}",
                         counts,
                     ),
                     "title": str(
-                        block.get("callout_title") or "Highlighted information"
+                        block.get("box_section_title")
+                        or block.get("callout_title")
+                        or "Box Section"
                     ),
-                    "variant": str(block.get("callout_kind") or "information"),
-                    "blocks": _callout_publication_content(block, page),
+                    "variant": str(
+                        block.get("box_section_kind")
+                        or block.get("callout_kind")
+                        or "information"
+                    ),
+                    "blocks": _box_section_publication_content(block, page, counts),
                     "page": page,
                 }
             )
@@ -571,6 +695,7 @@ def build_publication(
                 "caption",
                 "footnote",
                 "formula",
+                "box_section",
                 "callout",
                 "section_header_1",
                 "section_header_2",
@@ -590,7 +715,7 @@ def build_publication(
         "schemaVersion": "1.0",
         "sourceName": source_name,
         "sourceFile": str(record.get("file_name", "source.pdf")),
-        "summary": [_publication_summary(blocks, source_name)],
+        "summary": [_publication_summary(blocks, source_name, summary_max_chars)],
         "sections": reader_sections,
         "stats": stats,
     }
@@ -667,16 +792,33 @@ def _accessibility_properties(publication: dict[str, Any]) -> dict[str, Any]:
     sufficiency and the alternativeText claim depend on every figure in this
     particular document carrying a caption (which becomes its alt text).
     """
+    def figures_in(blocks: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        figures: list[dict[str, Any]] = []
+        for block in blocks:
+            if block.get("type") == "figure":
+                figures.append(block)
+            children = block.get("blocks")
+            if isinstance(children, list):
+                figures.extend(figures_in(children))
+        return figures
+
     figures = [
-        block
+        figure
         for section in publication.get("sections", [])
-        for block in section.get("blocks", [])
-        if block.get("type") == "figure"
+        for figure in figures_in(section.get("blocks", []))
     ]
     all_figures_captioned = all(str(f.get("caption", "")).strip() for f in figures)
     features = ["structuralNavigation", "tableOfContents", "readingOrder"]
     if all_figures_captioned:
         features.append("alternativeText")
+    summary = (
+        "This HTML edition provides structural navigation, a table of contents, "
+        "a defined reading order and alternative text for figures."
+        if all_figures_captioned
+        else "This HTML edition provides structural navigation, a table of contents "
+        "and a defined reading order. Some figures may not include source-supplied "
+        "alternative text."
+    )
     return {
         "accessMode": ["textual", "visual"],
         "accessModeSufficient": [{"@type": "ItemList", "itemListElement": ["textual"]}]
@@ -688,6 +830,7 @@ def _accessibility_properties(publication: dict[str, Any]) -> dict[str, Any]:
             "noMotionSimulationHazard",
             "noSoundHazard",
         ],
+        "accessibilitySummary": summary,
     }
 
 
@@ -699,6 +842,9 @@ def build_json_ld(
     site_url: str = "",
     site_name: str = "",
     page_url_template: str = "",
+    public_api_url: str = "",
+    license_url: str = "",
+    copyright_holder: str = "",
     generated_at: str | None = None,
 ) -> dict[str, Any]:
     """Schema.org graph combining document metadata with page/site context.
@@ -724,7 +870,14 @@ def build_json_ld(
     raw_date = str(metadata.get("published_date") or "").strip()
     title = str(metadata.get("title") or publication.get("sourceName") or "").strip()
     report_id = f"urn:uuid:{document_id}"
-    html_url = f"/api/documents/{document_id}/exports/accessible.html"
+    api_root = (
+        f"{public_api_url.rstrip('/')}/api/documents/{document_id}"
+        if public_api_url
+        else f"/api/documents/{document_id}"
+    )
+    html_url = f"{api_root}/exports/accessible.html"
+    source_url = f"{api_root}/source"
+    cover_url = f"{api_root}/cover"
 
     page_url = ""
     if page_url_template:
@@ -734,6 +887,11 @@ def build_json_ld(
     page_id = page_url or f"#webpage-{document_id}"
     breadcrumb_id = (
         f"{page_url}#breadcrumb" if page_url else f"#breadcrumb-{document_id}"
+    )
+    image_id = (
+        f"{page_url}#primaryimage"
+        if page_url
+        else f"#primaryimage-{document_id}"
     )
 
     citations: list[Any] = []
@@ -796,6 +954,27 @@ def build_json_ld(
         for index, value in enumerate(publishers)
     ]
     organisation_refs = [{"@id": node["@id"]} for node in organisation_nodes]
+    holder_ref: dict[str, str] | None = None
+    if copyright_holder:
+        matching_holder = next(
+            (
+                node
+                for node in organisation_nodes
+                if str(node.get("name", "")).strip().casefold()
+                == copyright_holder.strip().casefold()
+            ),
+            None,
+        )
+        if matching_holder is not None:
+            holder_ref = {"@id": str(matching_holder["@id"])}
+        else:
+            holder_node = {
+                "@type": "Organization",
+                "@id": f"#copyright-holder-{document_id}",
+                "name": copyright_holder,
+            }
+            organisation_nodes.append(holder_node)
+            holder_ref = {"@id": holder_node["@id"]}
 
     description = " ".join(
         str(value).strip()
@@ -819,7 +998,8 @@ def build_json_ld(
             "author": [{"@type": "Person", "name": value} for value in authors],
             "publisher": organisation_refs,
             "datePublished": _iso_published_date(raw_date) or raw_date or None,
-            "dateModified": generated_at,
+            "license": license_url or None,
+            "copyrightHolder": holder_ref,
             "reportNumber": report_number,
             "isPartOf": {"@type": "CreativeWorkSeries", "name": series_name}
             if series_name
@@ -836,7 +1016,7 @@ def build_json_ld(
                 {
                     "@type": "MediaObject",
                     "encodingFormat": "application/pdf",
-                    "contentUrl": f"/api/documents/{document_id}/source",
+                    "contentUrl": source_url,
                 },
                 {
                     "@type": "MediaObject",
@@ -844,15 +1024,19 @@ def build_json_ld(
                     "contentUrl": html_url,
                 },
             ],
+            "image": {"@id": image_id},
             "mainEntityOfPage": {"@id": page_id},
             "hasPart": [
-                {
+                _prune(
+                    {
                     "@type": "Chapter",
                     "@id": f"{report_id}#{section['id']}",
                     "isPartOf": {"@id": report_id},
                     "name": section["displayTitle"],
                     "position": index + 1,
-                }
+                    "url": f"{page_url}#{section['id']}" if page_url else None,
+                    }
+                )
                 for index, section in enumerate(publication.get("sections", []))
             ],
         }
@@ -870,13 +1054,28 @@ def build_json_ld(
             "inLanguage": language,
             "datePublished": generated_at,
             "dateModified": generated_at,
+            "primaryImageOfPage": {"@id": image_id},
             "potentialAction": [
                 {"@type": "ReadAction", "target": [page_url or html_url]}
             ],
         }
     )
 
-    graph: list[dict[str, Any]] = [report, web_page, *organisation_nodes]
+    image_node = {
+        "@type": "ImageObject",
+        "@id": image_id,
+        "url": cover_url,
+        "contentUrl": cover_url,
+        "encodingFormat": "image/png",
+        "caption": f"Cover of {title}",
+        "representativeOfPage": True,
+    }
+    graph: list[dict[str, Any]] = [
+        report,
+        web_page,
+        image_node,
+        *organisation_nodes,
+    ]
     if site_url:
         graph.append(
             _prune(
@@ -929,6 +1128,67 @@ def _render_table_cell(cell: dict[str, Any]) -> str:
     return f"<{tag}{scope}>{html.escape(str(cell.get('text', '')))}</{tag}>"
 
 
+def _nested_list_tree(
+    items: list[dict[str, Any]],
+    default_ordered: bool,
+) -> list[dict[str, Any]]:
+    if not items:
+        return []
+    levels = [max(0, int(item.get("level", 0) or 0)) for item in items]
+    base_level = min(levels)
+    roots: list[dict[str, Any]] = []
+    stack: list[tuple[int, list[dict[str, Any]]]] = [(-1, roots)]
+    for raw, raw_level in zip(items, levels, strict=False):
+        level = raw_level - base_level
+        while stack[-1][0] >= level:
+            stack.pop()
+        if level > stack[-1][0] + 1:
+            level = stack[-1][0] + 1
+        node = {
+            **raw,
+            "ordered": bool(raw.get("ordered", default_ordered)),
+            "children": [],
+        }
+        stack[-1][1].append(node)
+        stack.append((level, node["children"]))
+    return roots
+
+
+def _render_list_items(
+    nodes: list[dict[str, Any]],
+    start: int | None = None,
+) -> str:
+    output: list[str] = []
+    index = 0
+    while index < len(nodes):
+        ordered = bool(nodes[index].get("ordered"))
+        group: list[dict[str, Any]] = []
+        while index < len(nodes) and bool(nodes[index].get("ordered")) == ordered:
+            group.append(nodes[index])
+            index += 1
+        tag = "ol" if ordered else "ul"
+        start_attribute = (
+            f' start="{max(1, int(start or 1))}"'
+            if ordered and start not in (None, 1) and not output
+            else ""
+        )
+        list_items = ""
+        for item in group:
+            value_attribute = (
+                f' value="{int(item["value"])}"'
+                if ordered and item.get("value") is not None
+                else ""
+            )
+            list_items += (
+                f"<li{value_attribute}>{html.escape(str(item.get('text', '')))}"
+                f"{_render_list_items(item.get('children', []))}</li>"
+            )
+        output.append(
+            f'<{tag} class="source-list"{start_attribute}>{list_items}</{tag}>'
+        )
+    return "".join(output)
+
+
 def _render_block(
     block: dict[str, Any],
     figure_directory: Path | None = None,
@@ -959,23 +1219,19 @@ def _render_block(
                 for item in block.get("items", [])
             )
         ordered = block.get("style") == "ordered"
-        tag = "ol" if ordered else "ul"
         raw_start = block.get("start", 1)
         try:
             start_value = max(1, int(raw_start if raw_start is not None else 1))
         except (TypeError, ValueError):
             start_value = 1
-        start = (
-            f' start="{start_value}"' if ordered and start_value != 1 else ""
+        tree = _nested_list_tree(
+            [dict(item) for item in block.get("items", [])],
+            ordered,
         )
-        items = "".join(
-            f"<li>{html.escape(str(item.get('text', '')))}</li>"
-            for item in block.get("items", [])
-        )
-        return f"<{tag}{start}>{items}</{tag}>"
-    if block_type == "callout":
-        callout_id = html.escape(str(block.get("id", "callout")))
-        title = html.escape(str(block.get("title", "Highlighted information")))
+        return _render_list_items(tree, start_value)
+    if block_type in {"box_section", "callout"}:
+        box_id = html.escape(str(block.get("id", "box-section")))
+        title = html.escape(str(block.get("title", "Box Section")))
         variant = re.sub(
             r"[^a-z-]",
             "",
@@ -986,13 +1242,14 @@ def _render_block(
             for child in block.get("blocks", [])
         )
         return (
-            f'<aside class="document-callout document-callout--{variant}" '
-            f'aria-labelledby="{callout_id}-title">'
-            f'<h3 id="{callout_id}-title">{title}</h3>'
-            f'<div class="document-callout-content">{content}</div></aside>'
+            f'<section class="document-box-section document-box-section--{variant}" '
+            f'aria-labelledby="{box_id}-title">'
+            f'<h3 id="{box_id}-title">{title}</h3>'
+            f'<div class="document-box-section-content">{content}</div></section>'
         )
     if block_type == "table":
-        caption = html.escape(str(block.get("caption", "Extracted table")))
+        raw_caption = str(block.get("caption", "")).strip()
+        caption = html.escape(raw_caption)
         rows = block.get("rows", [])
         header_rows = [
             row for row in rows if row and all(cell.get("columnHeader") for cell in row)
@@ -1012,9 +1269,17 @@ def _render_block(
             f"<tr>{''.join(_render_table_cell(cell) for cell in row)}</tr>"
             for row in body_rows
         )
+        caption_html = f"<caption>{caption}</caption>" if caption else ""
+        aria_label = caption or "Table"
         return (
-            f'<div class="table-scroll" tabindex="0" role="region" aria-label="{caption}; scroll horizontally when needed">'
-            f'<table id="{html.escape(str(block.get("id", "")))}"><caption>{caption}</caption>{head_html}<tbody>{body_html}</tbody></table></div>'
+            f'<div class="table-scroll" tabindex="0" role="region" aria-label="{aria_label}; scroll horizontally when needed">'
+            f'<table id="{html.escape(str(block.get("id", "")))}">{caption_html}{head_html}<tbody>{body_html}</tbody></table></div>'
+        )
+    if block_type == "footnote":
+        return (
+            f'<p class="document-footnote" role="doc-footnote" '
+            f'id="{html.escape(str(block.get("id", "")))}">'
+            f'{html.escape(str(block.get("text", "")))}</p>'
         )
     if block_type == "figure":
         caption = html.escape(str(block.get("caption", "Figure")))
@@ -1148,7 +1413,14 @@ def build_accessible_html(
     published_date = html.escape(
         _format_published_date(metadata.get("published_date", ""))
     )
-    safe_json_ld = json.dumps(json_ld, ensure_ascii=False).replace("<", "\\u003c")
+    safe_json_ld = (
+        json.dumps(json_ld, ensure_ascii=False)
+        .replace("&", "\\u0026")
+        .replace("<", "\\u003c")
+        .replace(">", "\\u003e")
+        .replace("\u2028", "\\u2028")
+        .replace("\u2029", "\\u2029")
+    )
     logo_uri = _data_uri(logo_path)
     cover_uri = _data_uri(cover_path)
     summaries = publication.get("summary", [])
@@ -1242,15 +1514,21 @@ summary::-webkit-details-marker{{display:none}}
 .docling-content-blocks h2{{margin:38px 0 14px;font-size:24px;line-height:1.2}}
 .docling-content-blocks h3{{margin:30px 0 12px;font-size:20px;line-height:1.25}}
 .docling-content-blocks h4,.docling-content-blocks h5,.docling-content-blocks h6{{margin:24px 0 10px;font-size:17px;line-height:1.3}}
-.document-callout{{margin:28px 0;border:1px solid #c7c9cc;background:#efedef;color:#20242a}}
-.document-callout>h3{{margin:0;padding:11px 18px;background:#c8c8c8;color:#111;font-size:17px;line-height:1.3}}
-.document-callout-content{{padding:18px 22px 8px}}
-.document-callout-content>p:first-child{{margin-top:0}}
-.document-callout--case-study>h3{{background:transparent;color:#666;font-style:italic;font-weight:600}}
-.document-callout--recommendations{{border-color:#111;background:#efefef}}
-.document-callout--recommendations>h3{{background:#050505;color:#fff;text-transform:uppercase;letter-spacing:.03em}}
-.document-callout--recommendations ol{{padding-left:2.25rem}}
-.document-callout--recommendations li{{padding-left:.35rem;margin-bottom:1rem}}
+.document-box-section{{margin:28px 0;border:1px solid #c7c9cc;background:#efedef;color:#20242a}}
+.document-box-section>h3{{margin:0;padding:11px 18px;background:#c8c8c8;color:#111;font-size:17px;line-height:1.3}}
+.document-box-section-content{{padding:18px 22px 8px}}
+.document-box-section-content>p:first-child{{margin-top:0}}
+.document-box-section--case-study>h3{{background:transparent;color:#666;font-style:italic;font-weight:600}}
+.document-box-section--recommendations{{border-color:#111;background:#efefef}}
+.document-box-section--recommendations>h3{{background:#050505;color:#fff;text-transform:uppercase;letter-spacing:.03em}}
+.document-box-section--recommendations ol{{padding-left:2.25rem}}
+.document-box-section--recommendations li{{padding-left:.35rem;margin-bottom:1rem}}
+.source-list{{margin:8px 0 17px 52px;padding-left:20px;color:#303744;font-size:14px;line-height:1.65}}
+ul.source-list{{list-style:disc outside}}
+ol.source-list{{list-style:decimal outside}}
+.source-list .source-list{{margin:6px 0 4px}}
+.document-box-section-content .source-list{{margin-left:0;padding-left:1.5rem}}
+.document-footnote{{font-size:.92em;border-left:3px solid #8c929a;padding-left:12px;color:#505965}}
 .numbered-paragraph{{display:grid;grid-template-columns:minmax(3.5rem,max-content) minmax(0,1fr);gap:.625rem;margin:0 0 1rem}}
 .numbered-paragraph>span{{font:700 11.5px/1.9 monospace;color:#7a2b2b}}
 .numbered-paragraph p{{margin:0}}
@@ -1305,7 +1583,7 @@ body.reader-open #publication-landing{{display:none}}
   {reader_sections}
 </main>
 <button class="back-to-top" type="button" aria-label="Back to top of page">↑ Top</button>
-<footer class="source-footer">Accessible HTML generated from reviewed Docling data. Schema.org JSON-LD is embedded in this page.</footer>
+<footer class="source-footer">Accessible HTML generated from reviewed document data. Schema.org JSON-LD is embedded in this page.</footer>
 <script>
 (() => {{
   const landing = document.getElementById('publication-landing');

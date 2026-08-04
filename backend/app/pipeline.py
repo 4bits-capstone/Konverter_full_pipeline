@@ -22,8 +22,8 @@ StageCallback = Callable[[int, str], None]
 
 
 LABEL_DISPLAY = {
+    "box_section": "Box Section",
     "caption": "Caption",
-    "callout": "Callout",
     "chapter_title": "Chapter title",
     "document_index": "Document index",
     "footnote": "Footnote",
@@ -45,8 +45,9 @@ LABEL_DISPLAY = {
 }
 
 RAW_LABEL_MAP = {
+    "box_section": "box_section",
     "caption": "caption",
-    "callout": "callout",
+    "callout": "box_section",
     "checkbox_selected": "form",
     "checkbox_unselected": "form",
     "document_index": "document_index",
@@ -509,10 +510,12 @@ class KonverterPipeline:
 
     def process(self, pdf_path: Path, stage: StageCallback) -> PipelineOutput:
         started = time.monotonic()
-        stage(1, "Docling is extracting text, layout and tables")
-        raw_document, blocks, doc_confidence, warnings = self._run_docling(pdf_path)
+        stage(1, "Preparing document")
+        raw_document, blocks, doc_confidence, warnings = self._run_docling(
+            pdf_path, stage
+        )
 
-        stage(4, "Applying metadata rules to Docling text from pages 1–8")
+        stage(4, "Extracting metadata")
         try:
             metadata_payload = extract_metadata_from_docling(
                 raw_document,
@@ -523,8 +526,9 @@ class KonverterPipeline:
             warnings.append(f"Rule-based metadata extraction failed: {exc}")
             metadata_payload = empty_metadata_payload(self.settings)
 
-        stage(5, "Scoring confidence and creating the review queue")
+        stage(5, "Scoring confidence")
         review_items = self._build_review_items(blocks)
+        stage(6, "Preparing review")
         return PipelineOutput(
             blocks=blocks,
             review_items=review_items,
@@ -538,10 +542,13 @@ class KonverterPipeline:
     def _run_docling(
         self,
         pdf_path: Path,
+        stage: StageCallback,
     ) -> tuple[dict[str, Any], list[dict[str, Any]], dict[str, Any], list[str]]:
+        stage(2, "Extracting content")
         converter = self._get_docling_converter()
         with self._docling_lock:
             result = converter.convert(pdf_path)
+        stage(3, "Detecting document structure")
         hierarchy = apply_hierarchy(result, pdf_path)
         raw_document = result.document.export_to_dict()
         attach_hierarchy_metadata(raw_document, hierarchy)
@@ -761,7 +768,10 @@ class KonverterPipeline:
 
             if raw_label == "list" and children:
                 child_items = [all_items.get(child) for child in children]
-                child_items = [child for child in child_items if child]
+                child_items = self._ordered_list_items(
+                    document,
+                    [child for child in child_items if child],
+                )
                 consumed.update(child for child in children if child)
                 list_entries = []
                 for child in child_items:
@@ -772,6 +782,7 @@ class KonverterPipeline:
                             "text": value,
                             "marker": marker,
                             "enumerated": bool(child.get("enumerated")),
+                            "level": self._list_item_level(child),
                         }
                     )
                 list_texts = [entry["text"] for entry in list_entries]
@@ -833,6 +844,9 @@ class KonverterPipeline:
 
             if raw_label in {"table", "document_index"}:
                 table = self._table_data(item)
+                caption = self._item_caption(item, all_items)
+                if caption:
+                    table["caption"] = caption
                 blocks.append(
                     {
                         "id": reference,
@@ -913,6 +927,106 @@ class KonverterPipeline:
             for index, block in enumerate(ordered_blocks):
                 block["order"] = index
         return ordered_blocks
+
+    @staticmethod
+    def _list_item_level(item: dict[str, Any]) -> int:
+        """Retain nesting supplied by the extractor without inventing levels."""
+        metadata = item.get("meta") or {}
+        for value in (
+            item.get("level"),
+            item.get("nesting_level"),
+            metadata.get("level"),
+            metadata.get("nesting_level"),
+            metadata.get("indentation_level"),
+        ):
+            if isinstance(value, int):
+                return max(0, value)
+        return 0
+
+    @staticmethod
+    def _item_caption(
+        item: dict[str, Any],
+        all_items: dict[str, dict[str, Any]],
+    ) -> str:
+        direct = str(item.get("caption") or "").strip()
+        if direct:
+            return direct
+        values: list[str] = []
+        for candidate in item.get("captions") or []:
+            if isinstance(candidate, dict):
+                reference = str(candidate.get("$ref", ""))
+                value = str((all_items.get(reference) or {}).get("text", "")).strip()
+            else:
+                value = str(candidate).strip()
+            if value:
+                values.append(value)
+        return " ".join(values)
+
+    @classmethod
+    def _ordered_list_items(
+        cls,
+        document: dict[str, Any],
+        items: list[dict[str, Any]],
+    ) -> list[dict[str, Any]]:
+        """Linearise multi-column list items by page, column, then vertical position."""
+        eligible = [
+            item
+            for item in items
+            if not (item.get("meta") or {}).get("konverter_exclude_from_output")
+            and _effective_raw_label(item) not in {"page_header", "page_footer"}
+        ]
+        original_order = {id(item): index for index, item in enumerate(eligible)}
+        pages: dict[int, list[tuple[dict[str, Any], dict[str, float] | None]]] = {}
+        for item in eligible:
+            page = _first_page(item)
+            page_meta = document.get("pages", {}).get(
+                str(page), document.get("pages", {}).get(page, {})
+            )
+            page_height = float(page_meta.get("size", {}).get("height", 0))
+            provenance = item.get("prov") or []
+            raw_box = provenance[0].get("bbox") if provenance else None
+            bounds = cls._top_left_bbox(raw_box, page_height) if raw_box else None
+            pages.setdefault(page, []).append((item, bounds))
+
+        ordered: list[dict[str, Any]] = []
+        for page in sorted(pages):
+            page_entries = pages[page]
+            bounded = [(item, box) for item, box in page_entries if box is not None]
+            unbounded = [item for item, box in page_entries if box is None]
+            page_meta = document.get("pages", {}).get(
+                str(page), document.get("pages", {}).get(page, {})
+            )
+            page_width = float(page_meta.get("size", {}).get("width", 0))
+            lefts = sorted(float(box["l"]) for _, box in bounded)
+            split_threshold = max(48.0, page_width * 0.12)
+            column_starts: list[float] = []
+            for left in lefts:
+                if not column_starts or left - column_starts[-1] > split_threshold:
+                    column_starts.append(left)
+                else:
+                    column_starts[-1] = (column_starts[-1] + left) / 2
+
+            columns: list[list[tuple[dict[str, Any], dict[str, float]]]] = [
+                [] for _ in column_starts
+            ]
+            for item, box in bounded:
+                assert box is not None
+                column = min(
+                    range(len(column_starts)),
+                    key=lambda index: abs(float(box["l"]) - column_starts[index]),
+                )
+                columns[column].append((item, box))
+            for column in columns:
+                column.sort(
+                    key=lambda value: (
+                        float(value[1]["t"]),
+                        float(value[1]["l"]),
+                        original_order[id(value[0])],
+                    )
+                )
+                ordered.extend(item for item, _ in column)
+            ordered.extend(sorted(unbounded, key=lambda item: original_order[id(item)]))
+        return ordered
 
     @staticmethod
     def _merge_split_chapter_titles(

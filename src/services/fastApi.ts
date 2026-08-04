@@ -74,6 +74,12 @@ export const fastApiReviewService: ReviewService = {
       body: JSON.stringify(changes),
     })
   },
+  bulkUpdate(ids: string[], changes: ReviewUpdate, documentId?: string) {
+    return apiRequest(`/documents/${requireDocumentId(documentId)}/review-items/bulk`, {
+      method: 'POST',
+      body: JSON.stringify({ itemIds: ids, changes }),
+    })
+  },
   resolveAll(documentId) {
     return apiRequest(`/documents/${requireDocumentId(documentId)}/review-items/resolve-all`, { method: 'POST' })
   },

@@ -15,7 +15,7 @@ export function Toast() {
 
   return (
     <div
-      className={`fixed right-6 bottom-6 z-[300] flex min-w-[220px] items-center gap-2.5 rounded-lg bg-brand-blue-dark px-[18px] py-3.5 text-sm font-semibold text-white shadow-overlay transition-all duration-200 ${
+      className={`fixed bottom-6 right-6 z-[300] flex min-w-[220px] items-center gap-2.5 rounded-lg bg-brand-blue-dark px-[18px] py-3.5 text-sm font-semibold text-white shadow-overlay transition-all duration-200 ${
         visible ? 'translate-y-0 opacity-100' : 'pointer-events-none translate-y-3 opacity-0'
       }`}
       role="status"

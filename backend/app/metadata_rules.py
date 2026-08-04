@@ -188,7 +188,7 @@ def _pdf_metadata(pdf_path: Path) -> dict[str, str]:
 
 def _valid_title_candidate(value: str) -> bool:
     words = value.split()
-    if not (2 <= len(words) <= 18 and 5 <= len(value) <= 180):
+    if not (1 <= len(words) <= 18 and 5 <= len(value) <= 180):
         return False
     return not bool(
         re.search(

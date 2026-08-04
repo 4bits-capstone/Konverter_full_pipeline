@@ -1,13 +1,15 @@
 import type { DocumentMetadata, ProcessingStep } from '../types/konverter'
 
 export const processingSteps: ProcessingStep[] = [
-  { id: 'upload', label: 'Document uploaded' },
-  { id: 'ingest', label: 'Ingesting document', detail: 'Docling extracts text, layout and tables' },
+  { id: 'upload', label: 'Uploading' },
+  { id: 'prepare', label: 'Preparing document' },
   { id: 'extract', label: 'Extracting content' },
-  { id: 'structure', label: 'Detecting structure', detail: 'chapters, sections and footnotes' },
+  { id: 'structure', label: 'Detecting document structure' },
   { id: 'metadata', label: 'Extracting metadata' },
-  { id: 'confidence', label: 'Scoring confidence and flagging' },
-  { id: 'ready', label: 'Ready for review' },
+  { id: 'confidence', label: 'Scoring confidence' },
+  { id: 'review', label: 'Preparing review' },
+  { id: 'outputs', label: 'Generating outputs' },
+  { id: 'complete', label: 'Complete' },
 ]
 
 export const emptyMetadata: DocumentMetadata = {

@@ -2,14 +2,14 @@ import { render, screen, within } from '@testing-library/react'
 import { describe, expect, it } from 'vitest'
 import { DoclingContent } from './DoclingContent'
 
-describe('DoclingContent callouts', () => {
-  it('renders a labelled recommendations aside with an ordered list', () => {
+describe('DoclingContent Box Sections', () => {
+  it('renders a labelled recommendations section with an ordered list', () => {
     render(
       <DoclingContent
         footnotes={[]}
         blocks={[
           {
-            type: 'callout',
+            type: 'box_section',
             id: 'recommendations-1',
             title: 'Recommendations',
             variant: 'recommendations',
@@ -26,9 +26,9 @@ describe('DoclingContent callouts', () => {
       />,
     )
 
-    const aside = screen.getByRole('complementary', { name: 'Recommendations' })
-    expect(within(aside).getByRole('heading', { name: 'Recommendations' })).toBeInTheDocument()
-    expect(within(aside).getByRole('list')).toHaveAttribute('start', '4')
-    expect(within(aside).getByText('Retain the semantic panel.')).toBeInTheDocument()
+    const section = screen.getByRole('region', { name: 'Recommendations' })
+    expect(within(section).getByRole('heading', { name: 'Recommendations' })).toBeInTheDocument()
+    expect(within(section).getByRole('list')).toHaveAttribute('start', '4')
+    expect(within(section).getByText('Retain the semantic panel.')).toBeInTheDocument()
   })
 })

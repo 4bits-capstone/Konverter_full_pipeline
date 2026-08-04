@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import math
 import hashlib
+import copy
 import re
 import threading
 import time
@@ -13,7 +14,7 @@ from typing import Any
 from .config import Settings
 from .exporter import build_accessible_html, build_json_ld, build_publication
 from .logging_utils import document_logger, sanitize_for_log
-from .media import render_pdf_region, render_pdf_regions, render_pdf_regions
+from .media import render_pdf_region, render_pdf_regions
 from .pipeline import LABEL_DISPLAY, KonverterPipeline, _plain_text_from_table
 from .storage import LocalDocumentStore
 
@@ -39,34 +40,95 @@ def re_split_row(value: str) -> list[str]:
     return [value]
 
 
+ORDERED_LIST_MARKER_RE = re.compile(
+    r"^(?P<marker>\((?:\d+|[A-Za-z]|[ivxlcdmIVXLCDM]+)\)|"
+    r"(?:\d+|[A-Za-z]|[ivxlcdmIVXLCDM]+)[.)])\s+"
+)
+BULLET_LIST_MARKER_RE = re.compile(r"^(?P<marker>[•\-–*·])\s+")
+
+
+def _parse_list_line(line: str) -> dict[str, Any] | None:
+    expanded = str(line).replace("\t", "  ").replace("|", " ").rstrip()
+    indentation = len(expanded) - len(expanded.lstrip(" "))
+    value = " ".join(expanded.strip().split())
+    if not value:
+        return None
+    ordered = ORDERED_LIST_MARKER_RE.match(value)
+    bullet = BULLET_LIST_MARKER_RE.match(value)
+    match = ordered or bullet
+    marker = match.group("marker") if match else ""
+    text = value[match.end() :].strip() if match else value
+    if not text:
+        return None
+    return {
+        "text": text,
+        "marker": marker,
+        "enumerated": ordered is not None,
+        "level": max(0, indentation // 2),
+    }
+
+
 def _strip_list_marker(line: str) -> str:
-    return re.sub(r"^\s*(?:[•\-–*]|\d+[.)])\s*", "", line)
+    entry = _parse_list_line(line)
+    return str(entry.get("text", "")) if entry else ""
 
 
-def _list_items(value: str) -> list[str]:
+def _list_entries(value: str) -> list[dict[str, Any]]:
     return [
-        " ".join(_strip_list_marker(line).replace("|", " ").split())
-        for line in value.splitlines()
-        if " ".join(_strip_list_marker(line).replace("|", " ").split())
+        entry
+        for line in str(value).splitlines()
+        if (entry := _parse_list_line(line)) is not None
     ]
 
 
-def _list_items_from_table(table: dict[str, Any] | None) -> list[str]:
+def _list_items(value: str) -> list[str]:
+    return [str(entry["text"]) for entry in _list_entries(value)]
+
+
+def _table_list_marker(value: str) -> str:
+    marker = " ".join(str(value).split())
+    if re.fullmatch(
+        r"\((?:\d+|[A-Za-z]|[ivxlcdmIVXLCDM]+)\)|"
+        r"(?:\d+|[A-Za-z]|[ivxlcdmIVXLCDM]+)[.)]",
+        marker,
+    ):
+        return marker
+    if re.fullmatch(r"\d+|[A-Za-z]|[ivxlcdmIVXLCDM]+", marker):
+        return f"{marker}."
+    return ""
+
+
+def _list_entries_from_table(
+    table: dict[str, Any] | None,
+) -> list[dict[str, Any]]:
     if not table:
         return []
     rows = table.get("rows") or []
     if not rows:
         rows = [[value] for value in table.get("headers", []) if str(value).strip()]
-    items: list[str] = []
+    entries: list[dict[str, Any]] = []
     for row in rows:
         cells = [
             " ".join(str(value).replace("|", " ").split())
             for value in row
             if " ".join(str(value).replace("|", " ").split())
         ]
-        if cells:
-            items.append(" — ".join(cells))
-    return items
+        if not cells:
+            continue
+        marker = _table_list_marker(cells[0]) if len(cells) > 1 else ""
+        text = " — ".join(cells[1:] if marker else cells)
+        parsed = _parse_list_line(text)
+        if parsed is None:
+            continue
+        if marker:
+            parsed["marker"] = marker
+            parsed["enumerated"] = True
+        entries.append(parsed)
+    return entries
+
+
+def _list_items_from_table(table: dict[str, Any] | None) -> list[str]:
+    return [str(entry["text"]) for entry in _list_entries_from_table(table)]
 
 
 def _is_generic_header(value: str) -> bool:
@@ -146,6 +208,46 @@ def _text_from_table(table: dict[str, Any] | None, target_type: str) -> str:
     return "\n".join(value for value in rendered_rows if value)
 
 
+def _public_processing_error(error: Exception) -> str:
+    """Map technical failures to stable, non-technical user guidance."""
+    value = str(error).casefold()
+    if isinstance(error, MemoryError) or any(
+        token in value
+        for token in ("out of memory", "bad_alloc", "paging file", "memoryerror")
+    ):
+        return (
+            "The document could not be processed because the system ran out of "
+            "available memory. Try processing fewer documents or disabling optional "
+            "extraction features."
+        )
+    if any(token in value for token in ("password", "encrypted", "decrypt")):
+        return (
+            "This PDF is password-protected. Remove the password before uploading it."
+        )
+    if any(
+        token in value
+        for token in ("corrupt", "damaged", "truncated", "xref", "unexpected eof")
+    ):
+        return (
+            "The PDF appears to be damaged or incomplete. Please open it locally to "
+            "confirm that it works, then upload it again."
+        )
+    if any(
+        token in value
+        for token in ("connection", "network", "socket", "timed out", "timeout")
+    ):
+        return (
+            "The connection was interrupted while processing the document. Please "
+            "try again."
+        )
+    if any(token in value for token in ("unsupported", "not a pdf", "file type")):
+        return "This file type is not supported. Please upload a PDF document."
+    return (
+        "Some content could not be extracted from this document. Try uploading "
+        "another copy of the PDF."
+    )
+
+
 class ProcessingManager:
     def __init__(self, settings: Settings, store: LocalDocumentStore):
         self.settings = settings
@@ -187,10 +289,10 @@ class ProcessingManager:
             "state": "running",
             "started_at": started_at,
             "duration_ms": estimate_seconds * 1000,
-            "current_step": 0,
+            "current_step": 1,
             "progress": 1,
             "remaining_seconds": estimate_seconds,
-            "message": "Queued for extraction",
+            "message": "Preparing document",
         }
         self.store.update_record(
             document_id, job=job, approved_at=None, metadata_confirmed=False
@@ -225,12 +327,14 @@ class ProcessingManager:
         step = int(job.get("current_step", 0))
         stage_ranges = {
             0: (1, 5),
-            1: (5, 76),
-            2: (60, 82),
-            3: (70, 86),
-            4: (78, 94),
-            5: (94, 99),
-            6: (100, 100),
+            1: (5, 10),
+            2: (10, 65),
+            3: (65, 78),
+            4: (78, 86),
+            5: (86, 92),
+            6: (92, 99),
+            7: (99, 99),
+            8: (100, 100),
         }
         floor, ceiling = stage_ranges.get(step, (1, 99))
         time_progress = min(99, max(1, round(elapsed / estimate * 100)))
@@ -293,7 +397,7 @@ class ProcessingManager:
                     **record["job"],
                     "state": "failed",
                     "remaining_seconds": 0,
-                    "message": str(exc),
+                    "message": _public_processing_error(exc),
                 },
             )
 
@@ -321,7 +425,7 @@ class ProcessingManager:
             "state": "complete",
             "started_at": record["job"].get("started_at"),
             "duration_ms": max(1, round(actual_seconds * 1000)),
-            "current_step": 6,
+            "current_step": 8,
             "progress": 100,
             "remaining_seconds": 0,
             "message": "Ready for review",
@@ -359,17 +463,39 @@ class WorkflowService:
             for item in items
             if item.get("type") == "list_item"
         }
-        if legacy_block_ids:
+        legacy_box_ids = {
+            str(item.get("block_id", ""))
+            for item in items
+            if item.get("type") == "callout"
+        }
+        if legacy_block_ids or legacy_box_ids:
             for item in items:
                 if item.get("type") != "list_item":
                     continue
                 item["type"] = "list"
                 item["label"] = "List"
                 item["title"] = "List structure needs confirmation"
+            for item in items:
+                if item.get("type") != "callout":
+                    continue
+                item["type"] = "box_section"
+                item["label"] = "Box Section"
+                item["title"] = "Box Section structure needs confirmation"
             blocks = self.store.read_artifact(document_id, "blocks.json", [])
             for block in blocks:
                 if str(block.get("id", "")) in legacy_block_ids:
                     block["label"] = "list"
+                if str(block.get("id", "")) in legacy_box_ids:
+                    block["label"] = "box_section"
+                    block["box_section_title"] = block.pop(
+                        "callout_title", "Box Section"
+                    )
+                    block["box_section_kind"] = block.pop(
+                        "callout_kind", "information"
+                    )
+                    block["box_section_blocks"] = block.pop(
+                        "callout_blocks", []
+                    )
             self.store.write_artifact(document_id, "review_items.json", items)
             self.store.write_artifact(document_id, "blocks.json", blocks)
         return items
@@ -401,16 +527,46 @@ class WorkflowService:
             )
             item["title"] = f"{item['label']} structure needs confirmation"
 
-        if target_type != "callout":
+        if target_type != "box_section":
+            block.pop("box_section_title", None)
+            block.pop("box_section_kind", None)
+            block.pop("box_section_blocks", None)
             block.pop("callout_title", None)
             block.pop("callout_kind", None)
             block.pop("callout_blocks", None)
-        elif original_type != "callout":
-            block["callout_title"] = "Highlighted information"
-            block["callout_kind"] = "information"
+        elif original_type != "box_section":
+            child = copy.deepcopy(block)
+            child["label"] = original_type
+            for key in (
+                "box_section_title",
+                "box_section_kind",
+                "box_section_blocks",
+                "callout_title",
+                "callout_kind",
+                "callout_blocks",
+            ):
+                child.pop(key, None)
+            block["box_section_title"] = "Box Section"
+            block["box_section_kind"] = "information"
+            block["box_section_blocks"] = [child]
 
         target_is_table = target_type in {"table", "document_index"}
-        if target_is_table:
+        if target_type == "box_section":
+            children = block.get("box_section_blocks") or []
+            if changes.get("corrected_text") is not None and len(children) == 1:
+                children[0]["text"] = str(changes["corrected_text"])
+            block["text"] = "\n\n".join(
+                str(child.get("text", "")).strip()
+                for child in children
+                if str(child.get("text", "")).strip()
+            )
+            block.pop("table_data", None)
+            block.pop("list_items", None)
+            block.pop("list_entries", None)
+            item["kind"] = "text"
+            item["corrected_text"] = block["text"]
+            item["corrected_table"] = None
+        elif target_is_table:
             table = changes.get("corrected_table")
             if table is None:
                 table = block.get("table_data") or _table_from_text(
@@ -425,17 +581,24 @@ class WorkflowService:
             item["corrected_text"] = None
         elif target_type == "list":
             text = changes.get("corrected_text")
-            if text is None:
-                list_items = _list_items_from_table(
+            if text is None and original_type == "list" and block.get("list_entries"):
+                list_entries = [dict(entry) for entry in block["list_entries"]]
+            elif text is None:
+                list_entries = _list_entries_from_table(
                     block.get("table_data")
-                ) or _list_items(str(block.get("text", "")))
+                ) or _list_entries(str(block.get("text", "")))
             else:
-                list_items = _list_items(str(text))
-            text = "\n".join(list_items)
+                list_entries = _list_entries(str(text))
+            list_items = [str(entry.get("text", "")) for entry in list_entries]
+            text = "\n".join(
+                f"{entry.get('marker', '')} {entry.get('text', '')}".strip()
+                for entry in list_entries
+                if str(entry.get("text", "")).strip()
+            )
             block["text"] = text
             block.pop("table_data", None)
             block["list_items"] = list_items
-            block.pop("list_entries", None)
+            block["list_entries"] = list_entries
             item["kind"] = "text"
             item["corrected_text"] = text
             item["corrected_table"] = None
@@ -453,8 +616,6 @@ class WorkflowService:
             block.pop("table_data", None)
             block.pop("list_items", None)
             block.pop("list_entries", None)
-            if target_type == "callout" and changes.get("corrected_text") is not None:
-                block.pop("callout_blocks", None)
             item["kind"] = "text"
             item["corrected_text"] = text
             item["corrected_table"] = None
@@ -480,6 +641,22 @@ class WorkflowService:
         self.store.write_artifact(document_id, "review_items.json", items)
         self._discard_generated(document_id)
         return items
+
+    def update_review_items(
+        self,
+        document_id: str,
+        item_ids: list[str],
+        changes: dict[str, Any],
+    ) -> list[dict[str, Any]]:
+        unique_ids = list(dict.fromkeys(item_ids))
+        available = {item["id"] for item in self.get_review_items(document_id)}
+        missing = [item_id for item_id in unique_ids if item_id not in available]
+        if missing:
+            raise KeyError(missing[0])
+        return [
+            self.update_review_item(document_id, item_id, changes)
+            for item_id in unique_ids
+        ]
 
     def get_metadata(self, document_id: str) -> dict[str, Any]:
         payload = self.store.read_artifact(document_id, "metadata.json")
@@ -529,12 +706,34 @@ class WorkflowService:
             raise ValueError("Title and publisher must be confirmed before approval")
 
         blocks = self.store.read_artifact(document_id, "blocks.json", [])
-        publication = build_publication(blocks, record)
-        block_by_id = {str(block.get("id", "")): block for block in blocks}
+        publication = build_publication(
+            blocks,
+            record,
+            summary_max_chars=self.settings.description_max_chars,
+        )
+
+        def raw_blocks(values: list[dict[str, Any]]):
+            for value in values:
+                yield value
+                yield from raw_blocks(
+                    value.get("box_section_blocks")
+                    or value.get("callout_blocks")
+                    or []
+                )
+
+        def publication_blocks(values: list[dict[str, Any]]):
+            for value in values:
+                yield value
+                if value.get("type") in {"box_section", "callout"}:
+                    yield from publication_blocks(value.get("blocks") or [])
+
+        block_by_id = {
+            str(block.get("id", "")): block for block in raw_blocks(blocks)
+        }
         figure_jobs: list[dict[str, Any]] = []
         pending_figures: list[tuple[dict[str, Any], str, Any]] = []
         for section in publication.get("sections", []):
-            for figure in section.get("blocks", []):
+            for figure in publication_blocks(section.get("blocks", [])):
                 if figure.get("type") != "figure":
                     continue
                 source_block = block_by_id.get(str(figure.get("sourceBlockId", "")))
@@ -575,6 +774,9 @@ class WorkflowService:
             site_url=self.settings.site_url,
             site_name=self.settings.site_name,
             page_url_template=self.settings.page_url_template,
+            public_api_url=self.settings.public_api_url,
+            license_url=self.settings.default_license_url,
+            copyright_holder=self.settings.default_copyright_holder,
             generated_at=datetime.now(timezone.utc).isoformat(timespec="seconds"),
         )
         project_root = Path(__file__).resolve().parents[2]
@@ -625,7 +827,7 @@ class WorkflowService:
             self.store.read_artifact(document_id, "doc_confidence.json", {}) or {}
         )
         score = doc_confidence.get("mean_score")
-        source = "Docling mean confidence"
+        source = "Mean document confidence"
         if score is None:
             blocks = self.store.read_artifact(document_id, "blocks.json", [])
             values = [

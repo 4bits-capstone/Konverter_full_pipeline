@@ -63,7 +63,7 @@ export const documentService: DocumentService = {
       state: 'complete',
       startedAt: Date.now(),
       durationMs: 10,
-      currentStep: 6,
+      currentStep: 8,
       progress: 100,
       remainingSeconds: 0,
       message: 'Ready for review',
@@ -74,7 +74,7 @@ export const documentService: DocumentService = {
       state: 'complete',
       startedAt: Date.now(),
       durationMs: 10,
-      currentStep: 6,
+      currentStep: 8,
       progress: 100,
       remainingSeconds: 0,
       message: 'Ready for review',
@@ -132,6 +132,11 @@ export const reviewService: ReviewService = {
     if (changes.correctedTable !== undefined) item.correctedTable = structuredClone(changes.correctedTable)
     item.status = changes.status ?? 'edited'
     return structuredClone(item)
+  },
+  async bulkUpdate(ids: string[], changes: ReviewUpdate) {
+    const updated = []
+    for (const id of ids) updated.push(await this.saveItem(id, changes))
+    return structuredClone(updated)
   },
   async resolveAll() {
     reviewItems = reviewItems.map((item) => (

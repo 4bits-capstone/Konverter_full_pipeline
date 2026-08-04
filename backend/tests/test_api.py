@@ -22,6 +22,16 @@ def load_client(tmp_path):
     os.environ["KONVERTER_WORKERS"] = "1"
     os.environ["KONVERTER_HIGH_CONFIDENCE"] = "0.85"
     os.environ["KONVERTER_MEDIUM_CONFIDENCE"] = "0.65"
+    os.environ["KONVERTER_SITE_URL"] = "https://www.lawreform.vic.gov.au"
+    os.environ["KONVERTER_SITE_NAME"] = "Example Commission"
+    os.environ["KONVERTER_PAGE_URL_TEMPLATE"] = (
+        "https://www.lawreform.vic.gov.au/publication/{slug}/"
+    )
+    os.environ["KONVERTER_PUBLIC_API_URL"] = "https://konverter.example.test"
+    os.environ["KONVERTER_DEFAULT_LICENSE_URL"] = (
+        "https://creativecommons.org/licenses/by/4.0/"
+    )
+    os.environ["KONVERTER_DEFAULT_COPYRIGHT_HOLDER"] = "Example Commission"
 
     import app.main
     from app.pipeline import PipelineOutput
@@ -200,13 +210,29 @@ def test_upload_review_correct_and_export(tmp_path):
         report = next(node for node in graph if node["@type"] == "Report")
         assert json_ld["@context"] == "https://schema.org"
         page_ref = report["mainEntityOfPage"]["@id"]
-        assert page_ref == f"#webpage-{document_id}"
+        assert page_ref == (
+            "https://www.lawreform.vic.gov.au/publication/"
+            "accessibility-standards-report/"
+        )
         web_page = next(node for node in graph if node["@type"] == "WebPage")
         assert web_page["@id"] == page_ref
         assert web_page["mainEntity"] == {"@id": report["@id"]}
         chapters = report.get("hasPart", [])
         assert all(part["@type"] == "Chapter" and "name" in part for part in chapters)
+        assert all(part["url"].startswith(page_ref + "#") for part in chapters)
         assert "size" not in report and "author" not in report
+        assert "dateModified" not in report
+        assert report["license"] == "https://creativecommons.org/licenses/by/4.0/"
+        assert report["copyrightHolder"] == report["publisher"][0]
+        assert report["accessibilitySummary"].startswith("This HTML edition")
+        image = next(node for node in graph if node["@type"] == "ImageObject")
+        assert report["image"] == {"@id": image["@id"]}
+        assert web_page["primaryImageOfPage"] == {"@id": image["@id"]}
+        assert image["contentUrl"].startswith("https://konverter.example.test/api/")
+        assert all(
+            value["contentUrl"].startswith("https://konverter.example.test/api/")
+            for value in report["encoding"]
+        )
         assert any(node["@type"] == "Organization" for node in graph)
 
         accessible = client.get(f"/api/documents/{document_id}/exports/accessible.html")
@@ -218,7 +244,8 @@ def test_upload_review_correct_and_export(tmp_path):
             f"/api/documents/{document_id}/exports/schema.jsonld"
         )
         assert schema_response.status_code == 200
-        assert schema_response.json()["name"] == "Accessibility Standards Report"
+        schema_graph = schema_response.json()["@graph"]
+        assert next(node for node in schema_graph if node["@type"] == "Report")["name"] == "Accessibility Standards Report"
         assert '\n  "@context": "https://schema.org"' in schema_response.text
         structured_response = client.get(
             f"/api/documents/{document_id}/exports/structured.json"
@@ -259,6 +286,32 @@ def test_table_to_footnote_and_remove_from_output(tmp_path):
         assert client.post(f"/api/documents/{document_id}/approval").status_code == 200
         accessible = client.get(f"/api/documents/{document_id}/exports/accessible.html")
         assert footnote_text.encode() not in accessible.content
+
+
+def test_bulk_review_update_changes_every_selected_block(tmp_path):
+    with load_client(tmp_path) as client:
+        document_id = upload_and_process(client, "bulk-review.pdf")
+        review = client.get(f"/api/documents/{document_id}/review-items").json()
+        selected = [item["id"] for item in review[:2]]
+
+        response = client.post(
+            f"/api/documents/{document_id}/review-items/bulk",
+            json={
+                "itemIds": selected,
+                "changes": {
+                    "type": "section_header_3",
+                    "label": "H3",
+                    "status": "edited",
+                },
+            },
+        )
+
+        assert response.status_code == 200
+        assert {item["id"] for item in response.json()} == set(selected)
+        assert all(item["type"] == "section_header_3" for item in response.json())
+        stored = client.get(f"/api/documents/{document_id}/review-items").json()
+        changed = [item for item in stored if item["id"] in selected]
+        assert all(item["label"] == "H3" and item["status"] == "edited" for item in changed)
 
 
 def test_upload_is_limited_to_five_documents(tmp_path):

@@ -54,6 +54,20 @@ export const testReviewItems: ReviewItem[] = [
     },
     source: { page: 4, html: '<p class="hl">Definitions</p><span class="page-num">Page 4</span>' },
   },
+  {
+    id: 'review-heading-secondary',
+    blockId: '#/texts/8',
+    type: 'section_header_2',
+    label: 'H2',
+    page: 6,
+    confidence: 0.56,
+    band: 'low',
+    title: 'Secondary heading needs confirmation',
+    kind: 'text',
+    status: 'pending',
+    extractedText: 'Implementation',
+    source: { page: 6, html: '<p class="hl">Implementation</p><span class="page-num">Page 6</span>' },
+  },
 ]
 
 export const testMetadata: DocumentMetadata = {

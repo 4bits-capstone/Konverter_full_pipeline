@@ -48,8 +48,8 @@ export function ApprovalPage() {
   const pictureFlags = reviewItems.filter(
     (item) => item.type === "picture",
   ).length;
-  const calloutFlags = reviewItems.filter(
-    (item) => item.type === "callout",
+  const boxSectionFlags = reviewItems.filter(
+    (item) => item.type === "box_section",
   ).length;
   const citationCount = metadata.citations
     .split(";")
@@ -71,7 +71,7 @@ export function ApprovalPage() {
       checklist.push({
         key: "tables",
         title: "Flagged tables and figures checked",
-        sub: `${tableFlags} table flag${tableFlags === 1 ? "" : "s"} · ${pictureFlags} picture flag${pictureFlags === 1 ? "" : "s"} · ${calloutFlags} callout flag${calloutFlags === 1 ? "" : "s"}`,
+        sub: `${tableFlags} table flag${tableFlags === 1 ? "" : "s"} · ${pictureFlags} picture flag${pictureFlags === 1 ? "" : "s"} · ${boxSectionFlags} Box Section flag${boxSectionFlags === 1 ? "" : "s"}`,
       });
     }
     if (requiredManualChecks.includes("citations")) {
@@ -84,7 +84,7 @@ export function ApprovalPage() {
     return checklist;
   }, [
     acceptedCount,
-    calloutFlags,
+    boxSectionFlags,
     citationCount,
     editedCount,
     pictureFlags,

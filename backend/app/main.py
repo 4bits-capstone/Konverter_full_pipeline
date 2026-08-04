@@ -24,6 +24,7 @@ from .models import (
     MetadataPayload,
     PublicationPayload,
     ReviewItem,
+    ReviewBulkPatch,
     ReviewPatch,
 )
 from .service import ProcessingManager, WorkflowService
@@ -49,7 +50,7 @@ async def lifespan(_: FastAPI):
 app = FastAPI(
     title="Konverter API",
     version="0.2.0",
-    description="Docling, rule-based metadata and accessible-export pipeline",
+    description="Accessible document review and publishing pipeline",
     lifespan=lifespan,
 )
 app.add_middleware(
@@ -147,7 +148,10 @@ async def upload_documents(
     for upload in files:
         safe_name = Path(upload.filename or "document.pdf").name
         if not safe_name.lower().endswith(".pdf"):
-            raise HTTPException(status_code=415, detail=f"{safe_name} is not a PDF")
+            raise HTTPException(
+                status_code=415,
+                detail="This file type is not supported. Please upload a PDF document.",
+            )
 
         descriptor, temporary_name = tempfile.mkstemp(
             prefix="konverter-upload-",
@@ -162,7 +166,8 @@ async def upload_documents(
                 while chunk := await upload.read(1024 * 1024):
                     if first_chunk and b"%PDF-" not in chunk[:1024]:
                         raise HTTPException(
-                            status_code=415, detail=f"{safe_name} is not a valid PDF"
+                            status_code=415,
+                            detail="This file type is not supported. Please upload a PDF document.",
                         )
                     first_chunk = False
                     size += len(chunk)
@@ -176,16 +181,23 @@ async def upload_documents(
                 pages = pdf_page_count(temporary_path)
             except Exception as exc:
                 raise HTTPException(
-                    status_code=422, detail=f"{safe_name} could not be read as a PDF"
+                    status_code=422,
+                    detail=(
+                        "The PDF appears to be damaged or incomplete. Please open it "
+                        "locally to confirm that it works, then upload it again."
+                    ),
                 ) from exc
             if pages < 1:
-                raise HTTPException(status_code=422, detail=f"{safe_name} has no pages")
+                raise HTTPException(
+                    status_code=422,
+                    detail="The PDF appears to be empty. Please upload a PDF with at least one page.",
+                )
             if pages > settings.max_pages:
                 raise HTTPException(
                     status_code=422,
                     detail=(
-                        f"{safe_name} has {pages} pages; the configured limit is "
-                        f"{settings.max_pages} (KONVERTER_MAX_PAGES)"
+                        f"This PDF has {pages} pages, which is above the current "
+                        f"limit of {settings.max_pages} pages."
                     ),
                 )
 
@@ -282,6 +294,26 @@ def update_review_item(
     except KeyError as exc:
         raise HTTPException(status_code=404, detail="Review item not found") from exc
     return ReviewItem(**item)
+
+
+@app.post(
+    "/api/documents/{document_id}/review-items/bulk",
+    response_model=list[ReviewItem],
+)
+def update_review_items_bulk(
+    document_id: str,
+    patch: ReviewBulkPatch,
+) -> list[ReviewItem]:
+    _require_complete(document_id)
+    try:
+        items = workflow.update_review_items(
+            document_id,
+            patch.item_ids,
+            patch.changes.model_dump(exclude_unset=True),
+        )
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail="Review item not found") from exc
+    return [ReviewItem(**item) for item in items]
 
 
 @app.post(

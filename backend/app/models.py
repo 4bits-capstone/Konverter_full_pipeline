@@ -48,8 +48,8 @@ ConfidenceBand = Literal["high", "med", "low"]
 ReviewKind = Literal["kv", "text", "table"]
 
 ReviewType = Literal[
+    "box_section",
     "caption",
-    "callout",
     "chapter_title",
     "document_index",
     "footnote",
@@ -77,6 +77,7 @@ class SourceEvidence(ApiModel):
 
 
 class ReviewTableData(ApiModel):
+    caption: str | None = Field(default=None, max_length=2_000)
     headers: list[str] = Field(default_factory=list)
     rows: list[list[str]] = Field(default_factory=list)
 
@@ -107,6 +108,11 @@ class ReviewPatch(ApiModel):
     label: str | None = Field(default=None, max_length=120)
     corrected_text: str | None = Field(default=None, max_length=200_000)
     corrected_table: ReviewTableData | None = None
+
+
+class ReviewBulkPatch(ApiModel):
+    item_ids: list[str] = Field(min_length=1, max_length=2_000)
+    changes: ReviewPatch
 
 
 class DocumentMetadata(ApiModel):

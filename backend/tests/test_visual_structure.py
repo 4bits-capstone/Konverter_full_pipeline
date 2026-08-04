@@ -15,7 +15,7 @@ def source_bounds(top: float, bottom: float) -> dict:
     }
 
 
-def test_visual_panel_becomes_one_semantic_recommendations_callout():
+def test_visual_panel_becomes_one_semantic_recommendations_box_section():
     blocks = [
         {
             "id": "before",
@@ -58,14 +58,14 @@ def test_visual_panel_becomes_one_semantic_recommendations_callout():
 
     grouped = group_visual_callouts(blocks, [region])
 
-    assert [block["id"] for block in grouped] == ["before", "callout:heading"]
-    callout = grouped[1]
-    assert callout["callout_title"] == "RECOMMENDATIONS"
-    assert callout["callout_kind"] == "recommendations"
-    assert callout["callout_blocks"][0]["list_entries"][0]["marker"] == "1."
+    assert [block["id"] for block in grouped] == ["before", "box-section:heading"]
+    box_section = grouped[1]
+    assert box_section["box_section_title"] == "RECOMMENDATIONS"
+    assert box_section["box_section_kind"] == "recommendations"
+    assert box_section["box_section_blocks"][0]["list_entries"][0]["marker"] == "1."
 
 
-def test_callout_reaches_preview_publication_as_labelled_aside_content():
+def test_box_section_reaches_preview_with_semantic_child_content():
     publication = build_publication(
         [
             {
@@ -83,12 +83,12 @@ def test_callout_reaches_preview_publication_as_labelled_aside_content():
                 "order": 1,
             },
             {
-                "id": "callout",
-                "label": "callout",
+                "id": "box-section",
+                "label": "box_section",
                 "text": "First recommendation",
-                "callout_title": "Recommendations",
-                "callout_kind": "recommendations",
-                "callout_blocks": [
+                "box_section_title": "Recommendations",
+                "box_section_kind": "recommendations",
+                "box_section_blocks": [
                     {
                         "label": "list",
                         "page": 2,
@@ -99,7 +99,17 @@ def test_callout_reaches_preview_publication_as_labelled_aside_content():
                                 "enumerated": True,
                             }
                         ],
-                    }
+                    },
+                    {
+                        "id": "boxed-table",
+                        "label": "table",
+                        "page": 2,
+                        "table_data": {
+                            "caption": "Recommendation status",
+                            "headers": ["Item", "Status"],
+                            "rows": [["First", "Open"]],
+                        },
+                    },
                 ],
                 "page": 2,
                 "order": 2,
@@ -108,12 +118,14 @@ def test_callout_reaches_preview_publication_as_labelled_aside_content():
         {"title": "Example report", "pages": 2, "file_name": "example.pdf"},
     )
 
-    callout = publication["sections"][0]["blocks"][0]
-    assert callout["type"] == "callout"
-    assert callout["variant"] == "recommendations"
-    assert callout["blocks"][0]["type"] == "list"
-    assert callout["blocks"][0]["style"] == "ordered"
-    assert callout["blocks"][0]["start"] == 4
+    box_section = publication["sections"][0]["blocks"][0]
+    assert box_section["type"] == "box_section"
+    assert box_section["variant"] == "recommendations"
+    assert box_section["blocks"][0]["type"] == "list"
+    assert box_section["blocks"][0]["style"] == "ordered"
+    assert box_section["blocks"][0]["start"] == 4
+    assert box_section["blocks"][1]["type"] == "table"
+    assert box_section["blocks"][1]["caption"] == "Recommendation status"
 
 
 def test_large_low_contrast_chapter_number_is_an_artifact():

@@ -10,7 +10,14 @@ import {
   Trash2,
   TriangleAlert,
 } from "lucide-react";
-import { useEffect, useMemo, useState } from "react";
+import {
+  type MouseEvent as ReactMouseEvent,
+  useEffect,
+  useLayoutEffect,
+  useMemo,
+  useRef,
+  useState,
+} from "react";
 import { useNavigate } from "react-router-dom";
 import { ConfidenceBadge } from "../components/ConfidenceBadge";
 import { StatusTag } from "../components/StatusTag";
@@ -26,6 +33,17 @@ import type {
 type StatusFilter = "all" | ReviewStatus;
 type LabelFilter = "all" | ReviewType;
 type Sort = "highest" | "lowest" | "page";
+type BulkAction = "accept" | "remove" | "label";
+type PendingConfirmation =
+  | {
+      kind: "bulk";
+      ids: string[];
+      action: BulkAction;
+      selectedType: ReviewType;
+      selectedLabel: string;
+      message: string;
+    }
+  | { kind: "switch-document"; nextId: string; message: string };
 
 const itemTone = (item: ReviewItem) => {
   if (
@@ -87,10 +105,10 @@ const structureLabels: Array<{
     description: "Text identifying or explaining a table, picture, or figure.",
   },
   {
-    value: "callout",
-    label: "Callout",
+    value: "box_section",
+    label: "Box Section",
     description:
-      "A visually bounded case study, information panel, recommendation box, or similar highlighted passage.",
+      "A bounded section that preserves its own paragraphs, lists, tables, figures and other child elements.",
   },
   {
     value: "document_index",
@@ -170,6 +188,7 @@ const emptyTable: ReviewTableData = { headers: ["Column 1"], rows: [[""]] };
 
 function cloneTable(table: ReviewTableData): ReviewTableData {
   return {
+    caption: table.caption,
     headers: [...table.headers],
     rows: table.rows.map((row) => [...row]),
   };
@@ -197,7 +216,17 @@ function tableToListText(table: ReviewTableData): string {
 
   return fallbackRows
     .filter((row) => row.length)
-    .map((row) => row.join(" — "))
+    .map((row) => {
+      const [first, ...rest] = row;
+      const marker = first?.match(/^\(?([0-9]+|[A-Za-z]|[ivxlcdm]+)[.)]?$/i);
+      if (marker && rest.length) {
+        const sourceMarker = first.includes("(") || /[.)]$/.test(first)
+          ? first
+          : `${first}.`;
+        return `${sourceMarker} ${rest.join(" — ")}`;
+      }
+      return row.join(" — ");
+    })
     .join("\n");
 }
 
@@ -269,11 +298,72 @@ function tableToStructuredText(
     .join("\n");
 }
 
-function splitListItems(text: string): string[] {
+type ReviewListLine = {
+  text: string;
+  marker: string;
+  ordered: boolean;
+  value?: number;
+};
+
+function splitListItems(text: string): ReviewListLine[] {
   return text
     .split(/\r?\n/)
-    .map((line) => line.replace(/^\s*(?:[•\-–*]|\d+[.)])\s*/, "").trim())
-    .filter(Boolean);
+    .map((line) => {
+      const value = line.trim();
+      const ordered = value.match(
+        /^(\(?(?:\d+|[A-Za-z]|[ivxlcdm]+)[.)])\s+(.+)$/i,
+      );
+      if (ordered) {
+        const numericValue = ordered[1].match(/\d+/)?.[0];
+        return {
+          marker: ordered[1],
+          text: ordered[2].trim(),
+          ordered: true,
+          value: numericValue ? Number(numericValue) : undefined,
+        };
+      }
+      const bullet = value.match(/^([•\-–*])\s+(.+)$/);
+      if (bullet)
+        return { marker: bullet[1], text: bullet[2].trim(), ordered: false };
+      return { marker: "", text: value, ordered: false };
+    })
+    .filter((item) => item.text);
+}
+
+function ReviewListPreview({ text }: { text: string }) {
+  const items = splitListItems(text);
+  const groups: ReviewListLine[][] = [];
+  items.forEach((item) => {
+    const group = groups.at(-1);
+    if (!group || group[0].ordered !== item.ordered) groups.push([item]);
+    else group.push(item);
+  });
+
+  return (
+    <div className="review-list-preview">
+      {groups.map((group, groupIndex) => {
+        const children = group.map((item, index) => (
+          <li
+            value={item.ordered ? item.value : undefined}
+            key={`${item.marker}-${item.text}-${index}`}
+          >
+            {item.text}
+          </li>
+        ));
+        const firstNumber = group[0].marker.match(/\d+/)?.[0];
+        return group[0].ordered ? (
+          <ol
+            start={firstNumber ? Number(firstNumber) : undefined}
+            key={`ordered-${groupIndex}`}
+          >
+            {children}
+          </ol>
+        ) : (
+          <ul key={`unordered-${groupIndex}`}>{children}</ul>
+        );
+      })}
+    </div>
+  );
 }
 
 function textToTable(text: string): ReviewTableData {
@@ -332,7 +422,7 @@ function TableExtract({
   caption,
 }: {
   table?: ReviewTableData;
-  caption: string;
+  caption?: string;
 }) {
   if (!table)
     return <div className="extract-box">No table cells were extracted.</div>;
@@ -342,10 +432,10 @@ function TableExtract({
       className="extract-box review-table-scroll"
       tabIndex={0}
       role="region"
-      aria-label={`${caption}; scroll horizontally when needed`}
+      aria-label={`${caption?.trim() || "Table"}; scroll horizontally when needed`}
     >
       <table className="review-table-extract">
-        <caption className="sr-only">{caption}</caption>
+        {caption?.trim() ? <caption>{caption}</caption> : null}
         <thead>
           <tr>
             {table.headers.map((header, index) => (
@@ -395,6 +485,7 @@ function TableEditor({
 
   const addColumn = () => {
     onChange({
+      ...table,
       headers: [...table.headers, `Column ${table.headers.length + 1}`],
       rows: table.rows.map((row) => [...row, ""]),
     });
@@ -403,6 +494,7 @@ function TableEditor({
   const removeColumn = (columnIndex: number) => {
     if (table.headers.length === 1) return;
     onChange({
+      ...table,
       headers: table.headers.filter((_, index) => index !== columnIndex),
       rows: table.rows.map((row) =>
         row.filter((_, index) => index !== columnIndex),
@@ -420,6 +512,15 @@ function TableEditor({
 
   return (
     <div className="review-table-editor">
+      <label className="review-table-caption-field">
+        Table caption (optional)
+        <input
+          className="input"
+          value={table.caption ?? ""}
+          onChange={(event) => onChange({ ...table, caption: event.target.value })}
+          placeholder="Use the caption from the original document"
+        />
+      </label>
       <div className="review-table-editor-head">
         <span>
           Edit each header or cell directly. Rows and columns can also be added
@@ -521,7 +622,8 @@ function ListEditor({
   const editableItems = text
     ? text
         .split(/\r?\n/)
-        .map((line) => line.replace(/^\s*(?:[•\-–*]|\d+[.)])\s*/, "").trim())
+        .map((line) => line.trim())
+        .filter(Boolean)
     : [""];
   const update = (next: string[]) => onChange(next.join("\n"));
 
@@ -533,8 +635,9 @@ function ListEditor({
     >
       <div className="review-list-editor-head">
         <span>
-          Each row becomes one semantic list item. Table headers and column
-          separators are not carried across.
+          Each row becomes one semantic list item. Keep markers such as 1., 2.
+          for an ordered list; use a bullet marker or no number for an unordered
+          list.
         </span>
         <button
           className="btn btn-outline btn-sm"
@@ -545,10 +648,10 @@ function ListEditor({
           Add item
         </button>
       </div>
-      <ol>
+      <div className="review-list-editor-items">
         {editableItems.map((item, index) => (
-          <li key={`list-item-${index}`}>
-            <span aria-hidden="true">{index + 1}</span>
+          <div className="review-list-editor-item" key={`list-item-${index}`}>
+            <span aria-hidden="true">Item {index + 1}</span>
             <textarea
               className="input"
               rows={2}
@@ -573,9 +676,9 @@ function ListEditor({
             >
               <Trash2 />
             </button>
-          </li>
+          </div>
         ))}
-      </ol>
+      </div>
     </div>
   );
 }
@@ -593,6 +696,7 @@ export function ReviewPage() {
     pendingCount,
     setReviewStatus,
     saveReviewItem,
+    bulkUpdateReviewItems,
     unlock,
     showToast,
   } = useKonverter();
@@ -600,7 +704,14 @@ export function ReviewPage() {
   const [labelFilter, setLabelFilter] = useState<LabelFilter>("all");
   const [sort, setSort] = useState<Sort>("highest");
   const [query, setQuery] = useState("");
-  const [selectedId, setSelectedId] = useState("i1");
+  const [selectedId, setSelectedId] = useState("");
+  const [bulkSelectedIds, setBulkSelectedIds] = useState<Set<string>>(
+    () => new Set(),
+  );
+  const [bulkAction, setBulkAction] = useState<BulkAction>("accept");
+  const [bulkType, setBulkType] = useState<ReviewType>("text");
+  const [pendingConfirmation, setPendingConfirmation] =
+    useState<PendingConfirmation | null>(null);
   const [editing, setEditing] = useState(false);
   const [editText, setEditText] = useState("");
   const [editType, setEditType] = useState<ReviewType>("text");
@@ -608,6 +719,10 @@ export function ReviewPage() {
   const [uploadedPicture, setUploadedPicture] = useState<string | null>(null);
   const [showDetailMobile, setShowDetailMobile] = useState(false);
   const [evidenceFailed, setEvidenceFailed] = useState(false);
+  const previousFilteredIds = useRef<string[]>([]);
+  const queueListRef = useRef<HTMLDivElement | null>(null);
+  const selectionAnchorRef = useRef("");
+  const tabModifierHeldRef = useRef(false);
 
   useEffect(() => {
     unlock("metadata");
@@ -665,15 +780,92 @@ export function ReviewPage() {
     return list;
   }, [labelFilter, query, reviewItems, sort, statusFilter]);
 
-  const selected =
-    filteredItems.find((item) => item.id === selectedId) ?? filteredItems[0];
+  const selected = filteredItems.find((item) => item.id === selectedId);
+  const selectedPosition = selected
+    ? filteredItems.findIndex((item) => item.id === selected.id) + 1
+    : 0;
+
+  useLayoutEffect(() => {
+    const nextIds = filteredItems.map((item) => item.id);
+    if (!nextIds.length) {
+      if (selectedId) setSelectedId("");
+      previousFilteredIds.current = [];
+      return;
+    }
+    if (selectedId && nextIds.includes(selectedId)) {
+      previousFilteredIds.current = nextIds;
+      return;
+    }
+
+    const previous = previousFilteredIds.current;
+    const previousIndex = previous.indexOf(selectedId);
+    let nextId = "";
+    if (previousIndex >= 0) {
+      for (let index = previousIndex + 1; index < previous.length; index += 1) {
+        if (nextIds.includes(previous[index])) {
+          nextId = previous[index];
+          break;
+        }
+      }
+      if (!nextId) {
+        for (let index = previousIndex - 1; index >= 0; index -= 1) {
+          if (nextIds.includes(previous[index])) {
+            nextId = previous[index];
+            break;
+          }
+        }
+      }
+    }
+    setSelectedId(nextId || nextIds[0]);
+    previousFilteredIds.current = nextIds;
+  }, [filteredItems, selectedId]);
+
+  useEffect(() => {
+    const visibleIds = new Set(filteredItems.map((item) => item.id));
+    setBulkSelectedIds((current) => {
+      const next = new Set([...current].filter((id) => visibleIds.has(id)));
+      return next.size === current.size ? current : next;
+    });
+  }, [filteredItems]);
+
+  const allVisibleSelected =
+    filteredItems.length > 0 &&
+    filteredItems.every((item) => bulkSelectedIds.has(item.id));
+
+  useEffect(() => {
+    const keyDown = (event: KeyboardEvent) => {
+      if (event.key === "Tab") tabModifierHeldRef.current = true;
+    };
+    const keyUp = (event: KeyboardEvent) => {
+      if (event.key === "Tab") tabModifierHeldRef.current = false;
+    };
+    const clearModifier = () => {
+      tabModifierHeldRef.current = false;
+    };
+    window.addEventListener("keydown", keyDown);
+    window.addEventListener("keyup", keyUp);
+    window.addEventListener("blur", clearModifier);
+    return () => {
+      window.removeEventListener("keydown", keyDown);
+      window.removeEventListener("keyup", keyUp);
+      window.removeEventListener("blur", clearModifier);
+    };
+  }, []);
 
   useEffect(() => {
     setEvidenceFailed(false);
   }, [activeDocumentId, selected?.id]);
 
+  const preserveQueueScroll = () => {
+    const scrollTop = queueListRef.current?.scrollTop ?? 0;
+    window.requestAnimationFrame(() => {
+      if (queueListRef.current) queueListRef.current.scrollTop = scrollTop;
+    });
+  };
+
   const act = async (item: ReviewItem, status: "accepted" | "removed") => {
     await setReviewStatus(item.id, status);
+    preserveQueueScroll();
     showToast(
       status === "accepted"
         ? "Item accepted"
@@ -700,10 +892,13 @@ export function ReviewPage() {
       type: editType,
       label,
       status: "edited",
-      ...(usesTableEditor(editType)
+      ...(editType === "box_section"
+        ? {}
+        : usesTableEditor(editType)
         ? { correctedTable: editTable }
         : { correctedText: editText }),
     });
+    preserveQueueScroll();
     setEditing(false);
     showToast("Review changes saved");
   };
@@ -730,19 +925,119 @@ export function ReviewPage() {
 
   const restoreToOutput = async (item: ReviewItem) => {
     await setReviewStatus(item.id, "accepted");
+    preserveQueueScroll();
     showToast("Item restored to generated output");
   };
 
-  const switchReviewDocument = (nextId: string) => {
-    if (nextId === activeDocumentId) return;
-    if (
-      editing &&
-      !window.confirm(
-        "Switch documents and discard the unsaved changes in this review item?",
-      )
-    )
-      return;
+  const toggleBulkItem = (id: string) => {
+    setBulkSelectedIds((current) => {
+      const next = new Set(current);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      return next;
+    });
+  };
 
+  const toggleAllVisible = () => {
+    setBulkSelectedIds((current) => {
+      const next = new Set(current);
+      if (allVisibleSelected) filteredItems.forEach((item) => next.delete(item.id));
+      else filteredItems.forEach((item) => next.add(item.id));
+      return next;
+    });
+    selectionAnchorRef.current = filteredItems.at(-1)?.id ?? "";
+  };
+
+  const openReviewItem = (item: ReviewItem) => {
+    setSelectedId(item.id);
+    setEditing(false);
+    setUploadedPicture(null);
+    setEvidenceFailed(false);
+    setShowDetailMobile(true);
+  };
+
+  const handleQueueItemClick = (
+    event: ReactMouseEvent<HTMLButtonElement>,
+    item: ReviewItem,
+  ) => {
+    const shiftClick = event.shiftKey;
+    const anchorId = selectionAnchorRef.current;
+    const additiveClick =
+      shiftClick ||
+      event.ctrlKey ||
+      event.metaKey ||
+      tabModifierHeldRef.current;
+    if (additiveClick) {
+      event.preventDefault();
+      setBulkSelectedIds((current) => {
+        const next = new Set(current);
+        if (shiftClick && anchorId) {
+          const anchorIndex = filteredItems.findIndex(
+            (entry) => entry.id === anchorId,
+          );
+          const itemIndex = filteredItems.findIndex(
+            (entry) => entry.id === item.id,
+          );
+          if (anchorIndex >= 0 && itemIndex >= 0) {
+            const [start, end] = [anchorIndex, itemIndex].sort((a, b) => a - b);
+            filteredItems
+              .slice(start, end + 1)
+              .forEach((entry) => next.add(entry.id));
+          } else next.add(item.id);
+        } else if (next.has(item.id)) next.delete(item.id);
+        else next.add(item.id);
+        return next;
+      });
+    }
+    selectionAnchorRef.current = item.id;
+    openReviewItem(item);
+  };
+
+  const requestBulkAction = () => {
+    const ids = [...bulkSelectedIds];
+    if (!ids.length) return;
+    const selectedLabel =
+      structureLabels.find((entry) => entry.value === bulkType)?.label ?? bulkType;
+    const message =
+      bulkAction === "accept"
+        ? `Accept ${ids.length} selected item${ids.length === 1 ? "" : "s"}?`
+        : bulkAction === "remove"
+        ? `Remove ${ids.length} selected item${ids.length === 1 ? "" : "s"} from the final output?`
+        : `Change ${ids.length} selected item${ids.length === 1 ? "" : "s"} to ${selectedLabel}?`;
+    setPendingConfirmation({
+      kind: "bulk",
+      ids,
+      action: bulkAction,
+      selectedType: bulkType,
+      selectedLabel,
+      message,
+    });
+  };
+
+  const applyConfirmedBulkAction = async (
+    confirmation: Extract<PendingConfirmation, { kind: "bulk" }>,
+  ) => {
+    const { ids, action, selectedLabel, selectedType } = confirmation;
+    await bulkUpdateReviewItems(
+      ids,
+      action === "accept"
+        ? { status: "accepted" }
+        : action === "remove"
+        ? { status: "removed" }
+        : { type: selectedType, label: selectedLabel, status: "edited" },
+    );
+    preserveQueueScroll();
+    showToast(
+      action === "accept"
+        ? `${ids.length} item${ids.length === 1 ? "" : "s"} accepted`
+        : action === "remove"
+        ? `${ids.length} item${ids.length === 1 ? "" : "s"} removed from output`
+        : `${ids.length} item${ids.length === 1 ? "" : "s"} changed to ${selectedLabel}`,
+    );
+  };
+
+  const performDocumentSwitch = (nextId: string) => {
+    if (nextId === activeDocumentId) return;
     const nextDocument = completedDocuments.find(
       (document) => document.id === nextId,
     );
@@ -754,6 +1049,29 @@ export function ReviewPage() {
     showToast(
       `Now reviewing ${nextDocument?.fileName ?? "the selected document"}`,
     );
+  };
+
+  const switchReviewDocument = (nextId: string) => {
+    if (nextId === activeDocumentId) return;
+    if (editing) {
+      setPendingConfirmation({
+        kind: "switch-document",
+        nextId,
+        message:
+          "Switch documents and discard the unsaved changes in this review item?",
+      });
+      return;
+    }
+    performDocumentSwitch(nextId);
+  };
+
+  const confirmPendingAction = async () => {
+    const confirmation = pendingConfirmation;
+    if (!confirmation) return;
+    setPendingConfirmation(null);
+    if (confirmation.kind === "bulk")
+      await applyConfirmedBulkAction(confirmation);
+    else performDocumentSwitch(confirmation.nextId);
   };
 
   const uploadPicture = async (item: ReviewItem, file?: File) => {
@@ -1001,16 +1319,82 @@ export function ReviewPage() {
         </div>
       </div>
 
+      <section
+        className={`bulk-review-actions ${bulkSelectedIds.size ? "is-active" : ""}`}
+        aria-label="Bulk review actions"
+      >
+        <button
+          className="btn btn-ghost btn-sm bulk-select-visible"
+          type="button"
+          disabled={!filteredItems.length}
+          aria-pressed={allVisibleSelected}
+          onClick={toggleAllVisible}
+        >
+          <Check aria-hidden="true" />
+          {allVisibleSelected ? "Clear visible selection" : "Select all visible"}
+        </button>
+        <span className="bulk-selected-count" role="status" aria-live="polite">
+          {bulkSelectedIds.size
+            ? `${bulkSelectedIds.size} selected`
+            : "Shift+click or Tab+click to select a range"}
+        </span>
+        {bulkSelectedIds.size > 0 && (
+          <label>
+            Action
+            <select
+              className="sel"
+              aria-label="Bulk action"
+              value={bulkAction}
+              onChange={(event) =>
+                setBulkAction(event.target.value as BulkAction)
+              }
+            >
+              <option value="accept">Accept selected</option>
+              <option value="remove">Remove from output</option>
+              <option value="label">Change structure label</option>
+            </select>
+          </label>
+        )}
+        {bulkSelectedIds.size > 0 && bulkAction === "label" && (
+          <label>
+            Structure label
+            <select
+              className="sel"
+              aria-label="Bulk structure label"
+              value={bulkType}
+              onChange={(event) => setBulkType(event.target.value as ReviewType)}
+            >
+              {structureLabels.map((item) => (
+                <option key={item.value} value={item.value}>
+                  {item.label}
+                </option>
+              ))}
+            </select>
+          </label>
+        )}
+        {bulkSelectedIds.size > 0 && (
+          <button
+            className="btn btn-primary btn-sm"
+            type="button"
+            onClick={requestBulkAction}
+          >
+            Apply to {bulkSelectedIds.size} selected
+          </button>
+        )}
+      </section>
+
       <p className="mobile-hint">Tap a flagged item to review it.</p>
       <div className={`review-grid ${showDetailMobile ? "show-detail" : ""}`}>
         <div className="queue">
           <div className="queue-head">
             <span>Flagged queue</span>
             <span>
-              {filteredItems.length} item{filteredItems.length === 1 ? "" : "s"}
+              {selectedPosition
+                ? `Flag ${selectedPosition} of ${filteredItems.length}`
+                : `${filteredItems.length} items`}
             </span>
           </div>
-          <div className="qlist" role="listbox" aria-label="Flagged items">
+          <div className="qlist" role="list" aria-label="Flagged items" ref={queueListRef}>
             {reviewLoading && (
               <div style={{ padding: 20 }}>Loading review items…</div>
             )}
@@ -1018,30 +1402,42 @@ export function ReviewPage() {
               <div className="empty-filter">No items match these filters.</div>
             )}
             {filteredItems.map((item) => (
-              <button
+              <div
+                className={`qitem-row ${bulkSelectedIds.has(item.id) ? "bulk-selected" : ""}`}
+                role="listitem"
                 key={item.id}
-                className={`qitem tone-${itemTone(item)}`}
-                role="option"
-                aria-selected={selected?.id === item.id}
-                aria-current={selected?.id === item.id ? "true" : undefined}
-                onClick={() => {
-                  setSelectedId(item.id);
-                  setEditing(false);
-                  setUploadedPicture(null);
-                  setEvidenceFailed(false);
-                  setShowDetailMobile(true);
-                }}
               >
-                <div className="qitem-top">
-                  <StructureChip item={item} />
-                  <ConfidenceBadge band={item.band} score={item.confidence} />
-                  <span className="pg">p.{item.page}</span>
-                </div>
-                <div className="qitem-txt">{item.title}</div>
-                <div className="qitem-bot">
-                  <StatusTag status={item.status} />
-                </div>
-              </button>
+                {bulkSelectedIds.size > 0 && (
+                  <label className="qitem-checkbox">
+                    <input
+                      type="checkbox"
+                      checked={bulkSelectedIds.has(item.id)}
+                      onChange={() => toggleBulkItem(item.id)}
+                    />
+                    <span className="sr-only">
+                      Select {item.title} for a bulk action
+                    </span>
+                  </label>
+                )}
+                <button
+                  className={`qitem tone-${itemTone(item)}`}
+                  aria-current={selected?.id === item.id ? "true" : undefined}
+                  aria-pressed={
+                    bulkSelectedIds.size ? bulkSelectedIds.has(item.id) : undefined
+                  }
+                  onClick={(event) => handleQueueItemClick(event, item)}
+                >
+                  <div className="qitem-top">
+                    <StructureChip item={item} />
+                    <ConfidenceBadge band={item.band} score={item.confidence} />
+                    <span className="pg">p.{item.page}</span>
+                  </div>
+                  <div className="qitem-txt">{item.title}</div>
+                  <div className="qitem-bot">
+                    <StatusTag status={item.status} />
+                  </div>
+                </button>
+              </div>
             ))}
           </div>
         </div>
@@ -1063,7 +1459,9 @@ export function ReviewPage() {
                   score={selected.confidence}
                 />
                 <StatusTag status={selected.status} />
-                <span className="mono detail-page">page {selected.page}</span>
+                <span className="mono detail-page">
+                  Flag {selectedPosition} of {filteredItems.length} · page {selected.page}
+                </span>
               </div>
               <div className="detail-body">
                 <h3 className="detail-title">{selected.title}</h3>
@@ -1117,7 +1515,7 @@ export function ReviewPage() {
                 ) : selected.kind === "table" ? (
                   <TableExtract
                     table={selected.tableData}
-                    caption="Extracted table"
+                    caption={selected.tableData?.caption}
                   />
                 ) : (
                   <div className="extract-box pre-wrap">
@@ -1134,22 +1532,16 @@ export function ReviewPage() {
                     <div className="field-label">Saved corrected table</div>
                     <TableExtract
                       table={selected.correctedTable}
-                      caption="Saved corrected table"
+                      caption={selected.correctedTable.caption}
                     />
                   </>
                 )}
 
-                {selected.correctedText && !editing && (
+                {selected.correctedText && !editing && selected.type !== "box_section" && (
                   <>
                     <div className="field-label">Saved correction</div>
                     {selected.type === "list" ? (
-                      <ul className="corrected-result corrected-list">
-                        {splitListItems(selected.correctedText).map(
-                          (item, index) => (
-                            <li key={`${item}-${index}`}>{item}</li>
-                          ),
-                        )}
-                      </ul>
+                      <ReviewListPreview text={selected.correctedText} />
                     ) : (
                       <div className="corrected-result pre-wrap">
                         {selected.correctedText}
@@ -1161,14 +1553,22 @@ export function ReviewPage() {
                 {editing && (
                   <div className="correction-editor">
                     <div className="field-label">
-                      {selected.kind === "table"
+                      {usesTableEditor(editType)
                         ? "Corrected table"
+                        : editType === "box_section"
+                          ? "Box Section structure"
                         : "Corrected result"}
                     </div>
                     {usesTableEditor(editType) ? (
                       <TableEditor table={editTable} onChange={setEditTable} />
                     ) : editType === "list" ? (
                       <ListEditor text={editText} onChange={setEditText} />
+                    ) : editType === "box_section" ? (
+                      <div className="box-section-edit-note">
+                        Child paragraphs, lists, tables, figures and footnotes stay as
+                        separate semantic elements. Change the container label here;
+                        its child content is not flattened into one text field.
+                      </div>
                     ) : (
                       <textarea
                         className="extract-input"
@@ -1184,6 +1584,8 @@ export function ReviewPage() {
                         ? "This structure is corrected as rows and columns."
                         : editType === "list"
                           ? "Enter one list item per line."
+                          : editType === "box_section"
+                            ? "The Box Section remains a container in every generated output."
                           : "This structure is corrected as text."}
                     </div>
                   </div>
@@ -1329,6 +1731,34 @@ export function ReviewPage() {
           )}
         </div>
       </div>
+
+      {pendingConfirmation && (
+        <div
+          className="review-confirmation-toast"
+          role="alertdialog"
+          aria-modal="false"
+          aria-labelledby="review-confirmation-message"
+        >
+          <p id="review-confirmation-message">{pendingConfirmation.message}</p>
+          <div>
+            <button
+              className="btn confirmation-cancel btn-sm"
+              type="button"
+              onClick={() => setPendingConfirmation(null)}
+            >
+              Cancel
+            </button>
+            <button
+              className="btn confirmation-accept btn-sm"
+              type="button"
+              autoFocus
+              onClick={() => void confirmPendingAction()}
+            >
+              Confirm
+            </button>
+          </div>
+        </div>
+      )}
     </section>
   );
 }

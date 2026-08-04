@@ -205,7 +205,7 @@ export function UploadPage() {
                         {job.state === 'running'
                           ? job.message ?? `${step?.label ?? 'Processing'}${step?.detail ? ` — ${step.detail}` : ''}`
                           : job.state === 'failed'
-                            ? job.message ?? 'Processing failed. Check the backend terminal, then retry.'
+                            ? job.message ?? 'Some content could not be extracted from this document. Try uploading another copy of the PDF.'
                             : job.state === 'complete' ? 'Processing complete' : 'Ready to start'}
                       </span>
                     </div>

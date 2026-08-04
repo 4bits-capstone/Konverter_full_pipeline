@@ -172,6 +172,41 @@ def test_confidence_matching_uses_only_clusters_from_the_same_page():
     assert confidence["#/texts/0"] == 0.9
 
 
+def test_multi_column_list_is_linearised_by_column_then_vertical_position():
+    document = {
+        "pages": {"1": {"size": {"width": 600, "height": 800}}},
+    }
+
+    def list_item(reference: str, text: str, left: int, top: int) -> dict:
+        return {
+            "self_ref": reference,
+            "label": "list_item",
+            "text": text,
+            "prov": [
+                {
+                    "page_no": 1,
+                    "bbox": {"l": left, "t": top, "r": left + 210, "b": top + 20},
+                }
+            ],
+        }
+
+    items = [
+        list_item("right-1", "Right one", 330, 100),
+        list_item("left-1", "Left one", 70, 90),
+        list_item("right-2", "Right two", 330, 150),
+        list_item("left-2", "Left two", 70, 140),
+    ]
+
+    ordered = KonverterPipeline._ordered_list_items(document, items)
+
+    assert [value["text"] for value in ordered] == [
+        "Left one",
+        "Left two",
+        "Right one",
+        "Right two",
+    ]
+
+
 def test_rule_metadata_uses_existing_docling_text(monkeypatch, tmp_path):
     monkeypatch.setenv("KONVERTER_DATA_DIR", str(tmp_path))
     document = {

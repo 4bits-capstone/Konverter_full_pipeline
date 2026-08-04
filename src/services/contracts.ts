@@ -28,6 +28,7 @@ export interface ReviewService {
   updateTable(id: string, table: ReviewTableData, documentId?: string): Promise<ReviewItem>
   updateLabel(id: string, type: ReviewType, label: string, documentId?: string): Promise<ReviewItem>
   saveItem(id: string, changes: ReviewUpdate, documentId?: string): Promise<ReviewItem>
+  bulkUpdate(ids: string[], changes: ReviewUpdate, documentId?: string): Promise<ReviewItem[]>
   resolveAll(documentId?: string): Promise<ReviewItem[]>
 }
 

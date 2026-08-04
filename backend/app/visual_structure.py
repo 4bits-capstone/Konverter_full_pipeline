@@ -314,10 +314,7 @@ def group_visual_callouts(
                 "chapter_title",
                 "header",
                 "footer",
-                "footnote",
                 "document_index",
-                "table",
-                "picture",
             }
             and _block_in_region(block, region)
         ]
@@ -348,17 +345,17 @@ def group_visual_callouts(
             for block in contained
             if block.get("confidence") is not None
         ]
-        callout = {
-            "id": f"callout:{heading['id']}",
-            "label": "callout",
+        box_section = {
+            "id": f"box-section:{heading['id']}",
+            "label": "box_section",
             "text": "\n\n".join(
                 str(block.get("text", "")).strip()
                 for block in child_blocks
                 if str(block.get("text", "")).strip()
             ),
-            "callout_title": title,
-            "callout_kind": _callout_kind(title),
-            "callout_blocks": child_blocks,
+            "box_section_title": title,
+            "box_section_kind": _callout_kind(title),
+            "box_section_blocks": child_blocks,
             "page": int(region["page"]),
             "confidence": min(confidence_values) if confidence_values else None,
             "source_bounds": {
@@ -371,7 +368,7 @@ def group_visual_callouts(
             },
             "order": int(heading.get("order", 0)),
         }
-        replacements[str(heading["id"])] = callout
+        replacements[str(heading["id"])] = box_section
         used.update(str(block.get("id", "")) for block in contained)
 
     output: list[dict[str, Any]] = []

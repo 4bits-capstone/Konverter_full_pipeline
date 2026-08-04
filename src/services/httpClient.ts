@@ -47,7 +47,15 @@ export async function apiRequest<T>(
       const message =
         typeof details?.detail === "string"
           ? details.detail
-          : `API request failed (${response.status})`;
+          : response.status === 413
+            ? "This file is too large to upload. Choose a PDF under the upload limit."
+            : response.status === 415
+              ? "This file type is not supported. Please upload a PDF document."
+              : response.status === 422
+                ? "The PDF could not be read. Please check the file and upload it again."
+                : response.status >= 500
+                  ? "The document could not be processed right now. Please try again."
+                  : "The request could not be completed. Please try again.";
       throw new ApiError(message, response.status, details);
     }
 
@@ -57,12 +65,12 @@ export async function apiRequest<T>(
     if (error instanceof ApiError) throw error;
     if (error instanceof DOMException && error.name === "AbortError") {
       throw new ApiError(
-        "The backend request timed out. Large documents can take longer — try again and the cached output will finish faster.",
+        "The request took too long. Large documents can take longer; please try again.",
         408,
       );
     }
     throw new ApiError(
-      error instanceof Error ? error.message : "Unable to reach the backend",
+      "The connection was interrupted. Please check your connection and try again.",
       0,
     );
   } finally {

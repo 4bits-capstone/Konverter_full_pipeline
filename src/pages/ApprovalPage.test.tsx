@@ -101,6 +101,6 @@ describe("ApprovalPage", () => {
     ).not.toBeInTheDocument();
     fireEvent.click(resolveAll);
 
-    expect(await screen.findByText("All 2 items reviewed")).toBeInTheDocument();
+    expect(await screen.findByText("All 3 items reviewed")).toBeInTheDocument();
   });
 });

@@ -25,13 +25,19 @@ export interface DoclingParagraphBlock {
 export interface DoclingListBlock {
   type: 'list'
   style: 'unordered' | 'ordered' | 'numbered-paragraphs'
-  items: Array<{ text: string; marker?: string }>
+  items: Array<{
+    text: string
+    marker?: string
+    level?: number
+    ordered?: boolean
+    value?: number
+  }>
   start?: number
   page?: number
 }
 
-export interface DoclingCalloutBlock {
-  type: 'callout'
+export interface DoclingBoxSectionBlock {
+  type: 'box_section'
   id: string
   title: string
   variant: 'case-study' | 'information' | 'recommendations'
@@ -42,7 +48,7 @@ export interface DoclingCalloutBlock {
 export interface DoclingTableBlock {
   type: 'table'
   id: string
-  caption: string
+  caption?: string
   rows: DoclingTableCell[][]
   page?: number
 }
@@ -68,6 +74,13 @@ export interface DoclingFormulaBlock {
   page?: number
 }
 
+export interface DoclingFootnoteBlock {
+  type: 'footnote'
+  id: string
+  text: string
+  page?: number
+}
+
 export interface DoclingCheckboxBlock {
   type: 'checkbox'
   text: string
@@ -86,11 +99,12 @@ export type DoclingBlock =
   | DoclingHeadingBlock
   | DoclingParagraphBlock
   | DoclingListBlock
-  | DoclingCalloutBlock
+  | DoclingBoxSectionBlock
   | DoclingTableBlock
   | DoclingFigureBlock
   | DoclingCaptionBlock
   | DoclingFormulaBlock
+  | DoclingFootnoteBlock
   | DoclingCheckboxBlock
   | DoclingGroupBlock
 

@@ -39,6 +39,69 @@ function NumberedParagraph({ number, text }: { number?: string; text: string }) 
   )
 }
 
+type ListTreeNode = {
+  text: string
+  marker?: string
+  ordered: boolean
+  value?: number
+  children: ListTreeNode[]
+}
+
+function buildListTree(
+  items: Array<{
+    text: string
+    marker?: string
+    level?: number
+    ordered?: boolean
+    value?: number
+  }>,
+  defaultOrdered: boolean,
+): ListTreeNode[] {
+  if (!items.length) return []
+  const levels = items.map((item) => Math.max(0, item.level ?? 0))
+  const baseLevel = Math.min(...levels)
+  const roots: ListTreeNode[] = []
+  const stack: Array<{ level: number; children: ListTreeNode[] }> = [{ level: -1, children: roots }]
+  items.forEach((item, index) => {
+    let level = levels[index] - baseLevel
+    while (stack.at(-1)!.level >= level) stack.pop()
+    if (level > stack.at(-1)!.level + 1) level = stack.at(-1)!.level + 1
+    const node: ListTreeNode = {
+      text: item.text,
+      marker: item.marker,
+      ordered: item.ordered ?? defaultOrdered,
+      value: item.value,
+      children: [],
+    }
+    stack.at(-1)!.children.push(node)
+    stack.push({ level, children: node.children })
+  })
+  return roots
+}
+
+function NestedList({ nodes, start }: { nodes: ListTreeNode[]; start?: number }) {
+  const groups: ListTreeNode[][] = []
+  nodes.forEach((node) => {
+    const group = groups.at(-1)
+    if (!group || group[0].ordered !== node.ordered) groups.push([node])
+    else group.push(node)
+  })
+  return <>{groups.map((group, groupIndex) => {
+    const items = group.map((item, index) => (
+      <li
+        value={item.ordered ? item.value : undefined}
+        key={`${item.text}-${index}`}
+      >
+        {item.text}
+        {item.children.length ? <NestedList nodes={item.children} /> : null}
+      </li>
+    ))
+    return group[0].ordered
+      ? <ol className="reader-source-list" start={groupIndex === 0 ? start : undefined} key={`ordered-${groupIndex}`}>{items}</ol>
+      : <ul className="reader-source-list" key={`unordered-${groupIndex}`}>{items}</ul>
+  })}</>
+}
+
 function ContentBlock({
   block,
   figureUrl,
@@ -79,21 +142,23 @@ function ContentBlock({
       )
     }
 
-    const items = block.items.map((item, index) => <li key={`${item.text}-${index}`}>{item.text}</li>)
-    return block.style === 'ordered'
-      ? <ol className="reader-source-list" start={block.start}>{items}</ol>
-      : <ul className="reader-source-list">{items}</ul>
+    return (
+      <NestedList
+        nodes={buildListTree(block.items, block.style === 'ordered')}
+        start={block.start}
+      />
+    )
   }
 
-  if (block.type === 'callout') {
+  if (block.type === 'box_section') {
     const titleId = `${block.id}-title`
     return (
-      <aside
-        className={`docling-callout docling-callout--${block.variant}`}
+      <section
+        className={`docling-box-section docling-box-section--${block.variant}`}
         aria-labelledby={titleId}
       >
         <h3 id={titleId}>{block.title}</h3>
-        <div className="docling-callout-content">
+        <div className="docling-box-section-content">
           {block.blocks.map((child, index) => (
             <ContentBlock
               block={child}
@@ -102,15 +167,16 @@ function ContentBlock({
             />
           ))}
         </div>
-      </aside>
+      </section>
     )
   }
 
   if (block.type === 'table') {
+    const caption = block.caption?.trim()
     return (
-      <div className="docling-table-scroll" tabIndex={0} role="region" aria-label={`${block.caption}; scroll horizontally when needed`}>
+      <div className="docling-table-scroll" tabIndex={0} role="region" aria-label={`${caption || 'Table'}; scroll horizontally when needed`}>
         <table id={block.id} className="docling-table">
-          <caption>{block.caption}</caption>
+          {caption ? <caption>{caption}</caption> : null}
           <tbody>
             {block.rows.map((row, rowIndex) => (
               <tr key={`${block.id}-row-${rowIndex}`}>
@@ -144,6 +210,10 @@ function ContentBlock({
 
   if (block.type === 'formula') {
     return <div className="docling-formula" role="math" aria-label="Formula">{block.text}</div>
+  }
+
+  if (block.type === 'footnote') {
+    return <p className="docling-footnote" id={block.id} role="doc-footnote">{block.text}</p>
   }
 
   if (block.type === 'checkbox') {

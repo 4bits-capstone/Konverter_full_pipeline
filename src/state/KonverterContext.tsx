@@ -64,7 +64,7 @@ interface KonverterContextValue {
   markDone: (stage: Stage) => void;
   reviewItems: ReviewItem[];
   reviewLoading: boolean;
-  setReviewStatus: (id: string, status: ReviewStatus) => Promise<void>;
+  setReviewStatus: (id: string, status: ReviewStatus) => Promise<ReviewItem>;
   updateReviewText: (id: string, text: string) => Promise<void>;
   updateReviewTable: (id: string, table: ReviewTableData) => Promise<void>;
   updateReviewLabel: (
@@ -72,7 +72,11 @@ interface KonverterContextValue {
     type: ReviewType,
     label: string,
   ) => Promise<void>;
-  saveReviewItem: (id: string, changes: ReviewUpdate) => Promise<void>;
+  saveReviewItem: (id: string, changes: ReviewUpdate) => Promise<ReviewItem>;
+  bulkUpdateReviewItems: (
+    ids: string[],
+    changes: ReviewUpdate,
+  ) => Promise<ReviewItem[]>;
   resolveAllReviews: () => Promise<void>;
   pendingCount: number;
   resolvedCount: number;
@@ -408,6 +412,7 @@ export function KonverterProvider({ children }: PropsWithChildren) {
       );
       setApprovedAt(null);
       cacheReviewItem(updated);
+      return updated;
     },
     [activeDocumentId, cacheReviewItem, setApprovedAt],
   );
@@ -461,8 +466,26 @@ export function KonverterProvider({ children }: PropsWithChildren) {
       );
       setApprovedAt(null);
       cacheReviewItem(updated);
+      return updated;
     },
     [activeDocumentId, cacheReviewItem, setApprovedAt],
+  );
+
+  const bulkUpdateReviewItems = useCallback(
+    async (ids: string[], changes: ReviewUpdate) => {
+      const updated = await reviewService.bulkUpdate(
+        ids,
+        changes,
+        activeDocumentId ?? undefined,
+      );
+      setApprovedAt(null);
+      queryClient.setQueryData<ReviewItem[]>(reviewQueryKey, (current = []) => {
+        const replacements = new Map(updated.map((item) => [item.id, item]));
+        return current.map((item) => replacements.get(item.id) ?? item);
+      });
+      return updated;
+    },
+    [activeDocumentId, queryClient, reviewQueryKey, setApprovedAt],
   );
 
   const resolveAllReviews = useCallback(async () => {
@@ -489,7 +512,7 @@ export function KonverterProvider({ children }: PropsWithChildren) {
       (item) =>
         item.type === "table" ||
         item.type === "document_index" ||
-        item.type === "callout" ||
+        item.type === "box_section" ||
         item.type === "picture",
     );
     if (hasVisualFlags) keys.push("tables");
@@ -617,6 +640,7 @@ export function KonverterProvider({ children }: PropsWithChildren) {
       updateReviewTable,
       updateReviewLabel,
       saveReviewItem,
+      bulkUpdateReviewItems,
       resolveAllReviews,
       pendingCount,
       resolvedCount,
@@ -659,6 +683,7 @@ export function KonverterProvider({ children }: PropsWithChildren) {
       updateReviewTable,
       updateReviewLabel,
       saveReviewItem,
+      bulkUpdateReviewItems,
       resolveAllReviews,
       pendingCount,
       resolvedCount,
