@@ -36,6 +36,7 @@ class Settings:
     do_ocr: bool
     do_table_structure: bool
     docling_device: str
+    rule_based_headings: bool
     worker_count: int
     max_pages: int
     high_confidence_threshold: float
@@ -69,6 +70,7 @@ def load_settings() -> Settings:
         do_ocr=_as_bool("KONVERTER_DO_OCR", False),
         do_table_structure=_as_bool("KONVERTER_DO_TABLE_STRUCTURE", True),
         docling_device=_as_docling_device("KONVERTER_DOCLING_DEVICE", "cpu"),
+        rule_based_headings=_as_bool("KONVERTER_RULE_BASED_HEADINGS", True),
         worker_count=max(1, int(os.getenv("KONVERTER_WORKERS", "1"))),
         max_pages=max(1, int(os.getenv("KONVERTER_MAX_PAGES", "2000"))),
         high_confidence_threshold=high_threshold,

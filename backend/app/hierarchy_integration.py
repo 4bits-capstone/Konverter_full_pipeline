@@ -15,8 +15,18 @@ class HierarchyAnnotations:
     warnings: list[str] = field(default_factory=list)
 
 
-def apply_hierarchy(result: Any, source_path: Path) -> HierarchyAnnotations:
-    """Run the patched postprocessor and retain evidence needed by review/export."""
+def apply_hierarchy(
+    result: Any,
+    source_path: Path,
+    *,
+    package_only: bool = False,
+) -> HierarchyAnnotations:
+    """Run hierarchy reconstruction and retain evidence needed by review/export.
+
+    ``package_only`` uses ``docling-hierarchical-pdf``'s own postprocessor.  The
+    default keeps Konverter's guarded adapter, after which the rule-based
+    resolver can use the annotations together with chapter-opening contents.
+    """
     annotations = HierarchyAnnotations()
     for item, _ in result.document.iterate_items():
         label = getattr(item, "label", "unspecified")
@@ -27,10 +37,12 @@ def apply_hierarchy(result: Any, source_path: Path) -> HierarchyAnnotations:
     try:
         from hierarchical.hierarchy_builder import create_toc
 
-        from .hierarchy_postprocessor import (
-            ResultPostprocessor,
-            flatten_hierarchy_tree,
-        )
+        from .hierarchy_postprocessor import flatten_hierarchy_tree
+
+        if package_only:
+            from hierarchical.postprocessor import ResultPostprocessor
+        else:
+            from .hierarchy_postprocessor import ResultPostprocessor
     except ImportError as exc:
         annotations.warnings.append(
             "Heading hierarchy package unavailable; used Konverter rule fallback "

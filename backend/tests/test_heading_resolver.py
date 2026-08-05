@@ -24,6 +24,32 @@ def item(
     return value
 
 
+def positioned_item(
+    reference: str,
+    label: str,
+    text: str,
+    page: int,
+    bbox: tuple[float, float, float, float],
+    *,
+    heading_level: int | None = None,
+    font_size: float | None = None,
+) -> dict:
+    value = item(reference, label, text, page)
+    value["prov"][0]["bbox"] = {
+        "l": bbox[0],
+        "t": bbox[1],
+        "r": bbox[2],
+        "b": bbox[3],
+    }
+    if heading_level is not None or font_size is not None:
+        value["meta"] = {
+            "konverter_original_label": label,
+            "hf__heading_level": heading_level,
+            "hf__heading_font_size": font_size,
+        }
+    return value
+
+
 def test_chapter_opening_page_drives_h2_when_docling_has_no_title_labels():
     items = {
         "#/texts/0": item("#/texts/0", "section_header", "Example report", 1),
@@ -142,6 +168,456 @@ def test_split_chapter_number_and_subtitle_form_one_chapter_heading():
         == "chapter_title_continuation"
     )
     assert resolver.label_for(items["#/texts/3"]) == "section_header_2"
+
+
+def test_illustrated_chapter_opener_drives_chapter_h1_and_h2_fallbacks():
+    """Regression for Review of the Bail Act pages 23-25 (PDF pages 25-27)."""
+    items = {
+        "#/texts/0": item("#/texts/0", "title", "Review of the Bail Act", 1),
+        # Illustrated opener: Docling may return every fragment as plain text.
+        "#/texts/1": item("#/texts/1", "text", "Chapter 2", 25),
+        "#/texts/2": item("#/texts/2", "text", "New Bail Act", 25),
+        "#/texts/3": item("#/texts/3", "section_header", "CONTENTS", 25),
+        "#/texts/4": item("#/texts/4", "text", "24 Accessibility", 25),
+        "#/texts/5": item("#/texts/5", "text", "25 Language", 25),
+        "#/texts/6": item(
+            "#/texts/6", "text", "25 Presentation and Structure", 25
+        ),
+        "#/texts/7": item(
+            "#/texts/7", "text", "28 Deleting Redundant Terms", 25
+        ),
+        "#/texts/8": item("#/texts/8", "text", "or Provisions", 25),
+        # The first body page repeats the split chapter heading.
+        "#/texts/9": item("#/texts/9", "text", "Chapter 2", 26),
+        "#/texts/10": item("#/texts/10", "text", "New Bail Act", 26),
+        # H2 was visually clear but missed by Docling's heading classifier.
+        "#/texts/11": item("#/texts/11", "text", "Accessibility", 26),
+        "#/texts/12": item("#/texts/12", "section_header", "Language", 27),
+        "#/texts/13": item(
+            "#/texts/13", "section_header", "Presentation and Structure", 27
+        ),
+        "#/texts/14": item(
+            "#/texts/14", "section_header", "Deleting Redundant Terms or Provisions", 28
+        ),
+        # Later running headings are page furniture, not repeated H1s.
+        "#/texts/15": item("#/texts/15", "text", "Chapter 2", 28),
+        "#/texts/16": item("#/texts/16", "text", "New Bail Act", 28),
+    }
+    order = list(items)
+    resolver = HeadingResolver("#/texts/0", items, order)
+
+    assert resolver.label_for(items["#/texts/1"]) == "chapter_title"
+    assert resolver.label_for(items["#/texts/2"]) == "chapter_title_continuation"
+    assert resolver.is_chapter_contents("#/texts/3")
+    assert resolver.is_chapter_contents("#/texts/4")
+    assert resolver.is_chapter_contents("#/texts/8")
+    assert resolver.is_chapter_context("#/texts/9")
+    assert resolver.label_for(items["#/texts/10"]) == "section_header_1"
+    assert resolver.label_for(items["#/texts/11"]) == "section_header_2"
+    assert resolver.label_for(items["#/texts/12"]) == "section_header_2"
+    assert resolver.label_for(items["#/texts/13"]) == "section_header_2"
+    assert resolver.label_for(items["#/texts/14"]) == "section_header_2"
+    assert resolver.is_chapter_context("#/texts/15")
+    assert resolver.is_chapter_context("#/texts/16")
+
+
+def test_bail_act_chapter_fragments_merge_and_contents_are_not_output():
+    text_items = [
+        item("#/texts/0", "title", "Review of the Bail Act", 1),
+        item("#/texts/1", "text", "Chapter 2", 25),
+        item("#/texts/2", "text", "New Bail Act", 25),
+        item("#/texts/3", "text", "CONTENTS", 25),
+        item("#/texts/4", "text", "24 Accessibility", 25),
+        item("#/texts/5", "text", "25 Language", 25),
+        item("#/texts/6", "text", "Chapter 2", 26),
+        item("#/texts/7", "text", "New Bail Act", 26),
+        item("#/texts/8", "text", "Accessibility", 26),
+        item("#/texts/9", "section_header", "Language", 27),
+    ]
+    document = {
+        "name": "Review_of_the_Bail_Act_Report_Web",
+        "texts": text_items,
+        "body": {
+            "children": [{"$ref": value["self_ref"]} for value in text_items]
+        },
+    }
+
+    blocks = KonverterPipeline(load_settings())._blocks_from_document(document, {})
+
+    assert [(block["label"], block["text"]) for block in blocks] == [
+        ("title", "Review of the Bail Act"),
+        ("chapter_title", "Chapter 2: New Bail Act"),
+        ("section_header_1", "New Bail Act"),
+        ("section_header_2", "Accessibility"),
+        ("section_header_2", "Language"),
+    ]
+
+
+def test_runtime_bail_act_shape_restores_chapter_h1_h2_and_citations():
+    """Regression for the supplied 228-page Docling runtime artifacts."""
+    text_items = [
+        item("#/texts/0", "title", "Review of the Bail Act", 1),
+        item(
+            "#/texts/1",
+            "section_header",
+            "Chapter 2 2\r\nNew Bail Act",
+            25,
+        ),
+        item("#/texts/2", "section_header", "CONTENTS", 25),
+        item("#/texts/3", "section_header", "24 Accessibility", 25),
+        item("#/texts/4", "section_header", "25 Language", 25),
+        item("#/texts/5", "section_header", "Chapter 2 2", 26),
+        item("#/texts/6", "section_header", "New Bail Act", 26),
+        item("#/texts/7", "section_header", "Accessibility", 26),
+        item("#/texts/8", "section_header", "Language", 27),
+        item("#/texts/9", "section_header", "2 Submission 9.", 27),
+    ]
+    text_items[1]["meta"] = {
+        "konverter_original_label": "section_header",
+        "hf__heading_level": 2,
+        "hf__heading_font_size": 21.67,
+        "konverter_exclude_from_output": True,
+    }
+    text_items[2]["meta"] = {
+        "konverter_original_label": "section_header",
+        "hf__heading_level": 3,
+        "hf__heading_font_size": 10.37,
+    }
+    for value in text_items[3:5]:
+        value["meta"] = {
+            "konverter_original_label": "list_item",
+            "hf__heading_level": 3,
+            "hf__heading_font_size": 8.52,
+        }
+    for value in text_items[5:9]:
+        value["meta"] = {
+            "konverter_original_label": "section_header",
+            "hf__heading_level": 3,
+            "hf__heading_font_size": 8.89,
+        }
+    text_items[9]["meta"] = {
+        "konverter_original_label": "list_item",
+        "hf__heading_level": 4,
+        "hf__heading_font_size": 5.40,
+    }
+    document = {
+        "name": "Review_of_the_Bail_Act_Report_Web",
+        "texts": text_items,
+        # Deliberately scrambled hierarchy parents must not alter source order.
+        "body": {
+            "children": [
+                {"$ref": "#/texts/0"},
+                {"$ref": "#/texts/5"},
+                {"$ref": "#/texts/1"},
+            ]
+        },
+    }
+
+    blocks = KonverterPipeline(load_settings())._blocks_from_document(document, {})
+    structures = [(block["label"], block["text"]) for block in blocks]
+
+    assert ("chapter_title", "Chapter 2: New Bail Act") in structures
+    assert ("section_header_1", "New Bail Act") in structures
+    assert ("section_header_2", "Accessibility") in structures
+    assert ("section_header_2", "Language") in structures
+    assert not any(text == "CONTENTS" for _, text in structures)
+    assert ("list", "2 Submission 9.") in structures
+    assert all(
+        blocks[index]["page"] <= blocks[index + 1]["page"]
+        for index in range(len(blocks) - 1)
+    )
+
+
+def test_rule_based_headings_can_be_disabled(monkeypatch, tmp_path):
+    monkeypatch.setenv("KONVERTER_DATA_DIR", str(tmp_path))
+    monkeypatch.setenv("KONVERTER_RULE_BASED_HEADINGS", "false")
+    settings = load_settings()
+    document = {
+        "name": "Package only",
+        "texts": [
+            {
+                **item("#/texts/0", "title", "Document title", 1),
+                "level": 1,
+                "meta": {"hf__heading_level": 1},
+            },
+            {
+                **item("#/texts/1", "section_header", "Package section", 2),
+                "level": 2,
+                "meta": {"hf__heading_level": 2},
+            },
+            {
+                **item("#/texts/2", "section_header", "Direct child", 2),
+                "level": 3,
+                "meta": {"hf__heading_level": 3},
+            },
+            {
+                **item("#/texts/3", "section_header", "Nested child", 2),
+                "level": 4,
+                "meta": {"hf__heading_level": 4},
+            },
+        ],
+        "body": {
+            "children": [
+                {"$ref": "#/texts/0"},
+                {"$ref": "#/texts/1"},
+                {"$ref": "#/texts/2"},
+                {"$ref": "#/texts/3"},
+            ]
+        },
+    }
+
+    blocks = KonverterPipeline(settings)._blocks_from_document(document, {})
+
+    assert settings.rule_based_headings is False
+    assert any(
+        block["label"] == "chapter_title"
+        and block["text"] == "Package section"
+        for block in blocks
+    )
+    assert any(
+        block["label"] == "section_header_1"
+        and block["text"] == "Direct child"
+        for block in blocks
+    )
+    assert any(
+        block["label"] == "section_header_2"
+        and block["text"] == "Nested child"
+        for block in blocks
+    )
+
+
+def test_layout_chapter_uses_body_h1_instead_of_decorative_ocr():
+    text_items = [
+        positioned_item(
+            "#/texts/0",
+            "title",
+            "Example report",
+            1,
+            (80, 700, 360, 650),
+            heading_level=1,
+            font_size=24,
+        ),
+        positioned_item(
+            "#/texts/1",
+            "text",
+            "THE REPORT THE REPORT THE REPORT " * 20,
+            10,
+            (0, 680, 420, 150),
+        ),
+        positioned_item(
+            "#/texts/2",
+            "section_header",
+            "CONTENTS",
+            10,
+            (440, 580, 500, 568),
+            heading_level=5,
+            font_size=10,
+        ),
+        positioned_item(
+            "#/texts/3",
+            "list_item",
+            "11 Community Attitudes Data",
+            10,
+            (452, 560, 560, 550),
+        ),
+        positioned_item(
+            "#/texts/4",
+            "section_header",
+            "Chapter 4 4",
+            11,
+            (70, 740, 160, 715),
+            heading_level=5,
+            font_size=23,
+        ),
+        positioned_item(
+            "#/texts/5",
+            "section_header",
+            "Surveys of Attitudes",
+            11,
+            (185, 740, 380, 718),
+            heading_level=5,
+            font_size=21,
+        ),
+        positioned_item(
+            "#/texts/6",
+            "section_header",
+            "Community Attitudes Data",
+            11,
+            (185, 680, 340, 670),
+            heading_level=4,
+            font_size=9,
+        ),
+        positioned_item(
+            "#/texts/7",
+            "section_header",
+            "1. General Description",
+            11,
+            (185, 640, 320, 630),
+            heading_level=5,
+            font_size=8,
+        ),
+    ]
+    document = {
+        "name": "Example",
+        "texts": text_items,
+        "pages": {
+            str(page): {
+                "page_no": page,
+                "size": {"width": 595.276, "height": 841.89},
+            }
+            for page in (1, 10, 11)
+        },
+        "body": {
+            "children": [{"$ref": value["self_ref"]} for value in text_items]
+        },
+    }
+
+    blocks = KonverterPipeline(load_settings())._blocks_from_document(document, {})
+    structures = [(block["label"], block["text"]) for block in blocks]
+
+    assert ("chapter_title", "Chapter 4: Surveys of Attitudes") in structures
+    assert ("section_header_1", "Surveys of Attitudes") in structures
+    assert ("section_header_2", "Community Attitudes Data") in structures
+    assert not any(text == "CONTENTS" for _, text in structures)
+    assert not any(
+        label == "chapter_title" and text == "1. General Description"
+        for label, text in structures
+    )
+    assert not any("THE REPORT THE REPORT" in text for _, text in structures)
+
+
+def test_merged_contents_text_promotes_each_matching_body_heading():
+    text_items = [
+        positioned_item(
+            "#/texts/0",
+            "title",
+            "Example report",
+            1,
+            (80, 700, 360, 650),
+            heading_level=1,
+            font_size=24,
+        ),
+        positioned_item(
+            "#/texts/1",
+            "section_header",
+            "Chapter 2 2 Assistance Animals 2 in Victoria",
+            17,
+            (58, 605, 295, 528),
+            heading_level=2,
+            font_size=23,
+        ),
+        positioned_item(
+            "#/texts/2",
+            "section_header",
+            "CONTENTS",
+            17,
+            (439, 577, 497, 567),
+            heading_level=3,
+            font_size=10,
+        ),
+        positioned_item(
+            "#/texts/3",
+            "text",
+            "Who uses assistance animals? What benefits do assistance animals bring?",
+            17,
+            (452, 550, 568, 515),
+        ),
+        positioned_item(
+            "#/texts/4",
+            "section_header",
+            "Chapter 2 2",
+            18,
+            (74, 740, 160, 715),
+            heading_level=4,
+            font_size=23,
+        ),
+        positioned_item(
+            "#/texts/5",
+            "section_header",
+            "Assistance Animals in Victoria",
+            18,
+            (184, 740, 480, 720),
+            heading_level=4,
+            font_size=19,
+        ),
+        positioned_item(
+            "#/texts/6",
+            "section_header",
+            "Who uses assistance animals?",
+            18,
+            (184, 600, 340, 590),
+            heading_level=4,
+            font_size=9,
+        ),
+        positioned_item(
+            "#/texts/7",
+            "section_header",
+            "What benefits do assistance animals bring?",
+            18,
+            (184, 500, 390, 490),
+            heading_level=4,
+            font_size=9,
+        ),
+    ]
+    document = {
+        "name": "Example",
+        "texts": text_items,
+        "pages": {
+            str(page): {
+                "page_no": page,
+                "size": {"width": 595.276, "height": 841.89},
+            }
+            for page in (1, 17, 18)
+        },
+        "body": {
+            "children": [{"$ref": value["self_ref"]} for value in text_items]
+        },
+    }
+
+    blocks = KonverterPipeline(load_settings())._blocks_from_document(document, {})
+    h2_text = {
+        block["text"] for block in blocks if block["label"] == "section_header_2"
+    }
+
+    assert "Who uses assistance animals?" in h2_text
+    assert "What benefits do assistance animals bring?" in h2_text
+
+
+def test_split_chapter_subtitle_uses_layout_when_pdf_stream_order_is_unusual():
+    items = {
+        "#/texts/0": item("#/texts/0", "title", "Example report", 1),
+        "#/texts/1": item("#/texts/1", "text", "Chapter 2", 25),
+        # A sidebar can occur first in the PDF content stream.
+        "#/texts/2": item(
+            "#/texts/2", "text", "Legislation should be", 25
+        ),
+        "#/texts/3": item("#/texts/3", "text", "New Bail Act", 25),
+        "#/texts/4": item("#/texts/4", "text", "CONTENTS", 25),
+        "#/texts/5": item("#/texts/5", "text", "26 Drafting", 25),
+    }
+    items["#/texts/1"]["prov"][0]["bbox"] = {
+        "l": 80,
+        "t": 720,
+        "r": 170,
+        "b": 690,
+    }
+    items["#/texts/2"]["prov"][0]["bbox"] = {
+        "l": 30,
+        "t": 400,
+        "r": 170,
+        "b": 380,
+    }
+    items["#/texts/3"]["prov"][0]["bbox"] = {
+        "l": 180,
+        "t": 720,
+        "r": 330,
+        "b": 680,
+    }
+    resolver = HeadingResolver("#/texts/0", items, list(items))
+
+    assert resolver.label_for(items["#/texts/1"]) == "chapter_title"
+    assert resolver.label_for(items["#/texts/3"]) == "chapter_title_continuation"
+    assert resolver.label_for(items["#/texts/2"]) == "text"
 
 
 def test_confidence_matching_uses_only_clusters_from_the_same_page():

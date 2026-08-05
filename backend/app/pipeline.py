@@ -67,7 +67,13 @@ RAW_LABEL_MAP = {
 
 
 def _effective_raw_label(item: dict[str, Any]) -> str:
-    """Return the postprocessed label, restoring only hierarchy-backed headers."""
+    """Return the source label while retaining validated header demotions.
+
+    The hierarchy postprocessor can promote numbered Docling list items.  Legal
+    footnotes also start with numbers, so treating every promotion as a heading
+    turns citations into H2/H3 elements.  Restore Docling's original list label;
+    the chapter-outline resolver can still promote a matching entry explicitly.
+    """
     raw = str(item.get("label", "unspecified")).lower()
     metadata = item.get("meta") or {}
     original = str(metadata.get("konverter_original_label", "")).lower()
@@ -77,7 +83,81 @@ def _effective_raw_label(item: dict[str, Any]) -> str:
         and isinstance(metadata.get("hf__heading_level"), int)
     ):
         return "section_header"
+    if original:
+        return original
     return raw
+
+
+class DoclingHierarchyResolver:
+    """Rebase package hierarchy into Konverter's chapter/H1-H5 contract.
+
+    This adapter does not promote ordinary text or infer headings from wording.
+    It only turns the levels already emitted by ``docling-hierarchical-pdf``
+    into the structure required by the preview and accessible HTML.
+    """
+
+    def __init__(
+        self,
+        main_title_ref: str | None,
+        all_items: dict[str, dict[str, Any]],
+        ordered_references: list[str],
+    ) -> None:
+        self.main_title_ref = main_title_ref
+        self.chapter_level: int | None = None
+        self.current_chapter_level: int | None = None
+
+        heading_levels: list[int] = []
+        title_level: int | None = None
+        for reference in ordered_references:
+            item = all_items.get(reference)
+            if not item or str(item.get("label", "")).lower() != "section_header":
+                continue
+            level = self._package_level(item)
+            if level is None:
+                continue
+            if reference == main_title_ref:
+                title_level = level
+            else:
+                heading_levels.append(level)
+
+        if title_level is not None:
+            descendants = [level for level in heading_levels if level > title_level]
+            if descendants:
+                self.chapter_level = min(descendants)
+        if self.chapter_level is None and heading_levels:
+            self.chapter_level = min(heading_levels)
+
+    @staticmethod
+    def _package_level(item: dict[str, Any]) -> int | None:
+        metadata = item.get("meta") or {}
+        level = metadata.get("hf__heading_level", item.get("level"))
+        return min(5, max(1, level)) if isinstance(level, int) else None
+
+    def label_for(self, item: dict[str, Any]) -> str:
+        reference = str(item.get("self_ref", ""))
+        if reference == self.main_title_ref:
+            self.current_chapter_level = None
+            return "title"
+
+        raw = str(item.get("label", "unspecified")).lower()
+        if raw == "section_header":
+            level = self._package_level(item) or 1
+            if self.chapter_level is not None and level <= self.chapter_level:
+                self.current_chapter_level = level
+                return "chapter_title"
+            base = self.current_chapter_level
+            if base is None:
+                base = self.chapter_level if self.chapter_level is not None else level - 1
+            return f"section_header_{min(5, max(1, level - base))}"
+        return RAW_LABEL_MAP.get(raw, "unspecified")
+
+    @staticmethod
+    def is_chapter_contents(reference: str) -> bool:
+        return False
+
+    @staticmethod
+    def is_chapter_context(reference: str) -> bool:
+        return False
 
 
 def _first_page(item: dict[str, Any]) -> int:
@@ -106,13 +186,22 @@ class HeadingResolver:
         main_title_ref: str | None,
         all_items: dict[str, dict[str, Any]] | None = None,
         ordered_references: list[str] | None = None,
+        page_sizes: dict[int, tuple[float, float]] | None = None,
     ) -> None:
         self.main_title_ref = main_title_ref
+        self.page_sizes = page_sizes or {}
+        self._layout_chapters_resolved = False
         self.current_chapter_key = ""
         self.current_outline: set[str] = set()
         self.chapter_outlines: dict[str, set[str]] = {}
         self.chapter_title_refs: set[str] = set()
+        self.chapter_title_continuation_refs: set[str] = set()
         self.chapter_contents_refs: set[str] = set()
+        self.chapter_context_refs: set[str] = set()
+        self.chapter_h1_refs: set[str] = set()
+        self.chapter_key_by_ref: dict[str, str] = {}
+        self.chapter_title_text_by_ref: dict[str, str] = {}
+        self.forced_heading_levels: dict[str, int] = {}
         self.lower_level_by_size: dict[float, int] = {}
         self.h2_font_floor: float | None = None
         self._hierarchy_base_level: int | None = None
@@ -133,13 +222,33 @@ class HeadingResolver:
             self._last_heading_level = 1
             return "title"
 
-        if reference in self.chapter_title_refs or raw == "title":
-            self._select_chapter(text, item)
+        if reference in self.chapter_title_continuation_refs:
+            self._last_heading_level = 1
+            return "chapter_title_continuation"
+
+        if reference in self.chapter_h1_refs:
+            chapter_key = self.chapter_key_by_ref.get(reference) or self._chapter_key(
+                text
+            )
+            if chapter_key and chapter_key != self.current_chapter_key:
+                self._select_chapter_key(chapter_key, item)
+            else:
+                self._set_hierarchy_base(item)
+            self._last_heading_level = 1
+            return "section_header_1"
+
+        if reference in self.chapter_title_refs:
+            self._select_chapter_key(
+                self.chapter_key_by_ref.get(reference) or self._chapter_key(text),
+                item,
+            )
             self._last_heading_level = 1
             return "chapter_title"
 
-        if raw != "section_header":
-            return RAW_LABEL_MAP.get(raw, "unspecified")
+        forced_level = self.forced_heading_levels.get(reference)
+        if forced_level is not None:
+            self._last_heading_level = forced_level
+            return f"section_header_{forced_level}"
 
         if self._pending_split_chapter_page is not None:
             pending_page = self._pending_split_chapter_page
@@ -157,9 +266,36 @@ class HeadingResolver:
             self._set_hierarchy_base(item)
             self._last_heading_level = 1
             return "section_header_1"
-        if chapter_key in self.current_outline:
+        if chapter_key in self.current_outline and self._can_promote_outline_item(
+            item
+        ):
             self._last_heading_level = 2
             return "section_header_2"
+        if (
+            self.current_chapter_key == "appendices"
+            and re.match(r"^appendix\s+[a-z0-9ivxlcdm]+\b", text, re.IGNORECASE)
+            and self._can_promote_outline_item(item)
+        ):
+            self._last_heading_level = 2
+            return "section_header_2"
+
+        if raw == "title":
+            # ``Title`` is reserved for the single document title.  A later
+            # Docling title becomes a chapter only when discovery has already
+            # confirmed it from chapter-layout or repeated-heading evidence.
+            return "section_header_2" if self.current_chapter_key else "text"
+
+        if raw != "section_header":
+            return RAW_LABEL_MAP.get(raw, "unspecified")
+
+        if self._is_citation_like(text, item):
+            return "list"
+
+        if self._layout_chapters_resolved:
+            inferred = self._infer_lower_level(item)
+            level = max(2, min(inferred, self._last_heading_level + 1, 5))
+            self._last_heading_level = level
+            return f"section_header_{level}"
 
         if not self.current_chapter_key and (
             self._is_numbered_chapter(text) or self._is_named_back_matter_chapter(text)
@@ -187,16 +323,30 @@ class HeadingResolver:
     def is_chapter_contents(self, reference: str) -> bool:
         return reference in self.chapter_contents_refs
 
+    def is_chapter_context(self, reference: str) -> bool:
+        """Return true for a repeated ``Chapter N`` page label, not a new section."""
+        return reference in self.chapter_context_refs
+
+    def is_forced_structure(self, reference: str) -> bool:
+        return reference in (
+            self.chapter_title_refs
+            | self.chapter_title_continuation_refs
+            | self.chapter_h1_refs
+        ) or reference in self.forced_heading_levels or reference == self.main_title_ref
+
+    def output_text(self, item: dict[str, Any]) -> str:
+        reference = str(item.get("self_ref", ""))
+        return self.chapter_title_text_by_ref.get(
+            reference,
+            str(item.get("text", "")).strip(),
+        )
+
     def _select_chapter(
         self,
         text: str,
         item: dict[str, Any] | None = None,
     ) -> None:
-        self.current_chapter_key = self._chapter_key(text)
-        self.current_outline = self.chapter_outlines.get(
-            self.current_chapter_key, set()
-        )
-        self._hierarchy_base_level = None
+        self._select_chapter_key(self._chapter_key(text), item)
         self._pending_split_chapter_page = (
             _first_page(item)
             if item is not None
@@ -207,6 +357,18 @@ class HeadingResolver:
             )
             else None
         )
+
+    def _select_chapter_key(
+        self,
+        chapter_key: str,
+        item: dict[str, Any] | None = None,
+    ) -> None:
+        self.current_chapter_key = chapter_key
+        self.current_outline = self.chapter_outlines.get(
+            self.current_chapter_key, set()
+        )
+        self._hierarchy_base_level = None
+        self._pending_split_chapter_page = None
         if item is not None and _effective_raw_label(item) == "section_header":
             self._set_hierarchy_base(item)
 
@@ -222,15 +384,6 @@ class HeadingResolver:
             return min(5, 2 + numbered.group(1).count("."))
 
         metadata = item.get("meta") or {}
-        hierarchy_level = metadata.get("hf__heading_level")
-        if isinstance(hierarchy_level, int):
-            if self._hierarchy_base_level is not None:
-                return min(
-                    5,
-                    max(2, hierarchy_level - self._hierarchy_base_level + 1),
-                )
-            return min(5, max(2, hierarchy_level))
-
         font_size = metadata.get("hf__heading_font_size")
         if isinstance(font_size, (int, float)):
             normalized_size = round(float(font_size), 3)
@@ -242,28 +395,812 @@ class HeadingResolver:
 
         hierarchy_level = metadata.get("hf__heading_level")
         if isinstance(hierarchy_level, int):
+            if self._hierarchy_base_level is not None:
+                return min(
+                    5,
+                    max(2, hierarchy_level - self._hierarchy_base_level + 1),
+                )
             return min(5, max(3, hierarchy_level))
         level = item.get("level")
         if isinstance(level, int):
             return min(5, max(3, level))
         return 3
 
+    def _discover_layout_chapters(
+        self,
+        all_items: dict[str, dict[str, Any]],
+        ordered_references: list[str],
+    ) -> bool:
+        """Resolve illustrated chapter spreads from reusable layout evidence.
+
+        These VLRC reports share a design, not document-specific wording: a
+        right-hand ``CONTENTS`` panel on the opener and a large H1 beside a
+        running ``Chapter N`` marker on the first body page.  Using both pages
+        avoids trusting decorative background text, which is often badly
+        fragmented or repeated by PDF extraction.
+        """
+        positions = {
+            reference: index for index, reference in enumerate(ordered_references)
+        }
+        page_references: dict[int, list[str]] = {}
+        for reference in ordered_references:
+            item = all_items.get(reference)
+            if not item:
+                continue
+            page = self._item_page(item, all_items)
+            if page is not None:
+                page_references.setdefault(page, []).append(reference)
+
+        records: list[dict[str, Any]] = []
+        seen_numbers: set[str] = set()
+        for contents_reference in ordered_references:
+            contents_item = all_items.get(contents_reference)
+            if not contents_item or not self._is_contents_label(
+                str(contents_item.get("text", ""))
+            ):
+                continue
+            contents_page = self._item_page(contents_item, all_items)
+            if contents_page is None or not self._is_right_contents_panel(
+                contents_item,
+                contents_page,
+            ):
+                continue
+
+            panel_references = self._contents_panel_references(
+                contents_reference,
+                contents_page,
+                all_items,
+                page_references.get(contents_page, []),
+            )
+            panel_items = [
+                (reference, all_items[reference])
+                for reference in panel_references
+                if reference in all_items
+            ]
+            panel_text = " ".join(
+                re.sub(r"\s+", " ", str(item.get("text", ""))).strip()
+                for reference, item in panel_items
+                if reference != contents_reference
+            )
+
+            # A part divider also has a right-hand contents panel, but its
+            # entries point to whole chapters.  It is not itself a chapter.
+            if re.search(
+                r"(?:^|\s)(?:\d+\s+)?chapter\s+"
+                r"(?:\d+|[ivxlcdm]+)\b",
+                panel_text,
+                re.IGNORECASE,
+            ):
+                self.chapter_contents_refs.update(panel_references)
+                continue
+
+            opener_number = self._opener_chapter_number(
+                contents_page,
+                all_items,
+                page_references.get(contents_page, []),
+            )
+            body_identity = self._first_body_chapter_identity(
+                contents_page,
+                opener_number,
+                all_items,
+                page_references,
+            )
+            if body_identity is None:
+                continue
+            chapter_number, h1_reference, h1_item = body_identity
+            if chapter_number in seen_numbers:
+                continue
+
+            h1_text = re.sub(
+                r"\s+", " ", str(h1_item.get("text", ""))
+            ).strip()
+            chapter_key = self._chapter_key(h1_text)
+            if not chapter_key:
+                continue
+
+            opener_reference = self._chapter_opener_reference(
+                contents_page,
+                chapter_number,
+                all_items,
+                page_references.get(contents_page, []),
+            )
+            if opener_reference is None:
+                # The chapter title can be graphical and absent from Docling.
+                # Reuse the structurally reliable contents label as the anchor;
+                # its visible output is replaced with the reconstructed title.
+                opener_reference = contents_reference
+
+            self.chapter_title_refs.add(opener_reference)
+            self.chapter_h1_refs.add(h1_reference)
+            self.chapter_key_by_ref[opener_reference] = chapter_key
+            self.chapter_key_by_ref[h1_reference] = chapter_key
+            self.chapter_title_text_by_ref[opener_reference] = (
+                f"Chapter {chapter_number}: {h1_text}"
+            )
+
+            # A chapter-opening spread contains decorative title fragments,
+            # source notes, and the visual outline.  The chapter anchor is the
+            # only semantic content that should survive into accessible output.
+            for reference in page_references.get(contents_page, []):
+                if reference != opener_reference:
+                    self.chapter_contents_refs.add(reference)
+
+            headings, _ = self._chapter_contents_entries(panel_items)
+            outline = {
+                self._chapter_key(heading)
+                for heading in headings
+                if self._chapter_key(heading)
+            }
+            records.append(
+                {
+                    "number": chapter_number,
+                    "key": chapter_key,
+                    "page": contents_page,
+                    "index": positions.get(contents_reference, 0),
+                    "opener_ref": opener_reference,
+                    "h1_ref": h1_reference,
+                    "panel_text": panel_text,
+                    "outline": outline,
+                }
+            )
+            seen_numbers.add(chapter_number)
+
+        if not records:
+            return False
+
+        records.sort(key=lambda record: (record["page"], record["index"]))
+        self._discover_layout_back_matter(
+            records,
+            all_items,
+            ordered_references,
+            positions,
+        )
+        records.sort(key=lambda record: (record["page"], record["index"]))
+
+        for index, record in enumerate(records):
+            end_page = (
+                records[index + 1]["page"] - 1
+                if index + 1 < len(records)
+                else max(page_references, default=record["page"])
+            )
+            chapter_number = record.get("number")
+            chapter_key = str(record["key"])
+            h1_reference = str(record.get("h1_ref", ""))
+
+            body_items: list[tuple[str, dict[str, Any]]] = []
+            body_headers: list[tuple[str, dict[str, Any]]] = []
+            for page in range(int(record["page"]) + 1, end_page + 1):
+                for reference in page_references.get(page, []):
+                    item = all_items.get(reference)
+                    if not item:
+                        continue
+                    body_items.append((reference, item))
+                    text = re.sub(
+                        r"\s+", " ", str(item.get("text", ""))
+                    ).strip()
+                    if chapter_number and self._is_running_chapter_marker(
+                        text,
+                        str(chapter_number),
+                    ):
+                        self.chapter_context_refs.add(reference)
+                        continue
+                    if _effective_raw_label(item) == "section_header":
+                        body_headers.append((reference, item))
+
+            if chapter_key == "appendices":
+                appendix_groups: dict[
+                    str, list[tuple[str, dict[str, Any]]]
+                ] = {}
+                for reference, item in body_headers:
+                    self.forced_heading_levels[reference] = 3
+                for reference, item in body_items:
+                    if _effective_raw_label(item) not in {
+                        "section_header",
+                        "text",
+                        "title",
+                    }:
+                        continue
+                    text = re.sub(
+                        r"\s+", " ", str(item.get("text", ""))
+                    ).strip()
+                    match = re.search(
+                        r"\bappendix\s+([a-z0-9ivxlcdm]+)\b",
+                        text,
+                        re.IGNORECASE,
+                    )
+                    if match:
+                        appendix_groups.setdefault(
+                            match.group(1).casefold(), []
+                        ).append((reference, item))
+                for duplicates in appendix_groups.values():
+                    first_reference, first_item = next(
+                        (
+                            (reference, item)
+                            for reference, item in duplicates
+                            if _effective_raw_label(item) == "section_header"
+                            and not (item.get("meta") or {}).get(
+                                "konverter_exclude_from_output"
+                            )
+                        ),
+                        duplicates[0],
+                    )
+                    title_options = [
+                        re.sub(
+                            r"\s+", " ", str(item.get("text", ""))
+                        ).strip()
+                        for _, item in duplicates
+                    ]
+                    for _, duplicate_item in duplicates:
+                        continuation = self._appendix_title_continuation(
+                            duplicate_item,
+                            body_items,
+                        )
+                        if continuation:
+                            duplicate_text = re.sub(
+                                r"\s+",
+                                " ",
+                                str(duplicate_item.get("text", "")),
+                            ).strip()
+                            title_options.append(
+                                f"{duplicate_text} {continuation[1]}"
+                            )
+                            self.chapter_context_refs.add(continuation[0])
+                    richest_text = self._canonical_appendix_title(
+                        max(title_options, key=len)
+                    )
+                    self.forced_heading_levels[first_reference] = 2
+                    self.chapter_title_text_by_ref[first_reference] = richest_text
+                    record["outline"].add(
+                        self._chapter_key(str(first_item.get("text", "")))
+                    )
+                    self.chapter_context_refs.update(
+                        reference
+                        for reference, _ in duplicates
+                        if reference != first_reference
+                    )
+
+            panel_match_text = self._outline_match_key(
+                str(record.get("panel_text", ""))
+            )
+            for reference, item in body_headers:
+                if reference == h1_reference:
+                    continue
+                text = re.sub(r"\s+", " ", str(item.get("text", ""))).strip()
+                key = self._chapter_key(text)
+                if not key:
+                    continue
+                if key == chapter_key:
+                    if not h1_reference:
+                        self.chapter_h1_refs.add(reference)
+                        self.chapter_key_by_ref[reference] = chapter_key
+                        h1_reference = reference
+                    else:
+                        self.chapter_context_refs.add(reference)
+                    continue
+                match_key = self._outline_match_key(text)
+                if (
+                    match_key
+                    and re.search(
+                        rf"(?<!\w){re.escape(match_key)}(?!\w)",
+                        panel_match_text,
+                    )
+                ):
+                    record["outline"].add(key)
+
+            self.chapter_outlines[chapter_key] = set(record["outline"])
+
+        self._layout_chapters_resolved = True
+        return True
+
+    def _discover_layout_back_matter(
+        self,
+        records: list[dict[str, Any]],
+        all_items: dict[str, dict[str, Any]],
+        ordered_references: list[str],
+        positions: dict[str, int],
+    ) -> None:
+        """Add real back-matter openers without matching TOC entries."""
+        last_numbered_page = max(int(record["page"]) for record in records)
+        candidates: dict[str, list[tuple[int, int, str, dict[str, Any]]]] = {}
+        for reference in ordered_references:
+            item = all_items.get(reference)
+            if not item or _effective_raw_label(item) != "section_header":
+                continue
+            text = re.sub(r"\s+", " ", str(item.get("text", ""))).strip()
+            normalized = text.strip(" .").casefold()
+            if normalized == "appendix":
+                normalized = "appendices"
+            if normalized not in {"appendices", "glossary", "bibliography"}:
+                continue
+            page = self._item_page(item, all_items)
+            if page is None or page <= last_numbered_page:
+                continue
+            box = self._item_bbox(item)
+            page_size = self.page_sizes.get(page)
+            if box is None or page_size is None:
+                continue
+            _, top, _, bottom = box
+            height = page_size[1]
+            if max(top, bottom) < height * 0.64:
+                continue
+            candidates.setdefault(normalized, []).append(
+                (page, positions.get(reference, 0), reference, item)
+            )
+
+        canonical = {
+            "appendices": "Appendices",
+            "glossary": "Glossary",
+            "bibliography": "Bibliography",
+        }
+        for key in ("appendices", "glossary", "bibliography"):
+            if not candidates.get(key):
+                continue
+            page, position, reference, item = min(candidates[key])
+            self.chapter_title_refs.add(reference)
+            self.chapter_key_by_ref[reference] = key
+            self.chapter_title_text_by_ref[reference] = canonical[key]
+            panel_text = ""
+            outline: set[str] = set()
+            same_page_references = [
+                candidate_reference
+                for candidate_reference in ordered_references
+                if self._item_page(
+                    all_items.get(candidate_reference, {}), all_items
+                )
+                == page
+            ]
+            contents_reference = next(
+                (
+                    candidate_reference
+                    for candidate_reference in same_page_references
+                    if self._is_contents_label(
+                        str(
+                            all_items.get(candidate_reference, {}).get("text", "")
+                        )
+                    )
+                    and self._is_right_contents_panel(
+                        all_items.get(candidate_reference, {}), page
+                    )
+                ),
+                None,
+            )
+            if contents_reference is not None:
+                panel_references = self._contents_panel_references(
+                    contents_reference,
+                    page,
+                    all_items,
+                    same_page_references,
+                )
+                panel_items = [
+                    (candidate_reference, all_items[candidate_reference])
+                    for candidate_reference in panel_references
+                    if candidate_reference in all_items
+                ]
+                panel_text = " ".join(
+                    re.sub(
+                        r"\s+", " ", str(candidate.get("text", ""))
+                    ).strip()
+                    for candidate_reference, candidate in panel_items
+                    if candidate_reference != contents_reference
+                )
+                headings, _ = self._chapter_contents_entries(panel_items)
+                outline = {
+                    self._chapter_key(heading)
+                    for heading in headings
+                    if self._chapter_key(heading)
+                }
+                for candidate_reference in same_page_references:
+                    if candidate_reference != reference:
+                        self.chapter_contents_refs.add(candidate_reference)
+            records.append(
+                {
+                    "number": None,
+                    "key": key,
+                    "page": page,
+                    "index": position,
+                    "opener_ref": reference,
+                    "h1_ref": "",
+                    "panel_text": panel_text,
+                    "outline": outline,
+                }
+            )
+
+    def _is_right_contents_panel(
+        self,
+        item: dict[str, Any],
+        page: int,
+    ) -> bool:
+        box = self._item_bbox(item)
+        page_size = self.page_sizes.get(page)
+        if box is None or page_size is None:
+            return False
+        left, top, right, bottom = box
+        width, height = page_size
+        return bool(
+            0 <= left <= right <= width * 1.03
+            and 0 <= min(top, bottom)
+            and max(top, bottom) <= height * 1.03
+            and left >= width * 0.62
+        )
+
+    def _contents_panel_references(
+        self,
+        contents_reference: str,
+        page: int,
+        all_items: dict[str, dict[str, Any]],
+        page_references: list[str],
+    ) -> list[str]:
+        contents_box = self._item_bbox(all_items[contents_reference])
+        if contents_box is None:
+            return [contents_reference]
+        left, top, _, _ = contents_box
+        output = [contents_reference]
+        for reference in page_references:
+            if reference == contents_reference:
+                continue
+            item = all_items.get(reference)
+            box = self._item_bbox(item or {})
+            if box is None:
+                continue
+            item_left, item_top, _, _ = box
+            if item_left >= left - 24 and item_top <= top + 8:
+                output.append(reference)
+        return output
+
+    def _opener_chapter_number(
+        self,
+        page: int,
+        all_items: dict[str, dict[str, Any]],
+        page_references: list[str],
+    ) -> str | None:
+        for reference in page_references:
+            item = all_items.get(reference)
+            if not item:
+                continue
+            text = re.sub(r"\s+", " ", str(item.get("text", ""))).strip()
+            parsed = self._parse_chapter_title(text)
+            if parsed is not None:
+                return parsed[0].casefold()
+        return None
+
+    def _first_body_chapter_identity(
+        self,
+        opener_page: int,
+        opener_number: str | None,
+        all_items: dict[str, dict[str, Any]],
+        page_references: dict[int, list[str]],
+    ) -> tuple[str, str, dict[str, Any]] | None:
+        for page in range(opener_page + 1, opener_page + 4):
+            references = page_references.get(page, [])
+            marker_numbers = [
+                number
+                for reference in references
+                if (
+                    number := self._running_chapter_number(
+                        str((all_items.get(reference) or {}).get("text", ""))
+                    )
+                )
+            ]
+            chapter_number = opener_number or (marker_numbers[0] if marker_numbers else None)
+            if chapter_number is None:
+                continue
+            candidates: list[tuple[float, int, str, dict[str, Any]]] = []
+            width, height = self.page_sizes.get(page, (0.0, 0.0))
+            for order, reference in enumerate(references):
+                item = all_items.get(reference)
+                if not item or _effective_raw_label(item) != "section_header":
+                    continue
+                text = re.sub(r"\s+", " ", str(item.get("text", ""))).strip()
+                if (
+                    not text
+                    or len(text) > 180
+                    or self._is_contents_label(text)
+                    or self._is_running_chapter_marker(text, chapter_number)
+                    or self._is_citation_like(text, item)
+                ):
+                    continue
+                box = self._item_bbox(item)
+                if box is None:
+                    continue
+                left, top, right, bottom = box
+                if width and (left < width * 0.22 or right > width * 1.03):
+                    continue
+                font_size = (item.get("meta") or {}).get("hf__heading_font_size")
+                visual_size = (
+                    float(font_size)
+                    if isinstance(font_size, (int, float))
+                    else abs(top - bottom)
+                )
+                if visual_size < 11:
+                    continue
+                score = visual_size * 10
+                if height and max(top, bottom) >= height * 0.76:
+                    score += 100
+                score -= order * 0.01
+                candidates.append((score, -order, reference, item))
+            if candidates:
+                _, _, reference, item = max(candidates)
+                return chapter_number, reference, item
+        return None
+
+    def _chapter_opener_reference(
+        self,
+        page: int,
+        chapter_number: str,
+        all_items: dict[str, dict[str, Any]],
+        page_references: list[str],
+    ) -> str | None:
+        candidates: list[tuple[float, str]] = []
+        for reference in page_references:
+            item = all_items.get(reference)
+            if not item or _effective_raw_label(item) not in {"section_header", "title"}:
+                continue
+            text = re.sub(r"\s+", " ", str(item.get("text", ""))).strip()
+            parsed = self._parse_chapter_title(text)
+            if parsed is None or parsed[0].casefold() != chapter_number.casefold():
+                continue
+            box = self._item_bbox(item)
+            font_size = (item.get("meta") or {}).get("hf__heading_font_size")
+            score = float(font_size) if isinstance(font_size, (int, float)) else 0.0
+            if box is not None:
+                score += abs(box[1] - box[3])
+            candidates.append((score, reference))
+        return max(candidates, default=(0.0, ""))[1] or None
+
+    @staticmethod
+    def _running_chapter_number(value: str) -> str | None:
+        text = re.sub(r"\s+", " ", value).strip(" .:–—-")
+        if not text or len(text) > 80:
+            return None
+        match = re.match(
+            r"^chapter\s+(\d+|[ivxlcdm]+)\b",
+            text,
+            re.IGNORECASE,
+        )
+        return match.group(1).casefold() if match else None
+
+    @classmethod
+    def _is_running_chapter_marker(cls, value: str, number: str) -> bool:
+        text = re.sub(r"\s+", " ", value).strip(" .:–—-")
+        detected = cls._running_chapter_number(text)
+        if detected == number.casefold():
+            return True
+        return bool(
+            len(text) <= 36
+            and re.fullmatch(
+                rf"(?:[a-z]{{0,4}}ter)\s+{re.escape(number)}"
+                rf"(?:\s+{re.escape(number)})+",
+                text,
+                re.IGNORECASE,
+            )
+        )
+
+    @staticmethod
+    def _outline_match_key(value: str) -> str:
+        return re.sub(
+            r"\s+",
+            " ",
+            re.sub(r"[^\w]+", " ", value.casefold(), flags=re.UNICODE),
+        ).strip()
+
+    @staticmethod
+    def _canonical_appendix_title(value: str) -> str:
+        text = re.sub(r"\s+", " ", value).strip(" .:–—-")
+        match = re.search(
+            r"\bappendix\s+([a-z0-9ivxlcdm]+)\b",
+            text,
+            re.IGNORECASE,
+        )
+        if match is None:
+            return text
+        identifier = match.group(1).upper() if match.group(1).isalpha() else match.group(1)
+        before = text[: match.start()].strip(" .:–—-")
+        after = text[match.end() :].strip(" .:–—-")
+        subtitle = " ".join(part for part in (before, after) if part)
+        return f"Appendix {identifier}: {subtitle}" if subtitle else f"Appendix {identifier}"
+
+    @classmethod
+    def _appendix_title_continuation(
+        cls,
+        title_item: dict[str, Any],
+        body_items: list[tuple[str, dict[str, Any]]],
+    ) -> tuple[str, str] | None:
+        title_text = re.sub(
+            r"\s+", " ", str(title_item.get("text", ""))
+        ).strip()
+        match = re.fullmatch(
+            r"appendix\s+[a-z0-9ivxlcdm]+",
+            title_text,
+            re.IGNORECASE,
+        )
+        title_box = cls._item_bbox(title_item)
+        if (
+            match is None
+            or title_box is None
+            or _effective_raw_label(title_item) != "text"
+        ):
+            return None
+        title_page = _first_page(title_item)
+        title_left, _, _, title_bottom = title_box
+        candidates: list[tuple[float, str, str]] = []
+        for reference, item in body_items:
+            if item is title_item or _first_page(item) != title_page:
+                continue
+            text = re.sub(r"\s+", " ", str(item.get("text", ""))).strip()
+            if (
+                not text
+                or len(text) > 100
+                or len(text.split()) > 12
+                or re.search(r"[.!?;:]$", text)
+                or re.search(r"\bappendix\s+", text, re.IGNORECASE)
+            ):
+                continue
+            box = cls._item_bbox(item)
+            if box is None:
+                continue
+            left, top, _, _ = box
+            vertical_gap = title_bottom - top
+            if abs(left - title_left) <= 36 and -4 <= vertical_gap <= 45:
+                candidates.append((abs(vertical_gap), reference, text))
+        if not candidates:
+            return None
+        _, reference, text = min(candidates)
+        return reference, text
+
     def _discover_chapter_outlines(
         self,
         all_items: dict[str, dict[str, Any]],
         ordered_references: list[str],
     ) -> None:
+        # Layout-aware reconstruction is the primary path for illustrated legal
+        # reports.  It is anchored by the physical chapter-contents panel and
+        # the first body-page heading, not by a document name or hard-coded
+        # chapter title.  The older signal-only fallback below remains useful
+        # for synthetic inputs and PDFs without page geometry.
+        if self.page_sizes and self._discover_layout_chapters(
+            all_items,
+            ordered_references,
+        ):
+            return
+
         chapter_starts: list[tuple[int, str, str, int]] = []
+        chapter_pages_by_number: dict[str, tuple[str, int]] = {}
+        chapter_h1_numbers: set[str] = set()
+
+        # Prefer an explicit chapter-opening CONTENTS panel. Older untagged
+        # InDesign PDFs often merge the chapter number, a decorative duplicate
+        # number and the subtitle into one Docling item (for example,
+        # ``Chapter 2 2 Section Name``). The contents label is a much stronger
+        # boundary signal than the hierarchy level assigned to that item.
+        for contents_index, contents_reference in enumerate(ordered_references):
+            contents_item = all_items.get(contents_reference)
+            if not contents_item or not self._is_contents_label(
+                str(contents_item.get("text", ""))
+            ):
+                continue
+            contents_page = self._item_page(contents_item, all_items)
+            if contents_page is None:
+                continue
+            opener: tuple[int, str, str, str] | None = None
+            for candidate_index in range(contents_index - 1, -1, -1):
+                candidate_reference = ordered_references[candidate_index]
+                candidate = all_items.get(candidate_reference)
+                if not candidate:
+                    continue
+                candidate_page = self._item_page(candidate, all_items)
+                if candidate_page != contents_page:
+                    if candidate_page is not None and candidate_page < contents_page:
+                        break
+                    continue
+                parsed = self._parse_chapter_title(str(candidate.get("text", "")))
+                if parsed is None:
+                    continue
+                chapter_number, subtitle = parsed
+                if not subtitle:
+                    continue
+                opener = (
+                    candidate_index,
+                    candidate_reference,
+                    chapter_number,
+                    subtitle,
+                )
+                break
+            if opener is None:
+                continue
+            opener_index, opener_reference, chapter_number, subtitle = opener
+            chapter_key = self._chapter_key(subtitle)
+            if not chapter_key:
+                continue
+            self.chapter_title_refs.add(opener_reference)
+            self.chapter_key_by_ref[opener_reference] = chapter_key
+            self.chapter_title_text_by_ref[opener_reference] = (
+                f"Chapter {chapter_number}: {subtitle}"
+            )
+            self.chapter_contents_refs.add(contents_reference)
+            chapter_pages_by_number[chapter_number.casefold()] = (
+                chapter_key,
+                contents_page,
+            )
+            chapter_starts.append(
+                (opener_index, opener_reference, chapter_key, contents_page)
+            )
+
+        # Illustrated reports often split the chapter opener into ``Chapter N``
+        # and a subtitle, then repeat the same pair as the running heading on the
+        # first body page.  Docling can label any of those fragments as text,
+        # title, or section_header.  Pair them from text + page order first so the
+        # opener becomes the chapter title and the repeated subtitle becomes H1.
+        for index, reference in enumerate(ordered_references):
+            marker_item = all_items.get(reference)
+            if not marker_item or reference == self.main_title_ref:
+                continue
+            marker_text = str(marker_item.get("text", "")).strip()
+            chapter_number = self._chapter_number(marker_text)
+            marker_page = self._item_page(marker_item, all_items)
+            if chapter_number is None or marker_page is None:
+                continue
+            subtitle_match = self._find_split_chapter_subtitle(
+                index,
+                marker_page,
+                all_items,
+                ordered_references,
+            )
+            if subtitle_match is None:
+                continue
+            subtitle_index, subtitle_reference, subtitle_item = subtitle_match
+            chapter_key = self._chapter_key(str(subtitle_item.get("text", "")))
+            if not chapter_key:
+                continue
+
+            previous = chapter_pages_by_number.get(chapter_number)
+            if previous is None:
+                chapter_pages_by_number[chapter_number] = (chapter_key, marker_page)
+                self.chapter_title_refs.add(reference)
+                self.chapter_title_continuation_refs.add(subtitle_reference)
+                self.chapter_key_by_ref[reference] = chapter_key
+                self.chapter_key_by_ref[subtitle_reference] = chapter_key
+                chapter_starts.append(
+                    (subtitle_index, reference, chapter_key, marker_page)
+                )
+            elif previous[0] == chapter_key and marker_page > previous[1]:
+                self.chapter_context_refs.add(reference)
+                if chapter_number not in chapter_h1_numbers:
+                    self.chapter_h1_refs.add(subtitle_reference)
+                    self.chapter_key_by_ref[subtitle_reference] = chapter_key
+                    chapter_h1_numbers.add(chapter_number)
+                else:
+                    self.chapter_context_refs.add(subtitle_reference)
+
+        discovered_keys = {
+            chapter_key for _, _, chapter_key, _ in chapter_starts
+        }
         for index, reference in enumerate(ordered_references):
             title_item = all_items.get(reference)
             if not title_item or reference == self.main_title_ref:
                 continue
+            if reference in (
+                self.chapter_title_refs
+                | self.chapter_title_continuation_refs
+                | self.chapter_context_refs
+                | self.chapter_h1_refs
+            ):
+                continue
 
             raw_label = _effective_raw_label(title_item)
             title = str(title_item.get("text", "")).strip()
-            chapter_key = self._chapter_key(title)
             title_page = self._item_page(title_item, all_items)
-            if not chapter_key or title_page is None:
+            if title_page is None:
+                continue
+            parsed_title = self._parse_chapter_title(title)
+            if parsed_title is not None:
+                known_chapter = chapter_pages_by_number.get(
+                    parsed_title[0].casefold()
+                )
+                if known_chapter is not None and title_page > known_chapter[1]:
+                    self.chapter_context_refs.add(reference)
+                    continue
+            chapter_key = self._chapter_key(title)
+            if not chapter_key:
                 continue
 
             is_explicit_title = raw_label == "title"
@@ -280,8 +1217,22 @@ class HeadingResolver:
             if not is_explicit_title and not is_inferred_title:
                 continue
 
+            if chapter_key in discovered_keys:
+                if title_page > next(
+                    page
+                    for _, _, key, page in chapter_starts
+                    if key == chapter_key
+                ):
+                    self.chapter_h1_refs.add(reference)
+                    self.chapter_key_by_ref[reference] = chapter_key
+                continue
+
             self.chapter_title_refs.add(reference)
+            self.chapter_key_by_ref[reference] = chapter_key
             chapter_starts.append((index, reference, chapter_key, title_page))
+            discovered_keys.add(chapter_key)
+
+        chapter_starts.sort(key=lambda value: value[0])
 
         for index, _, chapter_key, title_page in chapter_starts:
             candidates: list[tuple[str, dict[str, Any]]] = []
@@ -311,7 +1262,7 @@ class HeadingResolver:
                         for child_reference in child_refs
                         if (child_item := all_items.get(child_reference)) is not None
                     )
-                elif raw_label in {"list_item", "text"}:
+                elif raw_label in {"list_item", "text", "section_header"}:
                     candidates.append((candidate_reference, candidate))
 
             headings, consumed_refs = self._chapter_contents_entries(candidates)
@@ -325,6 +1276,49 @@ class HeadingResolver:
                 if child_refs & consumed_refs:
                     self.chapter_contents_refs.add(container_reference)
             self.chapter_outlines[chapter_key] = outline
+
+        # The first body page repeats the chapter identity and is the chapter's
+        # H1. Later repetitions are running page furniture. Resolve this from
+        # stable Docling text order rather than the rewritten hierarchy tree.
+        for position, (start_index, start_reference, chapter_key, title_page) in enumerate(
+            chapter_starts
+        ):
+            parsed_title = self._parse_chapter_title(
+                str((all_items.get(start_reference) or {}).get("text", ""))
+            )
+            chapter_number = parsed_title[0].casefold() if parsed_title else None
+            end_index = (
+                chapter_starts[position + 1][0]
+                if position + 1 < len(chapter_starts)
+                else len(ordered_references)
+            )
+            found_h1 = False
+            for reference in ordered_references[start_index + 1 : end_index]:
+                item = all_items.get(reference)
+                if not item:
+                    continue
+                page = self._item_page(item, all_items)
+                if page is None or page <= title_page:
+                    continue
+                text = str(item.get("text", "")).strip()
+                parsed_running = self._parse_chapter_title(text)
+                if (
+                    chapter_number is not None
+                    and parsed_running is not None
+                    and parsed_running[0].casefold() == chapter_number
+                ):
+                    self.chapter_context_refs.add(reference)
+                    continue
+                if self._chapter_key(text) != chapter_key:
+                    continue
+                if not self._can_promote_outline_item(item):
+                    continue
+                if not found_h1:
+                    self.chapter_h1_refs.add(reference)
+                    self.chapter_key_by_ref[reference] = chapter_key
+                    found_h1 = True
+                else:
+                    self.chapter_context_refs.add(reference)
 
     def _has_matching_chapter_heading(
         self,
@@ -341,11 +1335,93 @@ class HeadingResolver:
             page = self._item_page(item, all_items)
             if page is not None and page > title_page + 2:
                 return False
-            if _effective_raw_label(item) == "section_header" and self._is_numbered_chapter(
-                str(item.get("text", ""))
-            ):
-                return self._chapter_key(str(item.get("text", ""))) == chapter_key
+            if _effective_raw_label(item) == "section_header":
+                text = str(item.get("text", ""))
+                if self._is_numbered_chapter(text) or re.match(
+                    r"^\d+\.\s+\S",
+                    text.strip(),
+                ):
+                    return self._chapter_key(text) == chapter_key
         return False
+
+    @classmethod
+    def _find_split_chapter_subtitle(
+        cls,
+        marker_index: int,
+        marker_page: int,
+        all_items: dict[str, dict[str, Any]],
+        ordered_references: list[str],
+    ) -> tuple[int, str, dict[str, Any]] | None:
+        marker_item = all_items.get(ordered_references[marker_index], {})
+        marker_box = cls._item_bbox(marker_item)
+        positioned: list[
+            tuple[float, float, int, str, dict[str, Any]]
+        ] = []
+        fallback: tuple[int, str, dict[str, Any]] | None = None
+
+        for candidate_index, reference in enumerate(ordered_references):
+            if candidate_index == marker_index:
+                continue
+            item = all_items.get(reference)
+            if not item:
+                continue
+            page = cls._item_page(item, all_items)
+            if page != marker_page:
+                continue
+            raw_label = _effective_raw_label(item)
+            text = re.sub(r"\s+", " ", str(item.get("text", ""))).strip()
+            if raw_label in {"page_header", "page_footer", "picture", "table"}:
+                continue
+            if cls._is_contents_label(text) or cls._is_page_marker(text):
+                continue
+            if cls._chapter_number(text) is not None:
+                continue
+            if not cls._is_likely_chapter_subtitle(text):
+                continue
+
+            candidate_box = cls._item_bbox(item)
+            if marker_box is not None and candidate_box is not None:
+                marker_mid = (marker_box[1] + marker_box[3]) / 2
+                candidate_mid = (candidate_box[1] + candidate_box[3]) / 2
+                vertical_distance = abs(candidate_mid - marker_mid)
+                candidate_height = abs(candidate_box[3] - candidate_box[1])
+                positioned.append(
+                    (
+                        vertical_distance,
+                        -candidate_height,
+                        candidate_index,
+                        reference,
+                        item,
+                    )
+                )
+            elif (
+                fallback is None
+                and marker_index < candidate_index <= marker_index + 10
+            ):
+                fallback = candidate_index, reference, item
+
+        if positioned:
+            vertical_distance, _, candidate_index, reference, item = min(positioned)
+            marker_height = abs(marker_box[3] - marker_box[1]) if marker_box else 0
+            if vertical_distance <= max(90.0, marker_height * 5):
+                return candidate_index, reference, item
+        return fallback
+
+    @staticmethod
+    def _item_bbox(item: dict[str, Any]) -> tuple[float, float, float, float] | None:
+        provenance = item.get("prov") or []
+        bbox = provenance[0].get("bbox") if provenance else None
+        if not bbox:
+            return None
+        try:
+            return (
+                float(bbox.get("l", 0)),
+                float(bbox.get("t", 0)),
+                float(bbox.get("r", 0)),
+                float(bbox.get("b", 0)),
+            )
+        except (TypeError, ValueError):
+            return None
 
     @classmethod
     def _chapter_contents_entries(
@@ -355,33 +1431,142 @@ class HeadingResolver:
         headings: list[str] = []
         consumed_refs: set[str] = set()
         pending_page_ref: str | None = None
+        previous_was_numbered = False
+        seen_refs: set[str] = set()
 
         for reference, item in candidates:
+            if reference in seen_refs:
+                continue
+            seen_refs.add(reference)
             raw_label = _effective_raw_label(item)
-            text = re.sub(r"\s+", " ", str(item.get("text", ""))).strip()
-            if not text or raw_label not in {"list_item", "text"}:
+            raw_text = str(item.get("text", ""))
+            if not raw_text.strip() or raw_label not in {
+                "list_item",
+                "text",
+                "section_header",
+            }:
                 pending_page_ref = None
+                previous_was_numbered = False
                 continue
 
-            heading = cls._chapter_contents_heading(text)
-            if heading:
-                headings.append(heading)
-                consumed_refs.add(reference)
-                if pending_page_ref is not None:
-                    consumed_refs.add(pending_page_ref)
+            lines = [
+                re.sub(r"\s+", " ", line).strip()
+                for line in raw_text.splitlines()
+                if line.strip()
+            ] or [re.sub(r"\s+", " ", raw_text).strip()]
+            for text in lines:
+                if cls._is_contents_label(text):
+                    consumed_refs.add(reference)
                     pending_page_ref = None
-                continue
+                    previous_was_numbered = False
+                    continue
 
-            if cls._is_page_marker(text):
-                pending_page_ref = reference
-                continue
+                heading = cls._chapter_contents_heading(text)
+                if heading:
+                    headings.append(heading)
+                    consumed_refs.add(reference)
+                    if pending_page_ref is not None:
+                        consumed_refs.add(pending_page_ref)
+                        pending_page_ref = None
+                    previous_was_numbered = True
+                    continue
 
-            if pending_page_ref is not None and len(text) <= 250:
-                headings.append(text.strip(" .–—-"))
-                consumed_refs.update({pending_page_ref, reference})
-            pending_page_ref = None
+                if cls._is_page_marker(text):
+                    pending_page_ref = reference
+                    previous_was_numbered = False
+                    continue
+
+                if pending_page_ref is not None and len(text) <= 250:
+                    headings.append(text.strip(" .–—-"))
+                    consumed_refs.update({pending_page_ref, reference})
+                    pending_page_ref = None
+                    previous_was_numbered = True
+                    continue
+
+                if (
+                    previous_was_numbered
+                    and headings
+                    and cls._is_outline_continuation(text)
+                ):
+                    headings[-1] = f"{headings[-1]} {text.strip(' .–—-')}"
+                    consumed_refs.add(reference)
+                    continue
+
+                pending_page_ref = None
+                previous_was_numbered = False
 
         return headings, consumed_refs
+
+    @staticmethod
+    def _can_promote_outline_item(item: dict[str, Any]) -> bool:
+        raw = _effective_raw_label(item)
+        text = re.sub(r"\s+", " ", str(item.get("text", ""))).strip()
+        return (
+            raw in {"section_header", "text", "title", "list_item"}
+            and 0 < len(text) <= 250
+            and len(text.split()) <= 24
+        )
+
+    @staticmethod
+    def _is_outline_continuation(value: str) -> bool:
+        text = re.sub(r"\s+", " ", value).strip()
+        return bool(
+            text
+            and len(text) <= 120
+            and len(text.split()) <= 14
+            and not re.search(r"[.!?;:]$", text)
+            and not HeadingResolver._is_contents_label(text)
+            and not HeadingResolver._is_page_marker(text)
+            and HeadingResolver._chapter_number(text) is None
+        )
+
+    @staticmethod
+    def _is_citation_like(value: str, item: dict[str, Any]) -> bool:
+        text = re.sub(r"\s+", " ", value).strip()
+        font_size = (item.get("meta") or {}).get("hf__heading_font_size")
+        return bool(
+            isinstance(font_size, (int, float))
+            and float(font_size) <= 6.5
+            and re.match(r"^\d{1,4}\s+", text)
+            and re.search(
+                r"(?:\bibid\b|\bsubmissions?\b|\bconsultations?\b|"
+                r"\broundtables?\b|\babove\s+n\b|\bact\s+\d{4}\b|"
+                r"\bss?\s+\d|\[[12]\d{3}\])",
+                text,
+                re.IGNORECASE,
+            )
+        )
+
+    @staticmethod
+    def _is_contents_label(value: str) -> bool:
+        return bool(
+            re.fullmatch(
+                r"(?:chapter\s+)?contents|table\s+of\s+contents",
+                value.strip(),
+                re.IGNORECASE,
+            )
+        )
+
+    @staticmethod
+    def _is_likely_chapter_subtitle(value: str) -> bool:
+        text = re.sub(r"\s+", " ", value).strip()
+        return bool(
+            text
+            and len(text) <= 160
+            and 1 <= len(text.split()) <= 16
+            and not re.search(r"[.!?;:]$", text)
+            and not re.match(r"^(?:https?://|www\.)", text, re.IGNORECASE)
+            and not HeadingResolver._chapter_contents_heading(text)
+        )
+
+    @staticmethod
+    def _chapter_number(value: str) -> str | None:
+        match = re.fullmatch(
+            r"chapter\s+(\d+|[ivxlcdm]+)[.:)]?",
+            value.strip(),
+            re.IGNORECASE,
+        )
+        return match.group(1).casefold() if match else None
 
     def _build_lower_style_levels(self, all_items: dict[str, dict[str, Any]]) -> None:
         chapter_keys = set(self.chapter_outlines)
@@ -460,6 +1645,9 @@ class HeadingResolver:
 
     @staticmethod
     def _chapter_key(value: str) -> str:
+        parsed = HeadingResolver._parse_chapter_title(value)
+        if parsed is not None and parsed[1]:
+            value = parsed[1]
         without_number = re.sub(
             r"^(?:chapter\s+)?\d+[.:)]?\s*",
             "",
@@ -470,19 +1658,53 @@ class HeadingResolver:
 
     @staticmethod
     def _is_numbered_chapter(value: str) -> bool:
-        return bool(
-            re.match(
-                r"^(?:chapter\s+\d+[.:)]?(?:\s+\S.*)?|\d+\.\s+\S)",
-                value.strip(),
+        # Numbered recommendations and model sub-sections (``1. General
+        # Description``) are headings, not chapters.  Only an explicit chapter
+        # marker can start a numbered chapter.
+        return HeadingResolver._parse_chapter_title(value) is not None
+
+    @staticmethod
+    def _parse_chapter_title(value: str) -> tuple[str, str] | None:
+        normalized = re.sub(r"\s+", " ", value).strip()
+        if not normalized or len(normalized) > 180:
+            return None
+        matches = list(
+            re.finditer(
+                r"chapter\s*(\d+|[ivxlcdm]+)\b",
+                normalized,
                 re.IGNORECASE,
             )
         )
+        if not matches:
+            return None
+        match = matches[-1]
+        # Accept normal ``Chapter N: Title`` openers and the occasional
+        # title-first layout (``Other Issues Chapter 7``), but never a chapter
+        # mention embedded in prose or repeated decorative OCR.
+        if match.start() > 60 and match.end() < len(normalized) - 12:
+            return None
+        number = match.group(1)
+        tail = normalized[match.end() :].strip(" .:–—-")
+        tail = re.sub(
+            rf"^(?:{re.escape(number)}\b\s*)+",
+            "",
+            tail,
+            flags=re.IGNORECASE,
+        ).strip(" .:–—-")
+        tail = re.sub(
+            rf"^apter\s+{re.escape(number)}\b"
+            rf"(?:\s+{re.escape(number)}\b)*\s*",
+            "",
+            tail,
+            flags=re.IGNORECASE,
+        ).strip(" .:–—-")
+        return number, tail
 
     @staticmethod
     def _is_named_back_matter_chapter(value: str) -> bool:
         return bool(
             re.fullmatch(
-                r"(?:appendix(?:\s+[a-z0-9ivxlcdm]+)?|appendices|"
+                r"(?:appendix|appendices|"
                 r"bibliography|glossary|references|"
                 r"acknowledg(?:e)?ments)",
                 value.strip(),
@@ -549,7 +1771,11 @@ class KonverterPipeline:
         with self._docling_lock:
             result = converter.convert(pdf_path)
         stage(3, "Detecting document structure")
-        hierarchy = apply_hierarchy(result, pdf_path)
+        hierarchy = apply_hierarchy(
+            result,
+            pdf_path,
+            package_only=not self.settings.rule_based_headings,
+        )
         raw_document = result.document.export_to_dict()
         attach_hierarchy_metadata(raw_document, hierarchy)
         warnings = list(hierarchy.warnings)
@@ -739,11 +1965,50 @@ class KonverterPipeline:
                     all_items[reference] = item
 
         ordered_references = self._ordered_document_references(document, all_items)
-        resolver = HeadingResolver(
-            self._main_title_reference(all_items, ordered_references),
-            all_items,
-            ordered_references,
-        )
+        page_sizes: dict[int, tuple[float, float]] = {}
+        for page_key, page_value in (document.get("pages") or {}).items():
+            try:
+                page_number = int(page_key)
+            except (TypeError, ValueError):
+                continue
+            size = (page_value or {}).get("size") or {}
+            try:
+                page_sizes[page_number] = (
+                    float(size.get("width", 0)),
+                    float(size.get("height", 0)),
+                )
+            except (TypeError, ValueError):
+                continue
+        resolver: HeadingResolver | DoclingHierarchyResolver
+        if self.settings.rule_based_headings:
+            resolver = HeadingResolver(
+                self._main_title_reference(all_items, ordered_references),
+                all_items,
+                ordered_references,
+                page_sizes,
+            )
+        else:
+            resolver = DoclingHierarchyResolver(
+                self._main_title_reference(all_items, ordered_references),
+                all_items,
+                ordered_references,
+            )
+        resolved_labels: dict[str, str] = {}
+        for reference in ordered_references:
+            item = all_items.get(reference)
+            if item is None:
+                continue
+            if isinstance(resolver, HeadingResolver):
+                if resolver.is_chapter_contents(reference) or resolver.is_chapter_context(
+                    reference
+                ):
+                    continue
+                if (
+                    (item.get("meta") or {}).get("konverter_exclude_from_output")
+                    and not resolver.is_forced_structure(reference)
+                ):
+                    continue
+            resolved_labels[reference] = resolver.label_for(item)
         blocks: list[dict[str, Any]] = []
         consumed: set[str] = set()
 
@@ -757,13 +2022,20 @@ class KonverterPipeline:
                 str(child.get("$ref", "")) for child in item.get("children", [])
             ]
 
-            if (item.get("meta") or {}).get("konverter_exclude_from_output"):
-                for child in children:
-                    visit(child)
+            is_forced_structure = (
+                isinstance(resolver, HeadingResolver)
+                and resolver.is_forced_structure(reference)
+            )
+            if (
+                (item.get("meta") or {}).get("konverter_exclude_from_output")
+                and not is_forced_structure
+            ):
                 return
 
             if resolver.is_chapter_contents(reference):
-                consumed.update(child for child in children if child)
+                return
+
+            if resolver.is_chapter_context(reference):
                 return
 
             if raw_label == "list" and children:
@@ -863,12 +2135,14 @@ class KonverterPipeline:
                 return
 
             if raw_label == "group":
-                for child in children:
-                    visit(child)
                 return
 
-            label = resolver.label_for(item)
-            text = str(item.get("text", "")).strip()
+            label = resolved_labels.get(reference) or resolver.label_for(item)
+            text = (
+                resolver.output_text(item)
+                if isinstance(resolver, HeadingResolver)
+                else str(item.get("text", "")).strip()
+            )
             if label == "picture" and not text:
                 text = str(item.get("caption", "")).strip()
             blocks.append(
@@ -881,34 +2155,56 @@ class KonverterPipeline:
                     "source_bounds": self._combined_source_bounds(document, [item]),
                 }
             )
-            if raw_label in {"section_header", "title"}:
-                for child in children:
-                    visit(child)
 
-        for child in document.get("body", {}).get("children", []):
-            visit(str(child.get("$ref", "")))
+        for reference in ordered_references:
+            visit(reference)
 
-        leftovers = [
-            item
-            for reference, item in all_items.items()
-            if reference not in consumed and item.get("prov")
-        ]
-        leftovers.sort(
-            key=lambda item: (
-                _first_page(item),
-                float((item.get("prov") or [{}])[0].get("bbox", {}).get("t", 0)),
-                float((item.get("prov") or [{}])[0].get("bbox", {}).get("l", 0)),
-            )
-        )
-        for item in leftovers:
-            visit(str(item.get("self_ref", "")))
+        text_ranks = {
+            str(item.get("self_ref", "")): index
+            for index, item in enumerate(document.get("texts", []))
+            if str(item.get("self_ref", ""))
+        }
+        rank_cache: dict[str, int] = {}
 
-        ordered_blocks = [
-            {**block, "order": index}
-            for index, block in enumerate(blocks)
+        def source_rank(reference: str, active: set[str] | None = None) -> int:
+            if reference in text_ranks:
+                return text_ranks[reference]
+            if reference in rank_cache:
+                return rank_cache[reference]
+            active = set() if active is None else active
+            if reference in active:
+                return len(text_ranks) + len(rank_cache)
+            active.add(reference)
+            item = all_items.get(reference) or {}
+            child_ranks = [
+                source_rank(str(child.get("$ref", "")), active)
+                for child in item.get("children", [])
+                if str(child.get("$ref", ""))
+            ]
+            active.remove(reference)
+            rank = min(child_ranks) if child_ranks else len(text_ranks) + len(rank_cache)
+            rank_cache[reference] = rank
+            return rank
+
+        visible_blocks = [
+            block
+            for block in blocks
             if block["label"] not in {"header", "footer"} or block.get("text")
         ]
-        ordered_blocks = self._merge_split_chapter_titles(ordered_blocks)
+        original_block_order = {id(block): index for index, block in enumerate(visible_blocks)}
+        visible_blocks.sort(
+            key=lambda block: (
+                int(block.get("page", 1)),
+                source_rank(str(block.get("id", ""))),
+                original_block_order[id(block)],
+            )
+        )
+        ordered_blocks = [
+            {**block, "order": index}
+            for index, block in enumerate(visible_blocks)
+        ]
+        if self.settings.rule_based_headings:
+            ordered_blocks = self._merge_split_chapter_titles(ordered_blocks)
         if not any(block["label"] == "title" for block in ordered_blocks):
             source_name = (
                 str(document.get("name", "Document")).replace("_", " ").strip()
@@ -1068,24 +2364,46 @@ class KonverterPipeline:
         document: dict[str, Any],
         all_items: dict[str, dict[str, Any]],
     ) -> list[str]:
-        """Return depth-first reading order after hierarchy reconstruction."""
-        ordered: list[str] = []
-        seen: set[str] = set()
+        """Return stable extractor order, independent of hierarchy reparenting."""
+        text_ranks = {
+            str(item.get("self_ref", "")): index
+            for index, item in enumerate(document.get("texts", []))
+            if str(item.get("self_ref", ""))
+        }
+        rank_cache: dict[str, float] = {}
 
-        def collect(reference: str) -> None:
-            if not reference or reference in seen:
-                return
-            seen.add(reference)
-            ordered.append(reference)
-            item = all_items.get(reference)
-            if not item:
-                return
-            for child in item.get("children", []):
-                collect(str(child.get("$ref", "")))
+        def earliest_rank(reference: str, active: set[str] | None = None) -> float:
+            if reference in text_ranks:
+                return float(text_ranks[reference])
+            if reference in rank_cache:
+                return rank_cache[reference]
+            active = set() if active is None else active
+            if reference in active:
+                return float(len(text_ranks) + len(rank_cache))
+            active.add(reference)
+            item = all_items.get(reference) or {}
+            child_ranks = [
+                earliest_rank(str(child.get("$ref", "")), active)
+                for child in item.get("children", [])
+                if str(child.get("$ref", ""))
+            ]
+            active.remove(reference)
+            if child_ranks:
+                rank = min(child_ranks) - 0.25
+            else:
+                page = _first_page(item)
+                rank = len(text_ranks) + page
+            rank_cache[reference] = rank
+            return rank
 
-        for child in document.get("body", {}).get("children", []):
-            collect(str(child.get("$ref", "")))
-        return ordered
+        return sorted(
+            all_items,
+            key=lambda reference: (
+                earliest_rank(reference),
+                1 if reference in text_ranks else 0,
+                reference,
+            ),
+        )
 
     @classmethod
     def _combined_source_bounds(
