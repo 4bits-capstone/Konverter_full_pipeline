@@ -51,7 +51,7 @@ def load_client(tmp_path):
             },
             {
                 "id": "#/texts/1",
-                "label": "chapter_title",
+                "label": "section_header_1",
                 "text": "1. Introduction",
                 "page": 1,
                 "confidence": 0.95,
@@ -72,6 +72,14 @@ def load_client(tmp_path):
                 "page": 1,
                 "confidence": 0.72,
                 "order": 3,
+                "source_bounds": {
+                    "left": 70,
+                    "top": 100,
+                    "right": 300,
+                    "bottom": 135,
+                    "page_width": 595,
+                    "page_height": 842,
+                },
             },
             {
                 "id": "#/texts/4",
@@ -92,6 +100,14 @@ def load_client(tmp_path):
                 "page": 1,
                 "confidence": 0.58,
                 "order": 5,
+                "source_bounds": {
+                    "left": 70,
+                    "top": 250,
+                    "right": 525,
+                    "bottom": 390,
+                    "page_width": 595,
+                    "page_height": 842,
+                },
             },
         ]
         metadata = {
@@ -130,8 +146,11 @@ def load_client(tmp_path):
 
 def wait_until_complete(client, document_id: str) -> dict:
     for _ in range(100):
-        response = client.get(f"/api/documents/{document_id}/status")
+        response = client.post(f"/api/documents/{document_id}/processing-state")
         assert response.status_code == 200
+        assert "content-disposition" not in response.headers
+        assert response.headers["content-type"].startswith("text/plain")
+        assert response.headers["cache-control"] == "no-store, max-age=0"
         job = response.json()
         if job["state"] in {"complete", "failed"}:
             return job
@@ -167,12 +186,45 @@ def test_upload_review_correct_and_export(tmp_path):
         assert all(item["band"] in {"med", "low"} for item in review)
         assert all(item["confidence"] < 0.85 for item in review)
 
+        processing_summary = client.get(
+            f"/api/documents/{document_id}/processing-summary"
+        )
+        assert processing_summary.status_code == 200
+        coverage = processing_summary.json()
+        assert coverage["pages"] == {
+            "detected": 1,
+            "total": 1,
+            "needsReview": 0,
+        }
+        assert coverage["tables"] == {
+            "detected": 0,
+            "total": 1,
+            "needsReview": 1,
+        }
+        assert coverage["headings"] == {
+            "detected": 2,
+            "total": 3,
+            "needsReview": 1,
+        }
+        assert "diagrams" not in coverage
+        assert "footnotes" not in coverage
+
         table_item = next(item for item in review if item["type"] == "table")
         evidence = client.get(
             f"/api/documents/{document_id}/review-items/{table_item['id']}/evidence.png"
         )
         assert evidence.status_code == 200
         assert evidence.content.startswith(b"\x89PNG")
+        assert evidence.headers["cache-control"] == "no-store, max-age=0"
+        assert evidence.headers["pragma"] == "no-cache"
+        assert evidence.headers["x-evidence-item"] == table_item["id"]
+        assert table_item["source"]["bounds"]["top"] == 250
+        evidence_cache = list(
+            (tmp_path / "runtime" / "documents" / document_id).glob(
+                f"evidence-{table_item['id']}-*.png"
+            )
+        )
+        assert len(evidence_cache) == 1
 
         changed = client.patch(
             f"/api/documents/{document_id}/review-items/{table_item['id']}",

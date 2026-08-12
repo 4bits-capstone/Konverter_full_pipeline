@@ -4,6 +4,7 @@ import type {
   DocumentSummary,
   MetadataPayload,
   PublicationPayload,
+  ProcessingSummary,
   ReviewItem,
   ReviewUpdate,
   ReviewStatus,
@@ -18,6 +19,7 @@ export interface DocumentService {
   removeDocument(documentId: string): Promise<void>
   startProcessing(documentId: string): Promise<DocumentProcessingJob>
   getProcessingStatus(documentId: string): Promise<DocumentProcessingJob>
+  getProcessingSummary(documentId: string): Promise<ProcessingSummary>
   stopProcessing(documentId: string): Promise<DocumentProcessingJob>
 }
 
@@ -45,7 +47,7 @@ export interface ApprovalService {
 export interface PublicationService {
   get(documentId: string): Promise<PublicationPayload>
   sourceUrl(documentId: string, page?: number): string
-  evidenceUrl(documentId: string, reviewItemId: string): string
+  evidenceUrl(documentId: string, reviewItemId: string, version?: string): string
   metadataEvidenceUrl(documentId: string, fieldName: string): string
   figureUrl(documentId: string, imageKey: string): string
   coverUrl(documentId: string): string

@@ -8,11 +8,11 @@ import { resetTestServices } from './test/serviceMocks'
 
 vi.mock('./services', () => import('./test/serviceMocks'))
 
-function renderApp() {
+function renderApp(initialPath = '/upload') {
   const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } })
   return render(
     <QueryClientProvider client={queryClient}>
-      <MemoryRouter initialEntries={['/upload']}>
+      <MemoryRouter initialEntries={[initialPath]}>
         <KonverterProvider>
           <App />
         </KonverterProvider>
@@ -27,11 +27,17 @@ afterEach(() => {
 beforeEach(resetTestServices)
 
 describe('Konverter frontend', () => {
-  it('renders the upload stage and pipeline navigation', () => {
+  it('renders the upload stage and pipeline navigation', async () => {
     renderApp()
-    expect(screen.getByRole('heading', { name: 'Upload documents' })).toBeInTheDocument()
+    expect(await screen.findByRole('heading', { name: 'Upload documents' })).toBeInTheDocument()
     expect(screen.getByRole('navigation', { name: 'Review pipeline' })).toBeInTheDocument()
-    expect(screen.getByRole('button', { name: /Review flags/i })).toBeDisabled()
+    expect(screen.getByRole('button', { name: /Step 2: Review/i })).toBeDisabled()
+  })
+
+  it('uses the reviewer console as the only application entry point', async () => {
+    renderApp('/reports/previous-public-route')
+    expect(await screen.findByRole('heading', { name: 'Upload documents' })).toBeInTheDocument()
+    expect(screen.queryByRole('navigation', { name: 'Primary navigation' })).not.toBeInTheDocument()
   })
 
   it('accepts multiple PDFs and lets the reviewer choose one', async () => {
@@ -72,10 +78,11 @@ describe('Konverter frontend', () => {
     const first = new File(['first'], 'first-report.pdf', { type: 'application/pdf', lastModified: 1 })
     fireEvent.change(input!, { target: { files: [first] } })
     fireEvent.click(await screen.findByRole('button', { name: 'Start' }))
-    await screen.findByText('Ready to review')
+    await screen.findAllByText('Ready to review')
     fireEvent.click(screen.getByRole('button', { name: 'Review now' }))
-    expect(screen.getByRole('heading', { name: 'Review structure flags' })).toBeInTheDocument()
-    expect(screen.getByLabelText('Document').querySelectorAll('option')).toHaveLength(1)
+    expect(screen.getByRole('heading', { name: 'Review flagged exceptions' })).toBeInTheDocument()
+    expect(screen.queryByLabelText('Document')).not.toBeInTheDocument()
+    expect(screen.getAllByText('first-report.pdf').length).toBeGreaterThan(0)
   })
 
   it('does not expose sample or demo shortcuts', async () => {

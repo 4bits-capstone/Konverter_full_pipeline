@@ -12,11 +12,12 @@ import { MetadataPage, normaliseMetadataFields } from './MetadataPage'
 vi.mock('../services', () => import('../test/serviceMocks'))
 
 function SeedCompletedDocument() {
-  const { addDocuments, setUploaded } = useKonverter()
+  const { addDocuments, resolveAllReviews, setUploaded } = useKonverter()
   useEffect(() => {
     addDocuments([testDocument])
     setUploaded(true)
-  }, [addDocuments, setUploaded])
+    void resolveAllReviews()
+  }, [addDocuments, resolveAllReviews, setUploaded])
   return null
 }
 
@@ -33,6 +34,10 @@ function renderMetadata() {
       </MemoryRouter>
     </QueryClientProvider>,
   )
+}
+
+function approveMetadataFields() {
+  screen.getAllByRole('button', { name: /Approve/ }).forEach((button) => fireEvent.click(button))
 }
 
 afterEach(cleanup)
@@ -97,7 +102,7 @@ describe('MetadataPage', () => {
     fireEvent.click(screen.getAllByRole('button', { name: 'Edit' })[1])
     fireEvent.click(screen.getByRole('button', { name: /Add another/ }))
     expect(screen.getByRole('textbox', { name: 'Additional publisher 2' })).toBeInTheDocument()
-    expect(screen.getByRole('button', { name: /Continue to approval/ })).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: /Resolve 3 fields to continue/ })).toBeDisabled()
   })
 
   it('updates the top bar after revised metadata is saved', async () => {
@@ -109,12 +114,16 @@ describe('MetadataPage', () => {
       target: { value: 'Revised Committals Report' },
     })
     fireEvent.click(screen.getByRole('button', { name: 'Save' }))
-    fireEvent.click(screen.getByRole('button', { name: /Continue to approval/ }))
+    approveMetadataFields()
+    fireEvent.click(screen.getByRole('button', { name: /Run final system checks/ }))
 
     await waitFor(() => {
       const documentBar = document.querySelector('header')
       expect(documentBar).not.toBeNull()
       expect(within(documentBar as HTMLElement).getByText('Revised Committals Report')).toBeInTheDocument()
     })
+    expect(screen.getByRole('dialog', { name: 'Approve Revised Committals Report?' })).toBeInTheDocument()
+    expect(screen.getByRole('list', { name: 'Approval system checks' })).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'Approve and open preview' })).toBeEnabled()
   })
 })

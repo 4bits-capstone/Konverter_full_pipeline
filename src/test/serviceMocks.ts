@@ -80,6 +80,14 @@ export const documentService: DocumentService = {
       message: 'Ready for review',
     }
   },
+  async getProcessingSummary() {
+    return {
+      pages: { detected: testDocument.pages, total: testDocument.pages, needsReview: 0 },
+      headings: { detected: 2, total: 3, needsReview: 1 },
+      images: { detected: 0, total: 0, needsReview: 0 },
+      tables: { detected: 0, total: 1, needsReview: 1 },
+    }
+  },
   async stopProcessing() {
     return {
       state: 'idle',
@@ -174,8 +182,9 @@ export const publicationService: PublicationService = {
   sourceUrl(documentId, page) {
     return `${documentUrl(documentId, '/source')}${page ? `#page=${page}` : ''}`
   },
-  evidenceUrl(documentId, reviewItemId) {
-    return documentUrl(documentId, `/review-items/${reviewItemId}/evidence.png`)
+  evidenceUrl(documentId, reviewItemId, version) {
+    const url = documentUrl(documentId, `/review-items/${reviewItemId}/evidence.png`)
+    return version ? `${url}?v=${encodeURIComponent(version)}` : url
   },
   metadataEvidenceUrl(documentId, fieldName) {
     return documentUrl(documentId, `/metadata/${fieldName}/evidence.png`)

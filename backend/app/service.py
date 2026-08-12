@@ -137,7 +137,6 @@ def _is_generic_header(value: str) -> bool:
 
 SINGLE_LINE_TYPES = {
     "title",
-    "chapter_title",
     "caption",
     "section_header_1",
     "section_header_2",
@@ -449,6 +448,7 @@ class WorkflowService:
     def __init__(self, settings: Settings, store: LocalDocumentStore):
         self.settings = settings
         self.store = store
+        self._review_update_lock = threading.RLock()
 
     def _discard_generated(self, document_id: str) -> None:
         self.store.delete_artifacts(document_id, *self.GENERATED_ARTIFACTS)
@@ -500,14 +500,114 @@ class WorkflowService:
             self.store.write_artifact(document_id, "blocks.json", blocks)
         return items
 
+    def processing_summary(self, document_id: str) -> dict[str, Any]:
+        """Return document-level extraction coverage before final approval.
+
+        The Review page must not depend on generated publication artifacts,
+        because those do not exist until the final system-check confirmation.
+        Counts therefore come from the reviewed block artifact and are paired
+        with still-open review flags for the same element category.
+        """
+
+        record = self.store.get_record(document_id)
+        blocks = self.store.read_artifact(document_id, "blocks.json", [])
+        items = self.get_review_items(document_id)
+
+        def walk(values: list[dict[str, Any]]):
+            for value in values:
+                yield value
+                children = value.get("box_section_blocks") or value.get("blocks")
+                if isinstance(children, list):
+                    yield from walk(children)
+
+        element_ids: dict[str, set[str]] = {
+            "headings": set(),
+            "images": set(),
+            "tables": set(),
+        }
+        for index, block in enumerate(walk(blocks)):
+            label = str(block.get("label", ""))
+            block_id = str(block.get("id") or f"block-{index}")
+            if label.startswith("section_header_"):
+                category = "headings"
+            elif label == "picture":
+                category = "images"
+            elif label == "table":
+                category = "tables"
+            else:
+                continue
+            element_ids[category].add(block_id)
+
+        open_statuses = {"pending", "needs_attention"}
+        needs_review: dict[str, set[str]] = {
+            key: set() for key in element_ids
+        }
+        for item in items:
+            if str(item.get("status", "pending")) not in open_statuses:
+                continue
+            item_type = str(item.get("type", ""))
+            block_id = str(item.get("block_id") or item.get("id", ""))
+            if item_type.startswith("section_header_"):
+                category = "headings"
+            elif item_type == "picture":
+                category = "images"
+            elif item_type == "table":
+                category = "tables"
+            else:
+                continue
+            needs_review[category].add(block_id)
+
+        def coverage(category: str) -> dict[str, int]:
+            total = len(element_ids[category])
+            pending = min(total, len(needs_review[category]))
+            return {
+                "detected": max(0, total - pending),
+                "total": total,
+                "needs_review": pending,
+            }
+
+        page_total = max(0, int(record.get("pages", 0)))
+        return {
+            "pages": {
+                "detected": page_total,
+                "total": page_total,
+                "needs_review": 0,
+            },
+            "headings": coverage("headings"),
+            "images": coverage("images"),
+            "tables": coverage("tables"),
+        }
+
     def update_review_item(
         self,
         document_id: str,
         item_id: str,
         changes: dict[str, Any],
     ) -> dict[str, Any]:
-        items = self.get_review_items(document_id)
-        blocks = self.store.read_artifact(document_id, "blocks.json", [])
+        with self._review_update_lock:
+            items = self.get_review_items(document_id)
+            blocks = self.store.read_artifact(document_id, "blocks.json", [])
+            item = self._apply_review_item_changes(items, blocks, item_id, changes)
+            self.store.write_artifacts(
+                document_id,
+                {"blocks.json": blocks, "review_items.json": items},
+            )
+            self._discard_generated(document_id)
+            return item
+
+    @staticmethod
+    def _apply_review_item_changes(
+        items: list[dict[str, Any]],
+        blocks: list[dict[str, Any]],
+        item_id: str,
+        changes: dict[str, Any],
+    ) -> dict[str, Any]:
+        """Apply one review patch to already-loaded artifacts.
+
+        Keeping mutation separate from persistence lets a bulk request update
+        every selected item in memory and publish the two artifacts once.
+        """
+
         item = next((value for value in items if value["id"] == item_id), None)
         if item is None:
             raise KeyError(item_id)
@@ -627,20 +727,17 @@ class WorkflowService:
         ):
             item["status"] = "edited"
         block["removed"] = item["status"] == "removed"
-
-        self.store.write_artifact(document_id, "blocks.json", blocks)
-        self.store.write_artifact(document_id, "review_items.json", items)
-        self._discard_generated(document_id)
         return item
 
     def resolve_all(self, document_id: str) -> list[dict[str, Any]]:
-        items = self.get_review_items(document_id)
-        for item in items:
-            if item["status"] in {"pending", "needs_attention"}:
-                item["status"] = "accepted"
-        self.store.write_artifact(document_id, "review_items.json", items)
-        self._discard_generated(document_id)
-        return items
+        with self._review_update_lock:
+            items = self.get_review_items(document_id)
+            for item in items:
+                if item["status"] in {"pending", "needs_attention"}:
+                    item["status"] = "accepted"
+            self.store.write_artifact(document_id, "review_items.json", items)
+            self._discard_generated(document_id)
+            return items
 
     def update_review_items(
         self,
@@ -648,15 +745,25 @@ class WorkflowService:
         item_ids: list[str],
         changes: dict[str, Any],
     ) -> list[dict[str, Any]]:
-        unique_ids = list(dict.fromkeys(item_ids))
-        available = {item["id"] for item in self.get_review_items(document_id)}
-        missing = [item_id for item_id in unique_ids if item_id not in available]
-        if missing:
-            raise KeyError(missing[0])
-        return [
-            self.update_review_item(document_id, item_id, changes)
-            for item_id in unique_ids
-        ]
+        with self._review_update_lock:
+            unique_ids = list(dict.fromkeys(item_ids))
+            items = self.get_review_items(document_id)
+            blocks = self.store.read_artifact(document_id, "blocks.json", [])
+            available = {item["id"] for item in items}
+            missing = [item_id for item_id in unique_ids if item_id not in available]
+            if missing:
+                raise KeyError(missing[0])
+
+            updated = [
+                self._apply_review_item_changes(items, blocks, item_id, changes)
+                for item_id in unique_ids
+            ]
+            self.store.write_artifacts(
+                document_id,
+                {"blocks.json": blocks, "review_items.json": items},
+            )
+            self._discard_generated(document_id)
+            return updated
 
     def get_metadata(self, document_id: str) -> dict[str, Any]:
         payload = self.store.read_artifact(document_id, "metadata.json")

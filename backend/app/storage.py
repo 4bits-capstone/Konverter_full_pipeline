@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import os
 import shutil
+import tempfile
 import threading
 import time
 from pathlib import Path
@@ -120,9 +121,26 @@ class LocalDocumentStore:
     def write_text_artifact(self, document_id: str, name: str, value: str) -> None:
         with self._lock:
             path = self.artifact_path(document_id, name)
-            temporary = path.with_suffix(path.suffix + ".tmp")
-            temporary.write_text(value, encoding="utf-8")
-            os.replace(temporary, path)
+            path.parent.mkdir(parents=True, exist_ok=True)
+            temporary: Path | None = None
+            try:
+                with tempfile.NamedTemporaryFile(
+                    "w",
+                    encoding="utf-8",
+                    dir=path.parent,
+                    prefix=f".{path.name}.",
+                    suffix=".tmp",
+                    delete=False,
+                ) as output:
+                    output.write(value)
+                    temporary = Path(output.name)
+                self._replace_with_retry(temporary, path)
+            finally:
+                if temporary is not None:
+                    try:
+                        temporary.unlink(missing_ok=True)
+                    except OSError:
+                        pass
 
     def estimate_seconds(
         self,
@@ -178,13 +196,49 @@ class LocalDocumentStore:
     @staticmethod
     def _write_json(path: Path, value: Any) -> None:
         path.parent.mkdir(parents=True, exist_ok=True)
-        temporary = path.with_suffix(path.suffix + ".tmp")
-        with temporary.open("w", encoding="utf-8") as output:
-            json.dump(
-                value,
-                output,
-                ensure_ascii=False,
-                separators=(",", ":"),
-                default=str,
-            )
-        os.replace(temporary, path)
+        temporary: Path | None = None
+        try:
+            with tempfile.NamedTemporaryFile(
+                "w",
+                encoding="utf-8",
+                dir=path.parent,
+                prefix=f".{path.name}.",
+                suffix=".tmp",
+                delete=False,
+            ) as output:
+                json.dump(
+                    value,
+                    output,
+                    ensure_ascii=False,
+                    separators=(",", ":"),
+                    default=str,
+                )
+                temporary = Path(output.name)
+            LocalDocumentStore._replace_with_retry(temporary, path)
+        finally:
+            if temporary is not None:
+                try:
+                    temporary.unlink(missing_ok=True)
+                except OSError:
+                    pass
+
+    @staticmethod
+    def _replace_with_retry(temporary: Path, path: Path) -> None:
+        """Atomically publish an artifact despite brief Windows file locks.
+
+        Windows can reject ``os.replace`` while an antivirus scanner, editor,
+        or overlapping request has the destination open.  A bounded retry
+        keeps the atomic-write guarantee without falling back to an unsafe
+        in-place rewrite.
+        """
+
+        delay = 0.02
+        for attempt in range(7):
+            try:
+                os.replace(temporary, path)
+                return
+            except PermissionError:
+                if attempt == 6:
+                    raise
+                time.sleep(delay)
+                delay = min(delay * 2, 0.2)

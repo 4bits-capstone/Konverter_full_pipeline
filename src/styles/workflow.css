@@ -1558,6 +1558,38 @@
   border-bottom: 1px solid var(--line-2);
 }
 
+.vlrc-direct-item {
+  border-bottom: 1px solid var(--line-2);
+}
+
+.vlrc-direct-item > a {
+  min-height: 48px;
+  padding: 12px 14px;
+  background: #fff;
+  color: var(--ink);
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  font-size: 13px;
+  font-weight: 700;
+  line-height: 1.35;
+  text-decoration: none;
+}
+
+.vlrc-direct-item > a:hover,
+.vlrc-direct-item > a:focus-visible {
+  background: #f4f7fa;
+  color: var(--accent-ink);
+}
+
+.vlrc-direct-item > a svg {
+  width: 16px;
+  height: 16px;
+  flex: none;
+  color: var(--blue);
+}
+
 .vlrc-accordion-item h3 {
   margin: 0;
   font-family: "Raleway", system-ui, sans-serif;
@@ -1811,11 +1843,18 @@
 .vlrc-reader-nav .heading-level-3 a {
   padding-left: 13px;
   font-size: 11.5px;
+  font-weight: 600;
 }
 
 .vlrc-reader-nav .heading-level-4 a {
   padding-left: 22px;
   font-size: 11px;
+}
+
+.vlrc-reader-nav .heading-level-5 a {
+  padding-left: 31px;
+  color: #5d6672;
+  font-size: 10.5px;
 }
 
 .vlrc-reader-content {
@@ -1854,19 +1893,33 @@
 .docling-content-blocks > h3 {
   scroll-margin-top: 18px;
   font:
-    700 17px/1.3 "Raleway",
+    700 20px/1.28 "Raleway",
     sans-serif;
-  color: var(--ink);
-  margin: 28px 0 11px;
+  color: var(--blue-dark);
+  margin: 32px 0 12px;
+  padding-bottom: 6px;
+  border-bottom: 1px solid #d8e1ea;
 }
 
 .docling-content-blocks > h4 {
   scroll-margin-top: 18px;
   font:
+    700 16px/1.35 "Raleway",
+    sans-serif;
+  color: var(--ink);
+  margin: 26px 0 10px;
+  padding-left: 10px;
+  border-left: 3px solid #8aa2b8;
+}
+
+.docling-content-blocks > h5 {
+  scroll-margin-top: 18px;
+  font:
     700 14px/1.4 "Raleway",
     sans-serif;
-  color: var(--ink-2);
-  margin: 22px 0 9px;
+  color: #4d5865;
+  margin: 21px 0 8px;
+  letter-spacing: 0.012em;
 }
 
 .docling-paragraph {
@@ -2926,12 +2979,6 @@ ol.reader-source-list {
 .structure-chip {
   text-transform: none;
   font-family: "IBM Plex Mono", monospace;
-}
-
-.structure-chip[data-label="chapter_title"] {
-  background: #dceaf7;
-  border-color: #8eb0d1;
-  color: #123e67;
 }
 
 .structure-chip[data-label="section_header_1"] {

@@ -4,7 +4,6 @@ export type ReviewStatus = 'pending' | 'accepted' | 'edited' | 'needs_attention'
 export type ReviewType =
   | 'box_section'
   | 'caption'
-  | 'chapter_title'
   | 'document_index'
   | 'footnote'
   | 'footer'
@@ -38,6 +37,14 @@ export interface DocumentSummary {
 export interface SourceEvidence {
   page: number
   html: string
+  bounds?: {
+    left: number
+    top: number
+    right: number
+    bottom: number
+    pageWidth: number
+    pageHeight: number
+  }
 }
 
 export interface ReviewTableData {
@@ -124,4 +131,17 @@ export interface DocumentProcessingJob {
   progress: number
   remainingSeconds: number
   message?: string
+}
+
+export interface ProcessingElementCoverage {
+  detected: number
+  total: number
+  needsReview: number
+}
+
+export interface ProcessingSummary {
+  pages: ProcessingElementCoverage
+  headings: ProcessingElementCoverage
+  images: ProcessingElementCoverage
+  tables: ProcessingElementCoverage
 }

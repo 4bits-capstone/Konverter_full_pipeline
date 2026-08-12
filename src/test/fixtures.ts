@@ -30,7 +30,11 @@ export const testReviewItems: ReviewItem[] = [
     status: 'pending',
     extractedText: 'Purpose',
     note: 'Confirm that this heading appears in the chapter outline and body.',
-    source: { page: 2, html: '<p class="hl">Purpose</p><span class="page-num">Page 2</span>' },
+    source: {
+      page: 2,
+      html: '<p class="hl">Purpose</p><span class="page-num">Page 2</span>',
+      bounds: { left: 72, top: 110, right: 310, bottom: 142, pageWidth: 595, pageHeight: 842 },
+    },
   },
   {
     id: 'review-table',
@@ -52,7 +56,11 @@ export const testReviewItems: ReviewItem[] = [
         ['Review flag', 'An item that requires human confirmation.'],
       ],
     },
-    source: { page: 4, html: '<p class="hl">Definitions</p><span class="page-num">Page 4</span>' },
+    source: {
+      page: 4,
+      html: '<p class="hl">Definitions</p><span class="page-num">Page 4</span>',
+      bounds: { left: 70, top: 245, right: 525, bottom: 420, pageWidth: 595, pageHeight: 842 },
+    },
   },
   {
     id: 'review-heading-secondary',
@@ -66,7 +74,11 @@ export const testReviewItems: ReviewItem[] = [
     kind: 'text',
     status: 'pending',
     extractedText: 'Implementation',
-    source: { page: 6, html: '<p class="hl">Implementation</p><span class="page-num">Page 6</span>' },
+    source: {
+      page: 6,
+      html: '<p class="hl">Implementation</p><span class="page-num">Page 6</span>',
+      bounds: { left: 74, top: 500, right: 340, bottom: 536, pageWidth: 595, pageHeight: 842 },
+    },
   },
 ]
 
@@ -106,9 +118,22 @@ export const testPublicationPayload: PublicationPayload = {
     summary: ['This report explains practical requirements for producing accessible digital documents.'],
     sections: [
       {
+        id: 'preface',
+        title: 'Preface',
+        displayTitle: 'Preface',
+        isChapter: false,
+        page: 1,
+        headings: [],
+        blocks: [
+          { type: 'paragraph', text: 'This preface introduces the publication.', page: 1 },
+        ],
+        footnotes: [],
+      },
+      {
         id: 'introduction',
         title: '1. Introduction',
         displayTitle: '1. Introduction',
+        isChapter: true,
         page: 2,
         headings: [
           { type: 'heading', id: 'purpose', text: 'Purpose', level: 2, page: 2 },
@@ -127,6 +152,7 @@ export const testPublicationPayload: PublicationPayload = {
         id: 'requirements',
         title: '2. Requirements',
         displayTitle: '2. Requirements',
+        isChapter: true,
         page: 5,
         headings: [
           { type: 'heading', id: 'semantic-output', text: 'Semantic output', level: 2, page: 5 },
@@ -134,6 +160,30 @@ export const testPublicationPayload: PublicationPayload = {
         blocks: [
           { type: 'heading', id: 'semantic-output', text: 'Semantic output', level: 2, page: 5 },
           { type: 'paragraph', text: 'Headings, lists and tables must retain their intended meaning.', page: 5 },
+        ],
+        footnotes: [],
+      },
+      {
+        id: 'appendices',
+        title: 'Appendices',
+        displayTitle: 'Appendices',
+        isChapter: false,
+        page: 10,
+        headings: [],
+        blocks: [
+          { type: 'paragraph', text: 'Supporting material appears in the appendices.', page: 10 },
+        ],
+        footnotes: [],
+      },
+      {
+        id: 'bibliography',
+        title: 'Bibliography',
+        displayTitle: 'Bibliography',
+        isChapter: false,
+        page: 12,
+        headings: [],
+        blocks: [
+          { type: 'paragraph', text: 'Sources cited by this report.', page: 12 },
         ],
         footnotes: [],
       },

@@ -13,6 +13,7 @@ export interface DoclingHeadingBlock {
   text: string
   level: 1 | 2 | 3 | 4 | 5
   page?: number
+  tocSequence?: number
 }
 
 export interface DoclingParagraphBlock {
@@ -118,7 +119,9 @@ export interface DoclingSection {
   id: string
   title: string
   displayTitle: string
+  isChapter?: boolean
   page?: number
+  tocSequence?: number
   blocks: DoclingBlock[]
   headings: DoclingHeadingBlock[]
   footnotes: DoclingFootnote[]

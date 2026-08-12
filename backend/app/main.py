@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import tempfile
@@ -22,6 +23,7 @@ from .models import (
     DocumentProcessingJob,
     DocumentSummary,
     MetadataPayload,
+    ProcessingSummary,
     PublicationPayload,
     ReviewItem,
     ReviewBulkPatch,
@@ -238,6 +240,18 @@ def get_document(document_id: str) -> DocumentSummary:
     return _summary(_record(document_id))
 
 
+@app.get(
+    "/api/documents/{document_id}/processing-summary",
+    response_model=ProcessingSummary,
+)
+def processing_summary(document_id: str) -> ProcessingSummary:
+    _require_complete(document_id)
+    try:
+        return ProcessingSummary(**workflow.processing_summary(document_id))
+    except RuntimeError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+
+
 @app.delete("/api/documents/{document_id}", status_code=204)
 def delete_document(document_id: str) -> Response:
     record = _record(document_id)
@@ -263,10 +277,30 @@ def stop_processing(document_id: str) -> DocumentProcessingJob:
     return DocumentProcessingJob(**processing.stop(document_id))
 
 
-@app.get("/api/documents/{document_id}/status", response_model=DocumentProcessingJob)
-def processing_status(document_id: str) -> DocumentProcessingJob:
+def _processing_state_response(document_id: str) -> Response:
     _record(document_id)
-    return DocumentProcessingJob(**processing.status(document_id))
+    job = DocumentProcessingJob(**processing.status(document_id))
+    # Some browser download handlers intercept repeated application/json GETs
+    # even when Content-Disposition says inline.  Polling uses a fetch-only
+    # text response with no filename/disposition header; response.json() still
+    # parses the JSON body normally on the client.
+    return Response(
+        content=job.model_dump_json(by_alias=True),
+        media_type="text/plain",
+        headers={"Cache-Control": "no-store, max-age=0"},
+    )
+
+
+@app.get("/api/documents/{document_id}/status")
+def processing_status(document_id: str) -> Response:
+    """Backward-compatible status endpoint for older clients."""
+    return _processing_state_response(document_id)
+
+
+@app.post("/api/documents/{document_id}/processing-state")
+def processing_state(document_id: str) -> Response:
+    """Fetch-only polling endpoint that cannot become a JSON navigation."""
+    return _processing_state_response(document_id)
 
 
 @app.get("/api/documents/{document_id}/review-items", response_model=list[ReviewItem])
@@ -391,14 +425,31 @@ def review_evidence(document_id: str, item_id: str) -> FileResponse:
     safe_item_id = "".join(
         character for character in item_id if character.isalnum() or character in "-_"
     )
-    destination = store.artifact_path(document_id, f"evidence-{safe_item_id}.png")
+    source = item.get("source", {})
+    evidence_signature = hashlib.sha256(
+        json.dumps(
+            {
+                "block_id": item.get("block_id"),
+                "page": page_number,
+                "bounds": source.get("bounds"),
+            },
+            ensure_ascii=False,
+            sort_keys=True,
+            separators=(",", ":"),
+            default=str,
+        ).encode("utf-8")
+    ).hexdigest()[:16]
+    destination = store.artifact_path(
+        document_id, f"evidence-{safe_item_id}-{evidence_signature}.png"
+    )
     if not destination.exists():
         try:
             render_pdf_region(
                 store.source_path(document_id),
                 destination,
                 page_number,
-                item.get("source", {}).get("bounds"),
+                source.get("bounds"),
+                highlight=bool(source.get("bounds")),
             )
         except Exception as exc:
             destination.unlink(missing_ok=True)
@@ -410,6 +461,11 @@ def review_evidence(document_id: str, item_id: str) -> FileResponse:
         media_type="image/png",
         filename=f"source-page-{page_number}-evidence.png",
         content_disposition_type="inline",
+        headers={
+            "Cache-Control": "no-store, max-age=0",
+            "Pragma": "no-cache",
+            "X-Evidence-Item": safe_item_id,
+        },
     )
 
 

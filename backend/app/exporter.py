@@ -69,6 +69,17 @@ def _section_key(value: str) -> str:
     )
 
 
+def _is_chapter_title(value: str) -> bool:
+    """Only numbered chapters/parts use collapsible landing navigation."""
+    return bool(
+        re.match(
+            r"^\s*(?:(?:chapter|part)\s+(?:\d+|[ivxlcdm]+)\b|\d+[.)]\s+)",
+            value,
+            re.IGNORECASE,
+        )
+    )
+
+
 def _summary_from_values(values: list[str], max_chars: int) -> str:
     """Build a compact description and prefer complete sentences."""
     sentences: list[str] = []
@@ -115,8 +126,6 @@ def _summary_heading(value: str) -> str:
 
 
 def _heading_level(label: str) -> int | None:
-    if label == "chapter_title":
-        return 0
     match = re.fullmatch(r"section_header_([1-5])", label)
     return int(match.group(1)) if match else None
 
@@ -218,28 +227,72 @@ def _format_published_date(value: Any) -> str:
 
 
 def _reader_sections(sections: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    first_numbered_chapter = next(
-        (
-            index
-            for index, section in enumerate(sections)
-            if re.match(
-                r"^(?:chapter\s+)?1\.\s+",
-                str(section.get("displayTitle", "")),
-                re.IGNORECASE,
-            )
-        ),
-        -1,
-    )
-    candidates = (
-        sections[first_numbered_chapter:] if first_numbered_chapter >= 0 else sections
-    )
     return [
         section
-        for section in candidates
+        for section in sections
         if section.get("id") != "front-matter"
         and str(section.get("displayTitle", "")).strip().casefold()
         not in {"front matter", "contents", "table of contents"}
     ]
+
+
+def _ordered_reader_sections(
+    sections: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    """Keep H1s in printed-contents order and place missing entries by page.
+
+    Most resolved H1s carry a printed-TOC sequence.  Designed front/back matter
+    can occasionally lack that field, so a plain ``None -> end`` sort would
+    move Preface to the back or detach Appendices from its physical position.
+    Missing entries are interpolated between the nearest sequenced page anchors.
+    """
+
+    if not sections:
+        return []
+    original_positions = {id(section): index for index, section in enumerate(sections)}
+    anchors = sorted(
+        (
+            int(section.get("page", 0)),
+            float(section["tocSequence"]),
+            original_positions[id(section)],
+        )
+        for section in sections
+        if isinstance(section.get("tocSequence"), int)
+    )
+    if not anchors:
+        return list(sections)
+
+    def estimated_sequence(section: dict[str, Any]) -> float:
+        sequence = section.get("tocSequence")
+        if isinstance(sequence, int):
+            return float(sequence)
+        page = int(section.get("page", 0))
+        before = [anchor for anchor in anchors if anchor[0] <= page]
+        after = [anchor for anchor in anchors if anchor[0] > page]
+        if not before:
+            first_page, first_sequence, _ = anchors[0]
+            return first_sequence - 1 - max(0, first_page - page) / 100_000
+        if not after:
+            last_page, last_sequence, _ = anchors[-1]
+            return last_sequence + 1 + max(0, page - last_page) / 100_000
+        previous_page, previous_sequence, _ = before[-1]
+        next_page, next_sequence, _ = after[0]
+        span = max(1, next_page - previous_page)
+        fraction = (page - previous_page) / span
+        if next_sequence > previous_sequence:
+            return previous_sequence + fraction * (
+                next_sequence - previous_sequence
+            )
+        return previous_sequence + 0.5 + fraction / 100
+
+    return sorted(
+        sections,
+        key=lambda section: (
+            estimated_sequence(section),
+            int(section.get("page", 0)),
+            original_positions[id(section)],
+        ),
+    )
 
 
 def _list_publication_blocks(
@@ -494,15 +547,18 @@ def build_publication(
         "id": "front-matter",
         "title": "Front matter",
         "displayTitle": "Front matter",
+        "tocSequence": None,
         "page": 1,
         "blocks": [],
         "headings": [],
         "footnotes": [],
     }
-    has_chapter_titles = any(block.get("label") == "chapter_title" for block in blocks)
-
     def finish_current() -> None:
-        if current["blocks"] or current["footnotes"]:
+        if (
+            current["id"] != "front-matter"
+            or current["blocks"]
+            or current["footnotes"]
+        ):
             if current["id"] != "front-matter":
                 first_heading_index = next(
                     (
@@ -521,6 +577,21 @@ def build_publication(
                             first_heading.get("text") or current["displayTitle"]
                         )
                         current["blocks"].pop(first_heading_index)
+            previous_level = 1
+            for content_block in current["blocks"]:
+                if content_block.get("type") != "heading":
+                    continue
+                requested_level = min(
+                    5, max(2, int(content_block.get("level", 2)))
+                )
+                # Accessible HTML must never skip a heading rank.  Typography
+                # and numbering still choose the intended tier, but a missing
+                # intermediate source heading is closed up for a valid H1–H5
+                # outline.
+                content_block["level"] = min(
+                    requested_level, previous_level + 1
+                )
+                previous_level = int(content_block["level"])
             current["headings"] = [
                 block for block in current["blocks"] if block.get("type") == "heading"
             ]
@@ -534,9 +605,7 @@ def build_publication(
         if label == "title" or label in {"header", "footer"}:
             continue
 
-        starts_section = label == "chapter_title" or (
-            not has_chapter_titles and label == "section_header_1"
-        )
+        starts_section = label == "section_header_1"
         if starts_section:
             if current["id"] != "front-matter" and _section_key(text) == _section_key(
                 str(current["title"])
@@ -549,6 +618,8 @@ def build_publication(
                 "id": _unique_slug(text or f"section-{len(sections) + 1}", counts),
                 "title": text or f"Section {len(sections) + 1}",
                 "displayTitle": text or f"Section {len(sections) + 1}",
+                "isChapter": _is_chapter_title(text),
+                "tocSequence": block.get("toc_sequence"),
                 "page": page,
                 "blocks": [],
                 "headings": [],
@@ -576,6 +647,7 @@ def build_publication(
                 "text": text,
                 "level": level,
                 "page": page,
+                "tocSequence": block.get("toc_sequence"),
             }
             current["blocks"].append(heading)
             continue
@@ -663,7 +735,7 @@ def build_publication(
         )
 
     finish_current()
-    reader_sections = _reader_sections(sections)
+    reader_sections = _ordered_reader_sections(_reader_sections(sections))
     if not reader_sections:
         fallback = next(
             (
@@ -1342,11 +1414,32 @@ def build_accessible_html(
 
     def render_landing_section(section: dict[str, Any], index: int) -> str:
         section_id = html.escape(str(section["id"]))
+        title = html.escape(str(section["displayTitle"]))
+        is_chapter = bool(
+            section.get(
+                "isChapter",
+                _is_chapter_title(str(section.get("displayTitle", ""))),
+            )
+        )
+        if not is_chapter:
+            return (
+                f'<div class="vlrc-direct-item"><a href="#reader-{section_id}" '
+                f'data-open-section="{section_id}"><span>{title}</span>'
+                '<span aria-hidden="true">›</span></a></div>'
+            )
         major_headings = [
             heading
             for heading in section.get("headings", [])
             if int(heading.get("level", 2)) == 2
         ]
+        major_headings.sort(
+            key=lambda heading: (
+                int(heading["tocSequence"])
+                if isinstance(heading.get("tocSequence"), int)
+                else 1_000_000,
+                int(heading.get("page", 0)),
+            )
+        )
         links = (
             f'<li class="read-full"><a href="#reader-{section_id}" data-open-section="{section_id}">'
             "Read full section</a></li>"
@@ -1359,7 +1452,7 @@ def build_accessible_html(
         open_attribute = " open" if index == 0 else ""
         return (
             f'<details class="vlrc-accordion-item"{open_attribute}>'
-            f'<summary><span>{html.escape(str(section["displayTitle"]))}</span><span aria-hidden="true">⌄</span></summary>'
+            f'<summary><span>{title}</span><span aria-hidden="true">⌄</span></summary>'
             f"<ul>{links}</ul></details>"
         )
 
@@ -1489,6 +1582,10 @@ summary::-webkit-details-marker{{display:none}}
 .vlrc-accordion-item a{{display:block;padding:10px 16px 10px 28px;font-size:12.5px;text-decoration:none}}
 .vlrc-accordion-item a:hover,.vlrc-accordion-item a:focus-visible{{background:#eaf1f7;text-decoration:underline}}
 .vlrc-accordion-item .read-full a{{padding-left:16px;font-weight:700}}
+.vlrc-direct-item{{border-bottom:1px solid #9ea3ab}}
+.vlrc-direct-item>a{{min-height:48px;padding:12px 14px;background:#fff;color:#20242a;display:flex;align-items:center;justify-content:space-between;gap:16px;font-size:13px;font-weight:700;text-decoration:none}}
+.vlrc-direct-item>a:hover,.vlrc-direct-item>a:focus-visible{{background:#f4f7fa;color:#12466f;text-decoration:underline}}
+.vlrc-direct-item>a>span:last-child{{color:#165487;font-size:20px;line-height:1}}
 .vlrc-publication-aside{{position:sticky;top:24px;display:flex;flex-direction:column;gap:12px}}
 .publication-cover{{display:block;width:100%;height:auto;border:1px solid #d3d5d8;box-shadow:0 8px 22px rgba(22,35,61,.14)}}
 .vlrc-download{{min-height:46px;padding:11px 14px;background:#165487;color:#fff;display:flex;align-items:center;justify-content:center;font-size:13px;font-weight:700;text-decoration:none}}
@@ -1505,15 +1602,17 @@ summary::-webkit-details-marker{{display:none}}
 .vlrc-reader-nav li+li{{margin-top:2px}}
 .vlrc-reader-nav a{{display:block;padding:7px 8px;border-left:3px solid transparent;color:#46505d;font-size:12px;line-height:1.35;text-decoration:none}}
 .vlrc-reader-nav a:hover,.vlrc-reader-nav a:focus-visible,.vlrc-reader-nav a[aria-current="location"]{{border-left-color:#165487;background:#e7eef5;color:#12466f}}
-.vlrc-reader-nav .heading-level-3 a{{padding-left:18px;font-size:11.5px}}
-.vlrc-reader-nav .heading-level-4 a,.vlrc-reader-nav .heading-level-5 a,.vlrc-reader-nav .heading-level-6 a{{padding-left:28px;font-size:11px}}
+.vlrc-reader-nav .heading-level-3 a{{padding-left:18px;font-size:11.5px;font-weight:600}}
+.vlrc-reader-nav .heading-level-4 a{{padding-left:28px;font-size:11px}}
+.vlrc-reader-nav .heading-level-5 a,.vlrc-reader-nav .heading-level-6 a{{padding-left:38px;color:#5d6672;font-size:10.5px}}
 .vlrc-reader-content{{min-width:0;padding:34px 40px 46px}}
 .chapter-label{{color:#7a2b2b;font-size:10.5px;font-weight:700;letter-spacing:.09em;text-transform:uppercase}}
 .vlrc-reader-content>h1{{max-width:none;margin-bottom:32px}}
 .docling-content-blocks p{{color:#303744;font-size:14px;line-height:1.72}}
 .docling-content-blocks h2{{margin:38px 0 14px;font-size:24px;line-height:1.2}}
-.docling-content-blocks h3{{margin:30px 0 12px;font-size:20px;line-height:1.25}}
-.docling-content-blocks h4,.docling-content-blocks h5,.docling-content-blocks h6{{margin:24px 0 10px;font-size:17px;line-height:1.3}}
+.docling-content-blocks h3{{margin:32px 0 12px;padding-bottom:6px;border-bottom:1px solid #d8e1ea;color:#12466f;font-size:20px;line-height:1.28}}
+.docling-content-blocks h4{{margin:26px 0 10px;padding-left:10px;border-left:3px solid #8aa2b8;color:#20242a;font-size:16px;line-height:1.35}}
+.docling-content-blocks h5,.docling-content-blocks h6{{margin:21px 0 8px;color:#4d5865;font-size:14px;line-height:1.4;letter-spacing:.012em}}
 .document-box-section{{margin:28px 0;border:1px solid #c7c9cc;background:#efedef;color:#20242a}}
 .document-box-section>h3{{margin:0;padding:11px 18px;background:#c8c8c8;color:#111;font-size:17px;line-height:1.3}}
 .document-box-section-content{{padding:18px 22px 8px}}

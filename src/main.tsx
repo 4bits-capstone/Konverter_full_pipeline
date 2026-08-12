@@ -4,9 +4,7 @@ import { createRoot } from 'react-dom/client'
 import { BrowserRouter } from 'react-router-dom'
 import App from './App'
 import { KonverterProvider } from './state/KonverterContext'
-import './styles/global.css'
-import './styles/workflow.css'
-import './styles/preview.css'
+import './styles/public.css'
 
 const queryClient = new QueryClient({
   defaultOptions: {

@@ -3,12 +3,149 @@ from __future__ import annotations
 from app.exporter import _render_block, build_publication
 
 
+def test_all_printed_contents_sections_are_kept_before_and_after_chapters():
+    publication = build_publication(
+        [
+            {"id": "title", "label": "title", "text": "Report", "order": 0},
+            {"id": "preface", "label": "section_header_1", "text": "Preface", "order": 1},
+            {"id": "preface-text", "label": "text", "text": "Preface body", "order": 2},
+            {"id": "chapter", "label": "section_header_1", "text": "1. Introduction", "order": 3},
+            {"id": "background", "label": "section_header_2", "text": "Background", "order": 4},
+            {"id": "glossary", "label": "section_header_1", "text": "Glossary", "order": 5},
+        ],
+        {"title": "Report", "pages": 4, "file_name": "report.pdf"},
+    )
+
+    assert [section["displayTitle"] for section in publication["sections"]] == [
+        "Preface",
+        "1. Introduction",
+        "Glossary",
+    ]
+    assert [
+        heading["text"] for heading in publication["sections"][1]["headings"]
+    ] == ["Background"]
+    assert [section["isChapter"] for section in publication["sections"]] == [
+        False,
+        True,
+        False,
+    ]
+
+
+def test_printed_toc_sequence_controls_landing_section_order():
+    publication = build_publication(
+        [
+            {"id": "title", "label": "title", "text": "Report", "order": 0},
+            {
+                "id": "chapter-2",
+                "label": "section_header_1",
+                "text": "2. Current law",
+                "toc_sequence": 2,
+                "order": 1,
+            },
+            {"id": "chapter-2-text", "label": "text", "text": "Second", "order": 2},
+            {
+                "id": "chapter-1",
+                "label": "section_header_1",
+                "text": "1. Introduction",
+                "toc_sequence": 1,
+                "order": 3,
+            },
+            {"id": "chapter-1-text", "label": "text", "text": "First", "order": 4},
+        ],
+        {"title": "Report", "pages": 2, "file_name": "report.pdf"},
+    )
+
+    assert [section["displayTitle"] for section in publication["sections"]] == [
+        "1. Introduction",
+        "2. Current law",
+    ]
+
+
+def test_unsequenced_front_and_back_matter_are_placed_by_pdf_page():
+    publication = build_publication(
+        [
+            {"id": "title", "label": "title", "text": "Report", "order": 0},
+            {
+                "id": "chapter-1",
+                "label": "section_header_1",
+                "text": "1. Introduction",
+                "toc_sequence": 10,
+                "page": 10,
+                "order": 1,
+            },
+            {"id": "preface", "label": "section_header_1", "text": "Preface", "page": 2, "order": 2},
+            {
+                "id": "chapter-2",
+                "label": "section_header_1",
+                "text": "2. Findings",
+                "toc_sequence": 20,
+                "page": 20,
+                "order": 3,
+            },
+            {"id": "appendices", "label": "section_header_1", "text": "Appendices", "page": 30, "order": 4},
+            {"id": "bibliography", "label": "section_header_1", "text": "Bibliography", "page": 40, "order": 5},
+        ],
+        {"title": "Report", "pages": 40, "file_name": "report.pdf"},
+    )
+
+    assert [section["displayTitle"] for section in publication["sections"]] == [
+        "Preface",
+        "1. Introduction",
+        "2. Findings",
+        "Appendices",
+        "Bibliography",
+    ]
+
+
+def test_lower_heading_levels_are_closed_up_without_skipping_ranks():
+    publication = build_publication(
+        [
+            {"id": "title", "label": "title", "text": "Report", "order": 0},
+            {
+                "id": "chapter",
+                "label": "section_header_1",
+                "text": "1. Introduction",
+                "order": 1,
+            },
+            {
+                "id": "major",
+                "label": "section_header_2",
+                "text": "Major topic",
+                "order": 2,
+            },
+            {
+                "id": "detail",
+                "label": "section_header_5",
+                "text": "Detail promoted to the next valid rank",
+                "order": 3,
+            },
+            {
+                "id": "nested",
+                "label": "section_header_4",
+                "text": "Nested detail",
+                "order": 4,
+            },
+            {
+                "id": "deep",
+                "label": "section_header_5",
+                "text": "Deep detail",
+                "order": 5,
+            },
+        ],
+        {"title": "Report", "pages": 2, "file_name": "report.pdf"},
+    )
+
+    assert [
+        heading["level"] for heading in publication["sections"][0]["headings"]
+    ] == [2, 3, 4, 5]
+
+
 def test_scope_of_report_is_used_before_introduction_for_description():
     blocks = [
         {"id": "title", "label": "title", "text": "Example report", "order": 0},
         {
             "id": "intro",
-            "label": "chapter_title",
+            "label": "section_header_1",
             "text": "1. Introduction",
             "order": 1,
         },
@@ -124,7 +261,7 @@ def test_box_section_uses_semantic_ordered_and_unordered_lists():
             },
             {
                 "id": "chapter",
-                "label": "chapter_title",
+                "label": "section_header_1",
                 "text": "1. Findings",
                 "order": 1,
                 "page": 2,

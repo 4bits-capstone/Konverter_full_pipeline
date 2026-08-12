@@ -1,8 +1,11 @@
 import {
   Check,
+  ChevronDown,
+  CircleHelp,
   ExternalLink,
   FileText,
   ImageUp,
+  LoaderCircle,
   Pencil,
   Plus,
   RotateCcw,
@@ -13,16 +16,20 @@ import {
 import {
   type MouseEvent as ReactMouseEvent,
   useEffect,
+  useId,
   useLayoutEffect,
   useMemo,
   useRef,
   useState,
 } from "react";
+import { createPortal } from "react-dom";
+import { useQuery } from "@tanstack/react-query";
 import { useNavigate } from "react-router-dom";
 import { ConfidenceBadge } from "../components/ConfidenceBadge";
 import { StatusTag } from "../components/StatusTag";
-import { publicationService } from "../services";
+import { documentService, publicationService } from "../services";
 import { useKonverter } from "../state/KonverterContext";
+import { converterStagePath } from "../lib/converterRoutes";
 import type {
   ReviewItem,
   ReviewStatus,
@@ -60,111 +67,125 @@ const structureLabels: Array<{
   value: ReviewType;
   label: string;
   description: string;
+  shortMeaning: string;
 }> = [
   {
     value: "title",
     label: "Title",
     description: "The single main title of the whole document.",
-  },
-  {
-    value: "chapter_title",
-    label: "Chapter title",
-    description:
-      "The title that starts a chapter, appendix group, or equivalent top-level part.",
+    shortMeaning: "Main title of the document.",
   },
   {
     value: "section_header_1",
     label: "H1",
     description:
-      "The chapter heading repeated at the start of the chapter content.",
+      "A top-level printed-contents entry. Numbered chapters are collapsible; front and back matter are direct links.",
+    shortMeaning: "Main chapter or top-level section.",
   },
   {
     value: "section_header_2",
     label: "H2",
     description:
-      "A chapter section named on that chapter’s opening contents page.",
+      "A printed-contents entry nested under the current H1.",
+    shortMeaning: "Section within the current H1.",
   },
   {
     value: "section_header_3",
     label: "H3",
-    description: "A styled subsection not listed on the chapter opening page.",
+    description: "A body subsection below the H1/H2 navigation level.",
+    shortMeaning: "Subsection within an H2.",
   },
   {
     value: "section_header_4",
     label: "H4",
     description: "A lower-level heading nested under an H3.",
+    shortMeaning: "Subsection within an H3.",
   },
   {
     value: "section_header_5",
     label: "H5",
     description: "The fifth level in the document hierarchy.",
+    shortMeaning: "Lowest heading level.",
   },
   {
     value: "caption",
     label: "Caption",
     description: "Text identifying or explaining a table, picture, or figure.",
+    shortMeaning: "Description for a table or image.",
   },
   {
     value: "box_section",
     label: "Box Section",
     description:
       "A bounded section that preserves its own paragraphs, lists, tables, figures and other child elements.",
+    shortMeaning: "Grouped callout or highlighted content.",
   },
   {
     value: "document_index",
     label: "Document index",
     description: "A table of contents or document index.",
+    shortMeaning: "Contents or index listing.",
   },
   {
     value: "footnote",
     label: "Footnote",
     description:
       "A note referenced from the main text, usually at the bottom of a page.",
+    shortMeaning: "Reference note outside the main text.",
   },
   {
     value: "header",
     label: "Header",
     description: "Repeated page-header content excluded from the reading flow.",
+    shortMeaning: "Repeated content at the page top.",
   },
   {
     value: "footer",
     label: "Footer",
     description: "Repeated page-footer content excluded from the reading flow.",
+    shortMeaning: "Repeated content at the page bottom.",
   },
   {
     value: "form",
     label: "Form",
     description: "A group of fields or controls intended for user input.",
+    shortMeaning: "Fields or controls for user input.",
   },
   {
     value: "formula",
     label: "Formula",
     description: "A mathematical or scientific expression.",
+    shortMeaning: "Mathematical or scientific expression.",
   },
   {
     value: "list",
     label: "List",
     description: "Related items presented in an ordered or unordered sequence.",
+    shortMeaning: "Ordered or unordered sequence of items.",
   },
   {
     value: "picture",
     label: "Picture",
     description: "A photograph, illustration, chart, or other embedded image.",
+    shortMeaning: "Photograph, chart, or illustration.",
   },
   {
     value: "table",
     label: "Table",
     description: "Information organised into rows and columns.",
+    shortMeaning: "Information in rows and columns.",
   },
   {
     value: "text",
     label: "Text",
     description: "A paragraph or other body-text content.",
+    shortMeaning: "Paragraph or body-text content.",
   },
   {
     value: "unspecified",
     label: "Unspecified",
     description: "Content whose structure cannot yet be determined.",
+    shortMeaning: "Structure not yet identified.",
   },
 ];
 
@@ -181,6 +202,246 @@ function StructureChip({ item }: { item: Pick<ReviewItem, "type" | "label"> }) {
     >
       {item.label}
     </span>
+  );
+}
+
+interface StructureTooltipPosition {
+  left: number;
+  top: number;
+  placement: "above" | "below";
+}
+
+function getStructureTooltipPosition(
+  trigger: HTMLElement,
+): StructureTooltipPosition {
+  const rect = trigger.getBoundingClientRect();
+  const viewportGap = 12;
+  const tooltipGap = 8;
+  const tooltipWidth = Math.min(
+    280,
+    Math.max(0, window.innerWidth - viewportGap * 2),
+  );
+  const desiredLeft = rect.left + rect.width / 2 - tooltipWidth / 2;
+  const maximumLeft = Math.max(
+    viewportGap,
+    window.innerWidth - tooltipWidth - viewportGap,
+  );
+  const left = Math.min(Math.max(desiredLeft, viewportGap), maximumLeft);
+  const estimatedHeight = 64;
+  const fitsBelow =
+    window.innerHeight - rect.bottom >=
+    estimatedHeight + tooltipGap + viewportGap;
+  const placement =
+    fitsBelow || rect.top < estimatedHeight + tooltipGap + viewportGap
+      ? "below"
+      : "above";
+
+  return {
+    left,
+    top: placement === "below" ? rect.bottom + tooltipGap : rect.top - tooltipGap,
+    placement,
+  };
+}
+
+function StructureGuideItem({
+  item,
+}: {
+  item: (typeof structureLabels)[number];
+}) {
+  const triggerRef = useRef<HTMLSpanElement>(null);
+  const [tooltipPosition, setTooltipPosition] =
+    useState<StructureTooltipPosition | null>(null);
+  const tooltipId = `structure-guide-tooltip-${item.value}`;
+  const tooltipOpen = tooltipPosition !== null;
+
+  const showTooltip = () => {
+    if (triggerRef.current) {
+      setTooltipPosition(getStructureTooltipPosition(triggerRef.current));
+    }
+  };
+
+  useEffect(() => {
+    if (!tooltipOpen) return;
+    const repositionTooltip = () => {
+      if (triggerRef.current) {
+        setTooltipPosition(getStructureTooltipPosition(triggerRef.current));
+      }
+    };
+    window.addEventListener("resize", repositionTooltip);
+    window.addEventListener("scroll", repositionTooltip, true);
+    return () => {
+      window.removeEventListener("resize", repositionTooltip);
+      window.removeEventListener("scroll", repositionTooltip, true);
+    };
+  }, [tooltipOpen]);
+
+  return (
+    <>
+      <span
+        ref={triggerRef}
+        className="structure-guide-item"
+        tabIndex={0}
+        aria-describedby={tooltipOpen ? tooltipId : undefined}
+        onMouseEnter={showTooltip}
+        onMouseLeave={(event) => {
+          if (document.activeElement !== event.currentTarget) {
+            setTooltipPosition(null);
+          }
+        }}
+        onFocus={showTooltip}
+        onBlur={() => setTooltipPosition(null)}
+      >
+        <span
+          className="typechip structure-chip"
+          data-label={item.value}
+        >
+          {item.label}
+        </span>
+      </span>
+      {tooltipPosition &&
+        createPortal(
+          <span
+            id={tooltipId}
+            className={`structure-tooltip-portal is-${tooltipPosition.placement}`}
+            role="tooltip"
+            style={{ left: tooltipPosition.left, top: tooltipPosition.top }}
+          >
+            {item.description}
+          </span>,
+          document.body,
+        )}
+    </>
+  );
+}
+
+function StructureLabelMenu({
+  id,
+  value,
+  disabled = false,
+  showMeaning = false,
+  ariaLabel = "Structure label",
+  onChange,
+}: {
+  id?: string;
+  value: ReviewType;
+  disabled?: boolean;
+  showMeaning?: boolean;
+  ariaLabel?: string;
+  onChange: (value: ReviewType) => void;
+}) {
+  const generatedId = useId();
+  const menuId = `${id ?? generatedId}-menu`;
+  const [open, setOpen] = useState(false);
+  const rootRef = useRef<HTMLDivElement | null>(null);
+  const optionRefs = useRef<Array<HTMLButtonElement | null>>([]);
+  const selectedIndex = Math.max(
+    0,
+    structureLabels.findIndex((item) => item.value === value),
+  );
+  const selected = structureLabels[selectedIndex];
+
+  useEffect(() => {
+    if (!open) return;
+    const focusFrame = window.requestAnimationFrame(() => {
+      optionRefs.current[selectedIndex]?.focus();
+    });
+    const closeOnOutsidePress = (event: PointerEvent) => {
+      if (!rootRef.current?.contains(event.target as Node)) setOpen(false);
+    };
+    document.addEventListener("pointerdown", closeOnOutsidePress);
+    return () => {
+      window.cancelAnimationFrame(focusFrame);
+      document.removeEventListener("pointerdown", closeOnOutsidePress);
+    };
+  }, [open, selectedIndex]);
+
+  const moveFocus = (currentIndex: number, step: number) => {
+    const next = (currentIndex + step + structureLabels.length) % structureLabels.length;
+    optionRefs.current[next]?.focus();
+  };
+
+  return (
+    <div
+      className={`structure-label-select${open ? " is-open" : ""}${showMeaning ? " show-meaning" : ""}`}
+      ref={rootRef}
+    >
+      <button
+        id={id}
+        className="structure-select-trigger"
+        type="button"
+        disabled={disabled}
+        aria-label={`${ariaLabel}: ${selected.label}`}
+        aria-haspopup="listbox"
+        aria-expanded={open}
+        aria-controls={menuId}
+        onClick={() => setOpen((current) => !current)}
+        onKeyDown={(event) => {
+          if (["ArrowDown", "ArrowUp", "Enter", " "].includes(event.key)) {
+            event.preventDefault();
+            setOpen(true);
+          }
+        }}
+      >
+        <span className="structure-select-value">
+          <span className="typechip structure-chip" data-label={selected.value}>
+            {selected.label}
+          </span>
+          {showMeaning && (
+            <span className="structure-select-meaning">{selected.shortMeaning}</span>
+          )}
+        </span>
+        <ChevronDown aria-hidden="true" />
+      </button>
+      {open && (
+        <div className="structure-select-menu" id={menuId} role="listbox" aria-label={ariaLabel}>
+          {structureLabels.map((item, index) => (
+            <button
+              key={item.value}
+              ref={(node) => {
+                optionRefs.current[index] = node;
+              }}
+              type="button"
+              role="option"
+              aria-label={item.label}
+              aria-selected={item.value === value}
+              onClick={() => {
+                onChange(item.value);
+                setOpen(false);
+              }}
+              onKeyDown={(event) => {
+                if (event.key === "ArrowDown") {
+                  event.preventDefault();
+                  moveFocus(index, 1);
+                } else if (event.key === "ArrowUp") {
+                  event.preventDefault();
+                  moveFocus(index, -1);
+                } else if (event.key === "Home") {
+                  event.preventDefault();
+                  optionRefs.current[0]?.focus();
+                } else if (event.key === "End") {
+                  event.preventDefault();
+                  optionRefs.current.at(-1)?.focus();
+                } else if (event.key === "Escape") {
+                  event.preventDefault();
+                  setOpen(false);
+                  (document.getElementById(id ?? "") as HTMLElement | null)?.focus();
+                }
+              }}
+            >
+              <span className="structure-select-option-copy">
+                <span className="typechip structure-chip" data-label={item.value}>
+                  {item.label}
+                </span>
+                {showMeaning && (
+                  <span className="structure-option-meaning">{item.shortMeaning}</span>
+                )}
+              </span>
+              {item.value === value && <Check aria-hidden="true" />}
+            </button>
+          ))}
+        </div>
+      )}
+    </div>
   );
 }
 
@@ -394,7 +655,6 @@ const usesTableEditor = (type: ReviewType) =>
 
 const singleLineTypes: ReviewType[] = [
   "title",
-  "chapter_title",
   "caption",
   "section_header_1",
   "section_header_2",
@@ -402,6 +662,20 @@ const singleLineTypes: ReviewType[] = [
   "section_header_4",
   "section_header_5",
 ];
+
+function evidenceVersion(item: ReviewItem): string {
+  const bounds = item.source.bounds;
+  return [
+    item.blockId ?? item.id,
+    item.source.page,
+    bounds?.left,
+    bounds?.top,
+    bounds?.right,
+    bounds?.bottom,
+  ]
+    .filter((value) => value !== undefined)
+    .join(":");
+}
 
 /** Headings, titles and captions are one line: strip bullets and join lines. */
 function toSingleLine(text: string): string {
@@ -700,6 +974,12 @@ export function ReviewPage() {
     unlock,
     showToast,
   } = useKonverter();
+  const processingSummaryQuery = useQuery({
+    queryKey: ["processing-summary", activeDocumentId ?? "none"],
+    queryFn: () => documentService.getProcessingSummary(activeDocumentId!),
+    enabled: Boolean(activeDocumentId),
+  });
+  const processingSummary = processingSummaryQuery.data;
   const [statusFilter, setStatusFilter] = useState<StatusFilter>("all");
   const [labelFilter, setLabelFilter] = useState<LabelFilter>("all");
   const [sort, setSort] = useState<Sort>("highest");
@@ -712,6 +992,8 @@ export function ReviewPage() {
   const [bulkType, setBulkType] = useState<ReviewType>("text");
   const [pendingConfirmation, setPendingConfirmation] =
     useState<PendingConfirmation | null>(null);
+  const [confirmationApplying, setConfirmationApplying] = useState(false);
+  const [processingDetailsOpen, setProcessingDetailsOpen] = useState(true);
   const [editing, setEditing] = useState(false);
   const [editText, setEditText] = useState("");
   const [editType, setEditType] = useState<ReviewType>("text");
@@ -719,6 +1001,7 @@ export function ReviewPage() {
   const [uploadedPicture, setUploadedPicture] = useState<string | null>(null);
   const [showDetailMobile, setShowDetailMobile] = useState(false);
   const [evidenceFailed, setEvidenceFailed] = useState(false);
+  const [evidenceLoading, setEvidenceLoading] = useState(true);
   const previousFilteredIds = useRef<string[]>([]);
   const queueListRef = useRef<HTMLDivElement | null>(null);
   const selectionAnchorRef = useRef("");
@@ -854,6 +1137,7 @@ export function ReviewPage() {
 
   useEffect(() => {
     setEvidenceFailed(false);
+    setEvidenceLoading(true);
   }, [activeDocumentId, selected?.id]);
 
   const preserveQueueScroll = () => {
@@ -953,6 +1237,7 @@ export function ReviewPage() {
     setEditing(false);
     setUploadedPicture(null);
     setEvidenceFailed(false);
+    setEvidenceLoading(true);
     setShowDetailMobile(true);
   };
 
@@ -1045,6 +1330,7 @@ export function ReviewPage() {
     setSelectedId("");
     setShowDetailMobile(false);
     setEvidenceFailed(false);
+    setEvidenceLoading(true);
     selectDocument(nextId);
     showToast(
       `Now reviewing ${nextDocument?.fileName ?? "the selected document"}`,
@@ -1068,10 +1354,20 @@ export function ReviewPage() {
   const confirmPendingAction = async () => {
     const confirmation = pendingConfirmation;
     if (!confirmation) return;
-    setPendingConfirmation(null);
-    if (confirmation.kind === "bulk")
+    if (confirmation.kind === "switch-document") {
+      setPendingConfirmation(null);
+      performDocumentSwitch(confirmation.nextId);
+      return;
+    }
+    setConfirmationApplying(true);
+    try {
       await applyConfirmedBulkAction(confirmation);
-    else performDocumentSwitch(confirmation.nextId);
+      setPendingConfirmation(null);
+    } catch {
+      showToast("The bulk change could not be applied. Please try again.");
+    } finally {
+      setConfirmationApplying(false);
+    }
   };
 
   const uploadPicture = async (item: ReviewItem, file?: File) => {
@@ -1083,22 +1379,50 @@ export function ReviewPage() {
 
   const continueToMetadata = () => {
     unlock("metadata");
-    navigate("/metadata");
+    navigate(converterStagePath("metadata"));
   };
 
   return (
     <section className="screen active" aria-labelledby="review-heading">
       <div className="section-title review-titlebar">
         <div>
-          <span className="eyebrow">Stage 2 of 5</span>
-          <h2 id="review-heading">Review structure flags</h2>
+          <span className="eyebrow">Stage 2 of 4</span>
+          <h2 id="review-heading">Review flagged exceptions</h2>
+          <p className="lead">Focus on the items that need a human decision. You do not need to review every page.</p>
         </div>
-        <button className="btn btn-primary btn-sm" onClick={continueToMetadata}>
-          Continue to metadata →
-        </button>
+        <div className="review-title-actions">
+          <details className="review-guidance review-guidance-popover">
+            <summary className="btn btn-outline btn-sm"><CircleHelp aria-hidden="true" />Review guidance</summary>
+            <div className="review-guidance-body" role="region" aria-label="Review guidance">
+              <div>
+                <h3>What the confidence score means</h3>
+                <p>The percentage is the layout model’s certainty about the <b>structure label</b>—for example H2, Table or Picture—not the wording itself. Low-confidence labels are the most likely to need correction.</p>
+                <h3>How to resolve a flag</h3>
+                <ol>
+                  <li>Compare the extracted result with the original PDF evidence.</li>
+                  <li>Select <b>Accept</b> when the result is correct.</li>
+                  <li>Select <b>Edit</b> to change the text, table cells, or structure label.</li>
+                  <li>Use <b>Remove from output</b> for duplicates, decoration, or extraction artefacts.</li>
+                </ol>
+              </div>
+              <div>
+                <h3>Structure label guide</h3>
+                <div className="structure-guide" aria-label="Structure label definitions">
+                  {structureLabels.map((item) => (
+                    <StructureGuideItem key={item.value} item={item} />
+                  ))}
+                </div>
+              </div>
+            </div>
+          </details>
+          <div className="review-next-step">
+            <span>{pendingCount ? 'Clear required items to continue' : 'Required review complete'}</span>
+            <button className="btn btn-primary btn-sm" disabled={pendingCount > 0} onClick={continueToMetadata}>Continue to metadata →</button>
+          </div>
+        </div>
       </div>
 
-      {completedDocuments.length > 0 && (
+      {(completedDocuments.length > 1 || runningDocuments.length > 0) && (
         <section
           className="review-document-switcher"
           aria-labelledby="review-document-heading"
@@ -1150,7 +1474,7 @@ export function ReviewPage() {
           {runningDocuments.length > 0 && (
             <button
               className="btn btn-outline btn-sm"
-              onClick={() => navigate("/upload")}
+              onClick={() => navigate(converterStagePath("upload"))}
             >
               View processing queue
             </button>
@@ -1158,77 +1482,70 @@ export function ReviewPage() {
         </section>
       )}
 
-      <details className="review-guidance" open>
-        <summary>How to review structure confidence flags</summary>
-        <div className="review-guidance-body">
-          <div>
-            <h3>What the confidence score means</h3>
-            <p>
-              Each score (0–1) is the layout model’s certainty about the{" "}
-              <b>structure label</b> — for example H2, Table or Picture — not
-              about the wording itself. Items above the high-confidence
-              threshold are accepted automatically and never appear here;
-              everything below it is flagged as <b>Medium</b> or <b>Low</b> and
-              waits for you. Low items are the most likely to be wrong, so start
-              there (sort by “Lowest confidence first”).
-            </p>
-            <h3>How to resolve a flag</h3>
-            <ol>
-              <li>
-                Compare the extracted result with the{" "}
-                <b>Original PDF evidence</b> crop, or select{" "}
-                <b>Open original page</b> for the full page.
-              </li>
-              <li>
-                If everything is right, select <b>Accept</b>.
-              </li>
-              <li>
-                If something is wrong, select <b>Edit</b>: fix the text or table
-                cells, or choose a different structure label. Changing the label
-                converts the content to that structure (a table becomes list
-                items, a list becomes a single heading line, and so on) and
-                switches to the matching editor.
-              </li>
-              <li>
-                Content that shouldn’t be published — decoration, scanning
-                artefacts, duplicates — can be <b>Removed from output</b> and
-                restored later.
-              </li>
-            </ol>
-            <p>
-              Every decision is saved immediately and recorded in the audit
-              trail. Once no items are pending, continue to <b>Metadata</b>;
-              approval stays blocked until both the flags and the metadata are
-              confirmed. Editing anything here after an approval discards the
-              generated output until the document is approved again.
-            </p>
-          </div>
-          <div>
-            <h3>Structure label guide</h3>
-            <div
-              className="structure-guide"
-              aria-label="Structure label definitions"
+      <details
+        className="processing-details-section"
+        open={processingDetailsOpen}
+        onToggle={(event) =>
+          setProcessingDetailsOpen(event.currentTarget.open)
+        }
+      >
+        <summary>
+          <span className="processing-details-title">
+            <FileText aria-hidden="true" />
+            <span>
+              <strong>Processing details</strong>
+              <small>Document elements detected during conversion</small>
+            </span>
+          </span>
+          <ChevronDown
+            className="processing-details-chevron"
+            aria-hidden="true"
+          />
+        </summary>
+        <div className="processing-details-body">
+          {processingSummary ? (
+            <section
+              className="element-summary"
+              aria-labelledby="element-summary-heading"
             >
-              {structureLabels.map((item) => (
-                <span
-                  key={item.value}
-                  className="structure-guide-item"
-                  tabIndex={0}
-                  title={item.description}
+              <div>
+                <span className="eyebrow">Extraction coverage</span>
+                <h3 id="element-summary-heading">
+                  Document elements detected
+                </h3>
+              </div>
+              {(
+                [
+                  ["Pages", processingSummary.pages],
+                  ["Headings", processingSummary.headings],
+                  ["Images", processingSummary.images],
+                  ["Tables", processingSummary.tables],
+                ] as const
+              ).map(([label, coverage]) => (
+                <div
+                  className={`element-stat${coverage.needsReview ? " has-issue" : ""}`}
+                  key={label}
                 >
-                  <span
-                    className="typechip structure-chip"
-                    data-label={item.value}
-                  >
-                    {item.label}
-                  </span>
-                  <span className="structure-tooltip" role="tooltip">
-                    {item.description}
-                  </span>
-                </span>
+                  <strong className="mono">
+                    {coverage.detected} / {coverage.total}
+                  </strong>
+                  <span>{label}</span>
+                  {coverage.needsReview > 0 && (
+                    <small>
+                      {coverage.needsReview}{" "}
+                      {coverage.needsReview === 1 ? "needs" : "need"} review
+                    </small>
+                  )}
+                </div>
               ))}
+            </section>
+          ) : (
+            <div className="processing-details-loading" role="status">
+              {processingSummaryQuery.isError
+                ? "Extraction coverage is temporarily unavailable."
+                : "Loading extraction coverage…"}
             </div>
-          </div>
+          )}
         </div>
       </details>
 
@@ -1247,153 +1564,93 @@ export function ReviewPage() {
             />
           </span>
         </div>
-        <div className="tb-control">
-          <label htmlFor="show-filter">Status</label>
-          <select
-            id="show-filter"
-            className="sel"
-            value={statusFilter}
-            onChange={(event) => {
-              setStatusFilter(event.target.value as StatusFilter);
-              setShowDetailMobile(false);
-            }}
-          >
-            <option value="all">All items</option>
-            <option value="pending">Pending</option>
-            <option value="accepted">Accepted</option>
-            <option value="edited">Edited</option>
-            <option value="removed">Removed from output</option>
-          </select>
-        </div>
-        <div className="tb-control">
-          <label htmlFor="label-filter">Filter by structure label</label>
-          <select
-            id="label-filter"
-            className="sel"
-            value={labelFilter}
-            onChange={(event) => {
-              setLabelFilter(event.target.value as LabelFilter);
-              setShowDetailMobile(false);
-            }}
-          >
-            <option value="all">All labels</option>
-            {structureLabels.map((item) => (
-              <option key={item.value} value={item.value}>
-                {item.label}
-              </option>
-            ))}
-          </select>
-        </div>
-        <div className="tb-control">
-          <label htmlFor="sort-filter">Sort</label>
-          <select
-            id="sort-filter"
-            className="sel"
-            value={sort}
-            onChange={(event) => setSort(event.target.value as Sort)}
-          >
-            <option value="highest">Highest confidence first</option>
-            <option value="lowest">Lowest confidence first</option>
-            <option value="page">Page order</option>
-          </select>
-        </div>
-        <div className="tb-state">
-          <span
-            className={`pill ${pendingCount ? "warn" : "ok"}`}
-            aria-live="polite"
-          >
-            {pendingCount ? <TriangleAlert /> : <Check />}
-            {pendingCount ? (
-              <span>
-                <b className="pill-count">{pendingCount}</b>{" "}
-                <span className="pill-label">
-                  {pendingCount === 1 ? "item needs" : "items need"} review
-                </span>
+        <details className="review-filter-disclosure">
+          <summary className="btn btn-outline btn-sm">Filters</summary>
+          <div className="review-filter-controls">
+            <div className="tb-control">
+              <label htmlFor="show-filter">Status</label>
+              <span className="review-filter-select">
+                <select id="show-filter" className="sel" value={statusFilter} onChange={(event) => { setStatusFilter(event.target.value as StatusFilter); setShowDetailMobile(false) }}>
+                  <option value="all">All items</option>
+                  <option value="pending">Pending</option>
+                  <option value="accepted">Accepted</option>
+                  <option value="edited">Edited</option>
+                  <option value="removed">Removed from output</option>
+                </select>
+                <ChevronDown aria-hidden="true" />
               </span>
-            ) : (
-              <span className="pill-label">
-                All {reviewItems.length} items reviewed
+            </div>
+            <div className="tb-control">
+              <label htmlFor="label-filter">Filter by structure label</label>
+              <span className="review-filter-select">
+                <select id="label-filter" className="sel" aria-label="Filter by structure label" value={labelFilter} onChange={(event) => { setLabelFilter(event.target.value as LabelFilter); setShowDetailMobile(false) }}>
+                  <option value="all">All labels</option>
+                  {structureLabels.map((item) => <option key={item.value} value={item.value}>{item.label}</option>)}
+                </select>
+                <ChevronDown aria-hidden="true" />
               </span>
-            )}
-          </span>
-        </div>
+            </div>
+            <div className="tb-control">
+              <label htmlFor="sort-filter">Sort</label>
+              <span className="review-filter-select">
+                <select id="sort-filter" className="sel" value={sort} onChange={(event) => setSort(event.target.value as Sort)}>
+                  <option value="highest">Highest confidence first</option>
+                  <option value="lowest">Lowest confidence first</option>
+                  <option value="page">Page order</option>
+                </select>
+                <ChevronDown aria-hidden="true" />
+              </span>
+            </div>
+          </div>
+        </details>
       </div>
-
-      <section
-        className={`bulk-review-actions ${bulkSelectedIds.size ? "is-active" : ""}`}
-        aria-label="Bulk review actions"
-      >
-        <button
-          className="btn btn-ghost btn-sm bulk-select-visible"
-          type="button"
-          disabled={!filteredItems.length}
-          aria-pressed={allVisibleSelected}
-          onClick={toggleAllVisible}
-        >
-          <Check aria-hidden="true" />
-          {allVisibleSelected ? "Clear visible selection" : "Select all visible"}
-        </button>
-        <span className="bulk-selected-count" role="status" aria-live="polite">
-          {bulkSelectedIds.size
-            ? `${bulkSelectedIds.size} selected`
-            : "Shift+click or Tab+click to select a range"}
-        </span>
-        {bulkSelectedIds.size > 0 && (
-          <label>
-            Action
-            <select
-              className="sel"
-              aria-label="Bulk action"
-              value={bulkAction}
-              onChange={(event) =>
-                setBulkAction(event.target.value as BulkAction)
-              }
-            >
-              <option value="accept">Accept selected</option>
-              <option value="remove">Remove from output</option>
-              <option value="label">Change structure label</option>
-            </select>
-          </label>
-        )}
-        {bulkSelectedIds.size > 0 && bulkAction === "label" && (
-          <label>
-            Structure label
-            <select
-              className="sel"
-              aria-label="Bulk structure label"
-              value={bulkType}
-              onChange={(event) => setBulkType(event.target.value as ReviewType)}
-            >
-              {structureLabels.map((item) => (
-                <option key={item.value} value={item.value}>
-                  {item.label}
-                </option>
-              ))}
-            </select>
-          </label>
-        )}
-        {bulkSelectedIds.size > 0 && (
-          <button
-            className="btn btn-primary btn-sm"
-            type="button"
-            onClick={requestBulkAction}
-          >
-            Apply to {bulkSelectedIds.size} selected
-          </button>
-        )}
-      </section>
 
       <p className="mobile-hint">Tap a flagged item to review it.</p>
       <div className={`review-grid ${showDetailMobile ? "show-detail" : ""}`}>
         <div className="queue">
           <div className="queue-head">
-            <span>Flagged queue</span>
-            <span>
-              {selectedPosition
-                ? `Flag ${selectedPosition} of ${filteredItems.length}`
-                : `${filteredItems.length} items`}
+            <h3 className="queue-title">Review queue</h3>
+            <span className="queue-count">{filteredItems.length} item{filteredItems.length === 1 ? '' : 's'}</span>
+          </div>
+          <div className={`queue-selection-row${bulkSelectedIds.size ? ' has-selection' : ''}`}>
+            <button
+              className="btn btn-ghost btn-sm queue-select-all"
+              type="button"
+              disabled={!filteredItems.length}
+              aria-pressed={allVisibleSelected}
+              onClick={toggleAllVisible}
+            >
+              <Check aria-hidden="true" />
+              {allVisibleSelected ? "Clear visible selection" : "Select all visible"}
+            </button>
+            <span className="queue-count" role="status" aria-live="polite">
+              {bulkSelectedIds.size ? `${bulkSelectedIds.size} selected` : "Shift+click or Tab+click"}
             </span>
           </div>
+          {bulkSelectedIds.size > 0 && (
+            <div className="queue-bulk-action-panel" aria-label="Bulk review actions">
+              <label>
+                Action
+                <select className="sel" aria-label="Bulk action" value={bulkAction} onChange={(event) => setBulkAction(event.target.value as BulkAction)}>
+                  <option value="accept">Accept selected</option>
+                  <option value="remove">Remove from output</option>
+                  <option value="label">Change structure label</option>
+                </select>
+              </label>
+              {bulkAction === "label" && (
+                <div className="bulk-structure-field">
+                  <span>Structure label</span>
+                  <StructureLabelMenu
+                    id="bulk-structure-label"
+                    ariaLabel="Bulk structure label"
+                    value={bulkType}
+                    onChange={setBulkType}
+                  />
+                </div>
+              )}
+              <button className="btn btn-primary btn-sm" type="button" onClick={requestBulkAction}>Apply to {bulkSelectedIds.size} selected</button>
+            </div>
+          )}
           <div className="qlist" role="list" aria-label="Flagged items" ref={queueListRef}>
             {reviewLoading && (
               <div style={{ padding: 20 }}>Loading review items…</div>
@@ -1403,22 +1660,20 @@ export function ReviewPage() {
             )}
             {filteredItems.map((item) => (
               <div
-                className={`qitem-row ${bulkSelectedIds.has(item.id) ? "bulk-selected" : ""}`}
+                className={`qitem-row tone-${itemTone(item)}${selected?.id === item.id ? ' is-current' : ''}`}
                 role="listitem"
                 key={item.id}
               >
-                {bulkSelectedIds.size > 0 && (
-                  <label className="qitem-checkbox">
+                <label className="batch-select">
+                  {bulkSelectedIds.size > 0 && (
                     <input
                       type="checkbox"
                       checked={bulkSelectedIds.has(item.id)}
                       onChange={() => toggleBulkItem(item.id)}
+                      aria-label={`Select ${item.title} for a bulk action`}
                     />
-                    <span className="sr-only">
-                      Select {item.title} for a bulk action
-                    </span>
-                  </label>
-                )}
+                  )}
+                </label>
                 <button
                   className={`qitem tone-${itemTone(item)}`}
                   aria-current={selected?.id === item.id ? "true" : undefined}
@@ -1472,32 +1727,86 @@ export function ReviewPage() {
                   </div>
                 )}
 
+                <div className="field-label source-label">
+                  Where this came from
+                </div>
+                <div className="detail-source review-evidence-card">
+                  <div className="detail-source-head">
+                    <FileText />
+                    Original PDF evidence
+                    <a
+                      className="source-page-link"
+                      href={publicationService.sourceUrl(
+                        activeDocumentId ?? "",
+                        selected.source.page,
+                      )}
+                      target="_blank"
+                      rel="noreferrer"
+                    >
+                      Open original page <ExternalLink aria-hidden="true" />
+                    </a>
+                    <span className="mono">p.{selected.source.page}</span>
+                  </div>
+                  <div
+                    className={`page-doc source-evidence-preview${evidenceLoading && !evidenceFailed ? " is-loading" : ""}`}
+                  >
+                    {!evidenceFailed ? (
+                      <>
+                        {evidenceLoading && (
+                          <div className="source-evidence-loading" role="status">
+                            <LoaderCircle className="spinner-icon" aria-hidden="true" />
+                            Loading the matching source crop…
+                          </div>
+                        )}
+                        <img
+                          key={`${activeDocumentId}-${selected.id}-${evidenceVersion(selected)}`}
+                          className={evidenceLoading ? "is-loading" : undefined}
+                          src={publicationService.evidenceUrl(
+                            activeDocumentId ?? "",
+                            selected.id,
+                            evidenceVersion(selected),
+                          )}
+                          alt={`Original PDF evidence for ${selected.label} on page ${selected.source.page}`}
+                          loading="eager"
+                          onLoad={() => setEvidenceLoading(false)}
+                          onError={() => {
+                            setEvidenceLoading(false);
+                            setEvidenceFailed(true);
+                          }}
+                        />
+                      </>
+                    ) : (
+                      <div className="source-evidence-fallback">
+                        <TriangleAlert aria-hidden="true" />
+                        <span>
+                          The visual crop is unavailable. Open the original page
+                          to compare the source directly.
+                        </span>
+                      </div>
+                    )}
+                  </div>
+                  {!selected.source.bounds && !evidenceFailed && (
+                    <p className="source-evidence-note">
+                      Precise coordinates were unavailable, so the complete source
+                      page is shown.
+                    </p>
+                  )}
+                </div>
+
                 <div className="structure-label-editor">
-                  <div>
+                  <div className="structure-label-copy">
                     <label htmlFor="selected-structure-label">
                       Structure label
                     </label>
-                    <span>
-                      {editing
-                        ? "Choose the label that best describes this content."
-                        : "Select Edit below to change this label."}
-                    </span>
+                    <small>Choose the label that best describes this content.</small>
                   </div>
-                  <select
+                  <StructureLabelMenu
                     id="selected-structure-label"
-                    className="sel"
                     value={editing ? editType : selected.type}
                     disabled={!editing}
-                    onChange={(event) =>
-                      changeEditType(event.target.value as ReviewType)
-                    }
-                  >
-                    {structureLabels.map((item) => (
-                      <option key={item.value} value={item.value}>
-                        {item.label} — {item.description}
-                      </option>
-                    ))}
-                  </select>
+                    showMeaning
+                    onChange={changeEditType}
+                  />
                 </div>
 
                 <div className="field-label">
@@ -1623,48 +1932,6 @@ export function ReviewPage() {
                   </div>
                 )}
 
-                <div className="field-label source-label">
-                  Where this came from
-                </div>
-                <div className="detail-source">
-                  <div className="detail-source-head">
-                    <FileText />
-                    Original PDF evidence
-                    <a
-                      className="source-page-link"
-                      href={publicationService.sourceUrl(
-                        activeDocumentId ?? "",
-                        selected.source.page,
-                      )}
-                      target="_blank"
-                      rel="noreferrer"
-                    >
-                      Open original page <ExternalLink aria-hidden="true" />
-                    </a>
-                    <span className="mono">p.{selected.source.page}</span>
-                  </div>
-                  <div className="page-doc source-evidence-preview">
-                    {!evidenceFailed ? (
-                      <img
-                        src={publicationService.evidenceUrl(
-                          activeDocumentId ?? "",
-                          selected.id,
-                        )}
-                        alt={`Original PDF evidence cropped from page ${selected.source.page}`}
-                        loading="lazy"
-                        onError={() => setEvidenceFailed(true)}
-                      />
-                    ) : (
-                      <div className="source-evidence-fallback">
-                        <TriangleAlert aria-hidden="true" />
-                        <span>
-                          The visual crop is unavailable. Open the original page
-                          to compare the source directly.
-                        </span>
-                      </div>
-                    )}
-                  </div>
-                </div>
               </div>
               <div className="actionbar detail-actions">
                 {editing ? (
@@ -1733,30 +2000,44 @@ export function ReviewPage() {
       </div>
 
       {pendingConfirmation && (
-        <div
-          className="review-confirmation-toast"
-          role="alertdialog"
-          aria-modal="false"
-          aria-labelledby="review-confirmation-message"
-        >
-          <p id="review-confirmation-message">{pendingConfirmation.message}</p>
-          <div>
+        <div className="overlay show" role="presentation" onMouseDown={(event) => {
+          if (event.target === event.currentTarget && !confirmationApplying) {
+            setPendingConfirmation(null);
+          }
+        }}>
+          <section
+            className="modal review-bulk-confirmation"
+            role="alertdialog"
+            aria-modal="true"
+            aria-labelledby="review-confirmation-heading"
+            aria-describedby="review-confirmation-message"
+          >
+            <div className="modal-ic"><TriangleAlert aria-hidden="true" /></div>
+            <span className="eyebrow">
+              {pendingConfirmation.kind === "bulk" ? "Bulk review action" : "Unsaved review change"}
+            </span>
+            <h3 id="review-confirmation-heading">Confirm this change</h3>
+            <p id="review-confirmation-message">{pendingConfirmation.message}</p>
+            <div className="modal-actions">
             <button
-              className="btn confirmation-cancel btn-sm"
+              className="btn btn-outline"
               type="button"
+              disabled={confirmationApplying}
               onClick={() => setPendingConfirmation(null)}
             >
               Cancel
             </button>
             <button
-              className="btn confirmation-accept btn-sm"
+              className="btn btn-primary"
               type="button"
+              disabled={confirmationApplying}
               autoFocus
               onClick={() => void confirmPendingAction()}
             >
-              Confirm
+              {confirmationApplying ? "Applying changes…" : "Confirm"}
             </button>
-          </div>
+            </div>
+          </section>
         </div>
       )}
     </section>

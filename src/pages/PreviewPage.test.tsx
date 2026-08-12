@@ -57,6 +57,17 @@ describe('PreviewPage', () => {
     expect(screen.queryByRole('link', { name: 'Purpose' })).not.toBeInTheDocument()
   })
 
+  it('opens front matter directly instead of rendering it as an accordion', async () => {
+    renderPreview()
+
+    const preface = await screen.findByRole('link', { name: 'Preface' })
+    expect(screen.queryByRole('button', { name: 'Preface' })).not.toBeInTheDocument()
+
+    fireEvent.click(preface)
+    expect(screen.getByRole('heading', { level: 1, name: 'Preface' })).toBeInTheDocument()
+    expect(screen.getByText('This preface introduces the publication.')).toBeInTheDocument()
+  })
+
   it('opens Chapter 1 content and returns to the publication landing page', async () => {
     renderPreview()
     await screen.findByRole('button', { name: '1. Introduction' })
@@ -76,8 +87,8 @@ describe('PreviewPage', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Accessibility Standards Report' }))
 
     expect(screen.getByRole('heading', { level: 1, name: 'Accessibility Standards Report' })).toBeInTheDocument()
-    expect(screen.getByRole('region', { name: 'Document chapters' })).toBeInTheDocument()
-    expect(screen.queryByRole('heading', { name: 'Contents' })).not.toBeInTheDocument()
+    expect(screen.getByLabelText('Complete report chapters')).toBeInTheDocument()
+    expect(screen.getByRole('heading', { name: 'Table of contents' })).toBeInTheDocument()
   })
 
   it('opens the selected subsection in the reader navigation', async () => {
@@ -106,6 +117,24 @@ describe('PreviewPage', () => {
     expect(screen.getByRole('navigation', { name: 'Preview navigation' })).toBeInTheDocument()
     expect(screen.getByRole('button', { name: /Return to review/ })).toBeInTheDocument()
     expect(screen.queryByRole('button', { name: /Return to metadata/ })).not.toBeInTheDocument()
+    expect(screen.getByRole('button', { name: /Start new upload/ })).toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: /Open public page/ })).not.toBeInTheDocument()
+
+    const contents = screen.getByLabelText('Complete report chapters')
+    expect(Array.from(contents.children).map((item) => item.querySelector('a, button')?.textContent?.trim())).toEqual([
+      'Preface',
+      '1. Introduction',
+      '2. Requirements',
+      'Appendices',
+      'Bibliography',
+    ])
+
+    const backToTop = screen.getByRole('button', { name: 'Back to top of page' })
+    expect(backToTop).not.toHaveClass('is-visible')
+    const scrollContainer = document.getElementById('main-content')!
+    Object.defineProperty(scrollContainer, 'scrollTop', { configurable: true, value: 600 })
+    fireEvent.scroll(scrollContainer)
+    expect(backToTop).toHaveClass('is-visible')
 
     fireEvent.click(screen.getByText('Export'))
     expect(screen.getByRole('menuitem', { name: /Accessible HTML/ })).toBeInTheDocument()
@@ -113,7 +142,7 @@ describe('PreviewPage', () => {
     expect(screen.getByRole('menuitem', { name: /Structured JSON/ })).toBeInTheDocument()
 
     expect(screen.getByRole('heading', { level: 1, name: 'Accessibility Standards Report' })).toBeInTheDocument()
-    expect(screen.getByText('Published on June 18, 2026.')).toBeInTheDocument()
+    expect(screen.getByText('June 18, 2026')).toBeInTheDocument()
     expect(screen.getByText(/practical requirements for producing accessible/)).toBeInTheDocument()
     expect(screen.getByRole('button', { name: '2. Requirements' })).toBeInTheDocument()
     expect(screen.getByRole('link', { name: 'Download PDF' })).toBeInTheDocument()

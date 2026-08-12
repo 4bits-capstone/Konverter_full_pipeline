@@ -1,6 +1,7 @@
 import {
   ArrowLeft,
   ArrowUp,
+  BookOpen,
   Check,
   ChevronDown,
   ChevronRight,
@@ -8,21 +9,24 @@ import {
   Code2,
   Download,
   FileJson2,
-  FileText,
   Info,
+  ListTree,
   Network,
+  Quote,
   RotateCcw,
+  Search,
 } from "lucide-react";
 import { useQuery } from "@tanstack/react-query";
 import { useEffect, useMemo, useRef, useState, type MouseEvent } from "react";
 import { useNavigate } from "react-router-dom";
 import { ConfidenceBadge } from "../components/ConfidenceBadge";
 import { DoclingContent } from "../components/DoclingContent";
+import { ReportSummaryCard, type ReportSummaryRecord } from "../components/ReportSummaryCard";
 import { emptyMetadata } from "../config/workflow";
-import type { DoclingSection } from "../lib/docling";
+import { converterStagePath } from "../lib/converterRoutes";
+import type { DoclingBlock, DoclingHeadingBlock, DoclingSection } from "../lib/docling";
 import {
   formatPublicationDate,
-  publicationDateLine,
 } from "../lib/publicationFormatting";
 import { publicationService } from "../services";
 import { useKonverter } from "../state/KonverterContext";
@@ -33,6 +37,11 @@ interface ValidationCheck {
   label: string;
   ok: boolean;
   detail: string;
+}
+
+interface PreviewSearchResult {
+  section: DoclingSection
+  heading?: DoclingHeadingBlock
 }
 
 function buildValidationChecks(
@@ -164,14 +173,42 @@ function BackToTop() {
       onClick={scrollToTop}
     >
       <ArrowUp aria-hidden="true" />
-      Top
+      Back to top
     </button>
   );
 }
 
 function sectionUrl(documentId: string, section?: DoclingSection): string {
-  if (!section) return `konverter.komosion.com/publications/${documentId}`;
-  return `konverter.komosion.com/publications/${documentId}/${section.id}`;
+  if (!section) return `review-preview.local/documents/${documentId}`;
+  return `review-preview.local/documents/${documentId}/${section.id}`;
+}
+
+function isChapterSection(section: DoclingSection): boolean {
+  if (typeof section.isChapter === "boolean") return section.isChapter;
+  return /^\s*(?:(?:chapter|part)\s+(?:\d+|[ivxlcdm]+)\b|\d+[.)]\s+)/i.test(
+    section.displayTitle,
+  );
+}
+
+function blockSearchText(block: DoclingBlock): string {
+  if (block.type === 'heading' || block.type === 'paragraph' || block.type === 'caption' || block.type === 'formula' || block.type === 'footnote' || block.type === 'checkbox') return block.text
+  if (block.type === 'list' || block.type === 'group') return block.items.map((item) => item.text).join(' ')
+  if (block.type === 'box_section') return `${block.title} ${block.blocks.map(blockSearchText).join(' ')}`
+  if (block.type === 'table') return `${block.caption ?? ''} ${block.rows.flat().map((cell) => cell.text).join(' ')}`
+  return block.caption
+}
+
+function recommendationSnippets(sections: DoclingSection[]): string[] {
+  const recommendationSections = sections.filter((section) => /recommend/i.test(section.displayTitle))
+  const candidates = recommendationSections.flatMap((section) => section.blocks.flatMap((block) => {
+    if (block.type === 'paragraph') return [block.text]
+    if (block.type === 'list') return block.items.map((item) => item.text)
+    if (block.type === 'box_section' && /recommend/i.test(`${block.title} ${block.variant}`)) {
+      return block.blocks.flatMap((child) => child.type === 'paragraph' ? [child.text] : child.type === 'list' ? child.items.map((item) => item.text) : [])
+    }
+    return []
+  }))
+  return candidates.map((value) => value.replace(/\s+/g, ' ').trim()).filter((value) => value.length >= 24).slice(0, 3)
 }
 
 function scrollToReaderHeading(headingId: string): void {
@@ -197,7 +234,7 @@ function scrollToReaderHeading(headingId: string): void {
 
 export function PreviewPage() {
   const navigate = useNavigate();
-  const { activeDocumentId, documents, showToast } = useKonverter();
+  const { activeDocument, activeDocumentId, resetWorkflow } = useKonverter();
   const publicationQuery = useQuery({
     queryKey: ["publication", activeDocumentId ?? "none"],
     queryFn: () => publicationService.get(activeDocumentId!),
@@ -209,11 +246,12 @@ export function PreviewPage() {
   const documentConfidence = publicationQuery.data?.confidence ?? null;
   const publicationSections = publication?.sections ?? [];
   const firstPublicationSection = publicationSections[0];
+  const firstChapterSection = publicationSections.find(isChapterSection);
   const publicationSummary =
     publication?.summary?.find((summary) => summary.trim()) ??
     `This publication presents the reviewed content of ${pageMetadata.title}.`;
   const [expandedSections, setExpandedSections] = useState<Set<string>>(
-    () => new Set(firstPublicationSection ? [firstPublicationSection.id] : []),
+    () => new Set(firstChapterSection ? [firstChapterSection.id] : []),
   );
   const [readerOpen, setReaderOpen] = useState(false);
   const [selectedSectionId, setSelectedSectionId] = useState(
@@ -222,8 +260,10 @@ export function PreviewPage() {
   const [readerTarget, setReaderTarget] = useState(
     firstPublicationSection?.headings[0]?.id ?? "",
   );
+  const [searchQuery, setSearchQuery] = useState('');
   const publicationTitleRef = useRef<HTMLHeadingElement>(null);
   const chapterTitleRef = useRef<HTMLHeadingElement>(null);
+  const searchInputRef = useRef<HTMLInputElement>(null);
   const readerWasOpened = useRef(false);
 
   const selectedSection =
@@ -233,6 +273,37 @@ export function PreviewPage() {
     () => buildValidationChecks(publication, pageMetadata, jsonLd),
     [jsonLd, pageMetadata, publication],
   );
+  const normalisedSearch = searchQuery.trim().toLowerCase();
+  const searchResults = useMemo(() => {
+    if (normalisedSearch.length < 2) return [];
+    return publicationSections.flatMap<PreviewSearchResult>((section) => {
+      const headingMatches = section.headings
+        .filter((heading) => heading.text.toLowerCase().includes(normalisedSearch))
+        .map((heading) => ({ section, heading }));
+      if (headingMatches.length) return headingMatches;
+      const sectionText = `${section.displayTitle} ${section.blocks.map(blockSearchText).join(' ')}`.toLowerCase();
+      return sectionText.includes(normalisedSearch) ? [{ section, heading: undefined }] : [];
+    }).slice(0, 12);
+  }, [normalisedSearch, publicationSections]);
+  const recommendations = useMemo(() => recommendationSnippets(publicationSections), [publicationSections]);
+  const citation = pageMetadata.citations.split(';').map((value) => value.trim()).find(Boolean)
+    ?? `${pageMetadata.publisher}, ${pageMetadata.title}`;
+  const reportNumber = citation.match(/(?:Report(?:\s+No)?\.?\s*)(\d+)/i)?.[1] ?? '—';
+  const previewReport: ReportSummaryRecord = {
+    title: pageMetadata.title,
+    reportNumber,
+    pageCount: activeDocument?.pages || publication?.stats.pages || 0,
+    publisher: pageMetadata.publisher,
+    publishedDate: formatPublicationDate(pageMetadata.publishedDate),
+    currentAsOf: formatPublicationDate(pageMetadata.publishedDate),
+    jurisdiction: pageMetadata.jurisdiction,
+    status: 'Reviewed publication',
+    summary: publicationSummary,
+    citation,
+    topics: Array.from(new Set([pageMetadata.jurisdiction, 'Law reform'].filter(Boolean))),
+    coverUrl: activeDocumentId ? publicationService.coverUrl(activeDocumentId) : '',
+    localPdfUrl: activeDocumentId ? publicationService.sourceUrl(activeDocumentId) : '#',
+  };
   const selectedSectionIndex = selectedSection
     ? publicationSections.findIndex(
         (section) => section.id === selectedSection.id,
@@ -251,7 +322,9 @@ export function PreviewPage() {
   useEffect(() => {
     if (!firstPublicationSection) return;
     setExpandedSections((current) =>
-      current.size ? current : new Set([firstPublicationSection.id]),
+      current.size || !firstChapterSection
+        ? current
+        : new Set([firstChapterSection.id]),
     );
     setSelectedSectionId((current) =>
       publicationSections.some((section) => section.id === current)
@@ -261,7 +334,7 @@ export function PreviewPage() {
     setReaderTarget(
       (current) => current || firstPublicationSection.headings[0]?.id || "",
     );
-  }, [firstPublicationSection, publicationSections]);
+  }, [firstChapterSection, firstPublicationSection, publicationSections]);
 
   useEffect(() => {
     if (readerOpen) {
@@ -298,6 +371,12 @@ export function PreviewPage() {
     });
   };
 
+  const setAllSections = (expanded: boolean) => {
+    setExpandedSections(expanded
+      ? new Set(publicationSections.filter(isChapterSection).map((section) => section.id))
+      : new Set());
+  };
+
   const downloadHtml = () => {
     if (activeDocumentId)
       window.location.assign(
@@ -319,17 +398,13 @@ export function PreviewPage() {
       );
   };
 
-  const newUpload = () => {
-    navigate("/upload");
-    showToast(
-      documents.length > 1
-        ? "Back at upload · other documents in the queue are kept"
-        : "Ready for a new document",
-    );
+  const startNewUpload = () => {
+    resetWorkflow();
+    navigate(converterStagePath("upload"));
   };
 
   const openReader = (
-    event: MouseEvent<HTMLAnchorElement>,
+    event: MouseEvent<HTMLElement>,
     section: DoclingSection,
     headingId?: string,
   ) => {
@@ -358,8 +433,8 @@ export function PreviewPage() {
       <section className="screen active" aria-labelledby="preview-heading">
         <div className="section-title preview-titlebar">
           <div>
-            <span className="eyebrow">Stage 5 of 5</span>
-            <h2 id="preview-heading">Landing page preview</h2>
+            <span className="eyebrow">Stage 4 of 4</span>
+            <h2 id="preview-heading">Publication preview</h2>
           </div>
         </div>
         <div className="banner banner-warn">
@@ -375,8 +450,8 @@ export function PreviewPage() {
       <section className="screen active" aria-labelledby="preview-heading">
         <div className="section-title preview-titlebar">
           <div>
-            <span className="eyebrow">Stage 5 of 5</span>
-            <h2 id="preview-heading">Landing page preview</h2>
+            <span className="eyebrow">Stage 4 of 4</span>
+            <h2 id="preview-heading">Publication preview</h2>
           </div>
         </div>
         <div className="panel panel-pad workflow-loading" role="status">
@@ -392,15 +467,15 @@ export function PreviewPage() {
       <section className="screen active" aria-labelledby="preview-heading">
         <div className="section-title preview-titlebar">
           <div>
-            <span className="eyebrow">Stage 5 of 5</span>
-            <h2 id="preview-heading">Landing page preview</h2>
+            <span className="eyebrow">Stage 4 of 4</span>
+            <h2 id="preview-heading">Publication preview</h2>
           </div>
         </div>
         <div className="banner banner-warn">
           <Info />
           <div>
-            The generated publication could not be loaded. Return to approval
-            and approve the latest review changes.
+            The generated publication could not be loaded. Return to Review,
+            confirm the document changes, then run the final system checks again.
           </div>
         </div>
       </section>
@@ -411,8 +486,9 @@ export function PreviewPage() {
     <section className="screen active" aria-labelledby="preview-heading">
       <div className="section-title preview-titlebar">
         <div>
-          <span className="eyebrow">Stage 5 of 5</span>
-          <h2 id="preview-heading">Landing page preview</h2>
+          <span className="eyebrow">Stage 4 of 4</span>
+          <h2 id="preview-heading">Publication preview</h2>
+          <p className="lead">Check the reviewed reading experience and export the accessible version when it is ready.</p>
         </div>
         <div className="preview-title-actions">
           {documentConfidence?.band && documentConfidence.score != null && (
@@ -468,19 +544,23 @@ export function PreviewPage() {
 
       <nav className="preview-navigation" aria-label="Preview navigation">
         <div>
-          <strong>Navigate</strong>
-          <span>Return to the review queue or begin another conversion.</span>
+          <strong>Preview safely</strong>
+          <span>The original PDF is unchanged. Return to Review to adjust the converted document.</span>
         </div>
         <div className="preview-navigation-actions">
           <button
-            className="btn btn-outline btn-sm"
-            onClick={() => navigate("/review")}
+            className="btn btn-primary btn-sm"
+            onClick={() => navigate(converterStagePath("review"))}
           >
             <ArrowLeft />
             Return to review
           </button>
-          <button className="btn btn-ghost btn-sm" onClick={newUpload}>
-            <RotateCcw />
+          <button
+            className="btn btn-outline btn-sm"
+            type="button"
+            onClick={startNewUpload}
+          >
+            <RotateCcw aria-hidden="true" />
             Start new upload
           </button>
         </div>
@@ -530,121 +610,96 @@ export function PreviewPage() {
 
             {!readerOpen ? (
               <div className="vlrc-preview-body">
-                <div className="vlrc-publication-layout">
-                  <div className="vlrc-publication-main">
-                    <div className="jurisdiction">
-                      {pageMetadata.jurisdiction ||
-                        "Jurisdiction not specified"}
-                    </div>
-                    <h1
-                      id="publication-title"
-                      ref={publicationTitleRef}
-                      tabIndex={-1}
-                    >
-                      {pageMetadata.title}
-                    </h1>
-                    <p className="vlrc-published-date">
-                      {publicationDateLine(pageMetadata.publishedDate)}
-                    </p>
-                    <p className="vlrc-summary">{publicationSummary}</p>
+                <div className="preview-report-card-shell">
+                  <ReportSummaryCard
+                    report={previewReport}
+                    root="header"
+                    headingLevel={1}
+                    headingId="publication-title"
+                    headingRef={publicationTitleRef}
+                    headingTabIndex={-1}
+                    className="preview-report-card"
+                    actions={(
+                      <>
+                        <button className="button button-primary" type="button" onClick={(event) => firstPublicationSection && openReader(event, firstPublicationSection)}>
+                          <BookOpen aria-hidden="true" /> Read online
+                        </button>
+                        <a className="button button-secondary" href={previewReport.localPdfUrl} target="_blank" rel="noreferrer">
+                          <Download aria-hidden="true" /> Download PDF
+                        </a>
+                        <a className="text-action" href="#report-contents"><ListTree aria-hidden="true" /> View report sections</a>
+                        <a className="text-action" href="#preview-citation"><Quote aria-hidden="true" /> View citation</a>
+                      </>
+                    )}
+                  />
+                </div>
 
-                    <section
-                      className="vlrc-contents"
-                      aria-label="Document chapters"
-                    >
-                      <div
-                        className="vlrc-accordion"
-                        aria-label="Document chapters and subheadings"
-                      >
-                        {publicationSections.map((section) => {
-                          const isExpanded = expandedSections.has(section.id);
-                          const panelId = `${section.id}-subsections`;
-                          const majorHeadings = section.headings.filter(
-                            (heading) => heading.level === 2,
-                          );
-
-                          return (
-                            <section
-                              className={`vlrc-accordion-item ${isExpanded ? "is-open" : ""}`}
-                              key={section.id}
-                            >
-                              <h3>
-                                <button
-                                  type="button"
-                                  aria-expanded={isExpanded}
-                                  aria-controls={panelId}
-                                  onClick={() => toggleSection(section.id)}
-                                >
-                                  <span>{section.displayTitle}</span>
-                                  <ChevronDown aria-hidden="true" />
-                                </button>
-                              </h3>
-                              <div
-                                className="vlrc-accordion-panel"
-                                id={panelId}
-                                hidden={!isExpanded}
-                              >
-                                <ul>
-                                  <li className="vlrc-read-full">
-                                    <a
-                                      href={`#${section.id}`}
-                                      onClick={(event) =>
-                                        openReader(event, section)
-                                      }
-                                    >
-                                      Read full section
-                                    </a>
-                                  </li>
-                                  {majorHeadings.map((heading) => (
-                                    <li key={heading.id}>
-                                      <a
-                                        href={`#${heading.id}`}
-                                        onClick={(event) =>
-                                          openReader(event, section, heading.id)
-                                        }
-                                      >
-                                        {heading.text}
-                                      </a>
-                                    </li>
-                                  ))}
-                                </ul>
-                              </div>
-                            </section>
-                          );
-                        })}
+                <div className="preview-publication-main">
+                  <section className="report-search" aria-labelledby="report-search-heading">
+                    <div><h2 id="report-search-heading">Search this report</h2><p>Search section titles and the full converted report.</p></div>
+                    <label className="report-search-input" htmlFor="report-search">
+                      <Search aria-hidden="true" /><span className="sr-only">Search this report</span>
+                      <input ref={searchInputRef} id="report-search" type="search" value={searchQuery} onChange={(event) => setSearchQuery(event.target.value)} placeholder="Search by heading, topic, or keyword" />
+                    </label>
+                    {normalisedSearch.length >= 2 && (
+                      <div className="report-search-results" aria-live="polite">
+                        <div><strong>{searchResults.length} result{searchResults.length === 1 ? '' : 's'}</strong><span>for “{searchQuery.trim()}”</span></div>
+                        {searchResults.length ? (
+                          <ul>{searchResults.map(({ section, heading }, index) => (
+                            <li key={`${section.id}-${heading?.id ?? index}`}><a href={`#${heading?.id ?? section.id}`} onClick={(event) => openReader(event, section, heading?.id)}><span>{heading?.text ?? section.displayTitle}</span><small>{section.displayTitle}</small></a></li>
+                          ))}</ul>
+                        ) : <p>No matching section was found. Try a broader term.</p>}
                       </div>
+                    )}
+                  </section>
+
+                  {recommendations.length > 0 && (
+                    <section className="key-recommendations" aria-labelledby="recommendations-heading">
+                      <span className="eyebrow">At a glance</span><h2 id="recommendations-heading">Key recommendations</h2>
+                      <div>{recommendations.map((recommendation, index) => <article key={`${recommendation}-${index}`}><strong>{String(index + 1).padStart(2, '0')}</strong><p>{recommendation}</p></article>)}</div>
                     </section>
-                  </div>
+                  )}
 
-                  <aside
-                    className="vlrc-publication-aside"
-                    aria-label="Publication downloads"
-                  >
-                    <img
-                      src={publicationService.coverUrl(activeDocumentId)}
-                      alt={`Cover of ${pageMetadata.title}`}
-                      className="vlrc-cover"
-                    />
-                    <a
-                      className="vlrc-download"
-                      href={publicationService.sourceUrl(activeDocumentId)}
-                      target="_blank"
-                      rel="noreferrer"
-                    >
-                      <Download aria-hidden="true" />
-                      <span>Download PDF</span>
-                    </a>
-                    <div className="vlrc-report-card">
-                      <FileText aria-hidden="true" />
-                      <div>
-                        <strong>Report</strong>
-                        <span>
-                          {publication.stats.pages} pages ·{" "}
-                          {formatPublicationDate(pageMetadata.publishedDate)}
-                        </span>
-                      </div>
+                  <section className="vlrc-contents" id="report-contents" aria-labelledby="contents-heading">
+                    <div className="contents-heading-row">
+                      <div><span className="eyebrow">Full report</span><h2 id="contents-heading">Table of contents</h2></div>
+                      <div><button type="button" onClick={() => setAllSections(true)}>Expand all</button><button type="button" onClick={() => setAllSections(false)}>Collapse all</button></div>
                     </div>
-                  </aside>
+
+                    <div className="vlrc-accordion" aria-label="Complete report chapters">
+                      {publicationSections.map((section) => {
+                        if (!isChapterSection(section)) {
+                          return (
+                            <div className="vlrc-direct-item" key={section.id}>
+                              <a
+                                href={`#${section.id}`}
+                                onClick={(event) => openReader(event, section)}
+                              >
+                                <span>{section.displayTitle}</span>
+                                <ChevronRight aria-hidden="true" />
+                              </a>
+                            </div>
+                          );
+                        }
+                        const isExpanded = expandedSections.has(section.id);
+                        const panelId = `${section.id}-subsections`;
+                        const majorHeadings = section.headings.filter((heading) => heading.level === 2).sort((left, right) => (left.tocSequence ?? Number.MAX_SAFE_INTEGER) - (right.tocSequence ?? Number.MAX_SAFE_INTEGER) || (left.page ?? 0) - (right.page ?? 0));
+                        return (
+                          <section className={`vlrc-accordion-item ${isExpanded ? 'is-open' : ''}`} key={section.id}>
+                            <h3><button type="button" aria-expanded={isExpanded} aria-controls={panelId} onClick={() => toggleSection(section.id)}><span>{section.displayTitle}</span><ChevronDown aria-hidden="true" /></button></h3>
+                            <div className="vlrc-accordion-panel" id={panelId} hidden={!isExpanded}>
+                              <ul><li className="vlrc-read-full"><a href={`#${section.id}`} onClick={(event) => openReader(event, section)}>Read full section</a></li>{majorHeadings.map((heading) => <li key={heading.id}><a href={`#${heading.id}`} onClick={(event) => openReader(event, section, heading.id)}>{heading.text}</a></li>)}</ul>
+                            </div>
+                          </section>
+                        );
+                      })}
+                    </div>
+                  </section>
+
+                  <section className="preview-citation-card" id="preview-citation" aria-labelledby="preview-citation-heading">
+                    <Quote aria-hidden="true" />
+                    <div><span className="eyebrow">Source and citation</span><h2 id="preview-citation-heading">Cite this report</h2><blockquote>{previewReport.citation}</blockquote><p>Published by {previewReport.publisher}.</p></div>
+                  </section>
                 </div>
               </div>
             ) : selectedSection ? (

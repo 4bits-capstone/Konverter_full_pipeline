@@ -65,6 +65,41 @@ def test_visual_panel_becomes_one_semantic_recommendations_box_section():
     assert box_section["box_section_blocks"][0]["list_entries"][0]["marker"] == "1."
 
 
+def test_toc_derived_chapter_heading_is_not_swallowed_by_decorative_panel():
+    blocks = [
+        {
+            "id": "chapter",
+            "label": "section_header_1",
+            "text": "1. Introduction",
+            "toc_derived": True,
+            "page": 25,
+            "order": 0,
+            "source_bounds": source_bounds(300, 340),
+        },
+        {
+            "id": "local-contents",
+            "label": "list",
+            "text": "2 Terms of reference\n7 The approach of the Commission",
+            "page": 25,
+            "order": 1,
+            "source_bounds": source_bounds(360, 500),
+        },
+    ]
+    region = {
+        "page": 25,
+        "left": 90,
+        "top": 290,
+        "right": 504,
+        "bottom": 520,
+        "page_width": 595,
+        "page_height": 842,
+    }
+
+    grouped = group_visual_callouts(blocks, [region])
+
+    assert [block["id"] for block in grouped] == ["chapter", "local-contents"]
+
+
 def test_box_section_reaches_preview_with_semantic_child_content():
     publication = build_publication(
         [
@@ -77,7 +112,7 @@ def test_box_section_reaches_preview_with_semantic_child_content():
             },
             {
                 "id": "chapter",
-                "label": "chapter_title",
+                "label": "section_header_1",
                 "text": "1. Findings",
                 "page": 2,
                 "order": 1,

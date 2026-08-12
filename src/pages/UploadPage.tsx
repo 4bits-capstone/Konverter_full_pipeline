@@ -2,6 +2,7 @@ import { CheckCircle2, Clock3, FilePlus2, FileUp, Play, RefreshCcw, Square, Tras
 import { useRef } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { processingSteps } from '../config/workflow'
+import { converterStagePath } from '../lib/converterRoutes'
 import { documentService } from '../services'
 import { useKonverter } from '../state/KonverterContext'
 import type { DocumentProcessingJob } from '../types/konverter'
@@ -82,13 +83,13 @@ export function UploadPage() {
 
   const reviewDocument = (id: string) => {
     selectDocument(id)
-    navigate('/review')
+    navigate(converterStagePath('review'))
   }
 
   return (
     <section className="screen active" aria-labelledby="upload-heading">
       <div className="upload-wrap upload-wrap-wide">
-        <span className="eyebrow">Stage 1 of 5</span>
+        <span className="eyebrow">Stage 1 of 4</span>
         <h2 id="upload-heading" style={{ fontSize: 26, marginTop: 8 }}>Upload documents</h2>
         <p className="lead">Add one or more legal or policy PDFs. Documents process independently, so you can review the first completed document while the remaining jobs continue in the background.</p>
 
@@ -189,7 +190,6 @@ export function UploadPage() {
                       <span className="file-ic" aria-hidden="true">PDF</span>
                       <span className="file-meta">
                         <span className="file-name">{document.fileName}</span>
-                        <div></div>
                         <span className="file-sub"><span className="mono">{document.sizeLabel ?? '4.7 MB'}</span> · {document.pages ? <span className="mono">{document.pages} pages</span> : 'page count after processing'}</span>
                       </span>
                     </label>

@@ -52,7 +52,6 @@ KONVERTER_MEDIUM_CONFIDENCE=0.55
 KONVERTER_DO_OCR=false            # keep off for text-based PDFs
 KONVERTER_DO_TABLE_STRUCTURE=true
 KONVERTER_DOCLING_DEVICE=cpu      # cpu | cuda | auto
-KONVERTER_RULE_BASED_HEADINGS=true # false = package headings + output rebasing only
 KONVERTER_WORKERS=1
 KONVERTER_MAX_PAGES=2000          # reject larger uploads
 KONVERTER_SITE_URL=               # optional, hosting site, e.g. https://www.lawreform.vic.gov.au

@@ -309,9 +309,9 @@ def group_visual_callouts(
             block
             for block in blocks
             if str(block.get("id", "")) not in used
+            and not block.get("toc_derived")
             and block.get("label") not in {
                 "title",
-                "chapter_title",
                 "header",
                 "footer",
                 "document_index",

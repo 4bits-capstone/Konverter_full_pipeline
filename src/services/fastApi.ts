@@ -33,7 +33,17 @@ export const fastApiDocumentService: DocumentService = {
     return apiRequest(`/documents/${encodeURIComponent(documentId)}/process`, { method: 'POST' })
   },
   getProcessingStatus(documentId) {
-    return apiRequest(`/documents/${encodeURIComponent(documentId)}/status`)
+    return apiRequest(`/documents/${encodeURIComponent(documentId)}/processing-state`, {
+      method: 'POST',
+      cache: 'no-store',
+      headers: {
+        Accept: 'text/plain',
+        'X-Requested-With': 'XMLHttpRequest',
+      },
+    })
+  },
+  getProcessingSummary(documentId) {
+    return apiRequest(`/documents/${encodeURIComponent(documentId)}/processing-summary`)
   },
   stopProcessing(documentId) {
     return apiRequest(`/documents/${encodeURIComponent(documentId)}/process`, { method: 'DELETE' })
@@ -122,8 +132,9 @@ export const fastApiPublicationService: PublicationService = {
   sourceUrl(documentId, page) {
     return `${documentUrl(documentId, '/source')}${page ? `#page=${page}` : ''}`
   },
-  evidenceUrl(documentId, reviewItemId) {
-    return documentUrl(documentId, `/review-items/${encodeURIComponent(reviewItemId)}/evidence.png`)
+  evidenceUrl(documentId, reviewItemId, version) {
+    const url = documentUrl(documentId, `/review-items/${encodeURIComponent(reviewItemId)}/evidence.png`)
+    return version ? `${url}?v=${encodeURIComponent(version)}` : url
   },
   metadataEvidenceUrl(documentId, fieldName) {
     return documentUrl(documentId, `/metadata/${encodeURIComponent(fieldName)}/evidence.png`)

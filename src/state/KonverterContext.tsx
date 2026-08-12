@@ -186,6 +186,11 @@ export function KonverterProvider({ children }: PropsWithChildren) {
   const setApprovedAt = useCallback(
     (value: string | null) => {
       patchWorkflow(activeDocumentId, { approvedAt: value });
+      if (activeDocumentId) {
+        setDocuments((current) => current.map((document) => (
+          document.id === activeDocumentId ? { ...document, approvedAt: value } : document
+        )));
+      }
     },
     [activeDocumentId, patchWorkflow],
   );
@@ -549,10 +554,10 @@ export function KonverterProvider({ children }: PropsWithChildren) {
     [activeDocumentId, patchWorkflow],
   );
 
-  const approvalReady =
-    pendingCount === 0 &&
-    metadataResolved &&
-    requiredManualChecks.every((key) => manualChecks[key]);
+  // Final approval is based only on automated workflow state. Reviewer
+  // checkboxes were removed from the approval gate; their work is already
+  // represented by resolved flags and confirmed metadata.
+  const approvalReady = pendingCount === 0 && metadataResolved;
 
   const activeDocument = useMemo(
     () =>

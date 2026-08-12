@@ -1,5 +1,5 @@
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
-import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
+import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import { useEffect } from 'react'
 import { MemoryRouter } from 'react-router-dom'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
@@ -40,12 +40,26 @@ describe('ReviewPage', () => {
   it('explains structure confidence and provides the requested queue controls', async () => {
     renderReview()
 
-    expect(screen.getByText('How to review structure confidence flags')).toBeInTheDocument()
+    expect(screen.getByText('Review guidance')).toBeInTheDocument()
+    expect(screen.getByText('Processing details')).toBeInTheDocument()
     expect(screen.getByLabelText('Search queue')).toBeInTheDocument()
     expect(screen.getByLabelText('Status')).toHaveValue('all')
     expect(screen.getByLabelText('Filter by structure label')).toHaveValue('all')
     expect(screen.getByLabelText('Sort')).toHaveValue('highest')
     expect(screen.queryByLabelText('Confidence')).not.toBeInTheDocument()
+    expect(screen.queryByText(/items need review/)).not.toBeInTheDocument()
+
+    fireEvent.click(screen.getByText('Processing details').closest('summary')!)
+    expect(await screen.findByText('Headings')).toBeInTheDocument()
+    expect(screen.queryByText('Diagrams')).not.toBeInTheDocument()
+    expect(screen.queryByText('Footnotes')).not.toBeInTheDocument()
+
+    fireEvent.click(screen.getByText('Review guidance').closest('summary')!)
+    const guide = screen.getByLabelText('Structure label definitions')
+    const h4Guide = within(guide).getByText('H4').parentElement!
+    fireEvent.mouseEnter(h4Guide)
+    expect(screen.getByRole('tooltip')).toHaveTextContent('A lower-level heading nested under an H3.')
+    expect(screen.getByRole('tooltip').parentElement).toBe(document.body)
 
     await screen.findAllByText('Section heading needs confirmation')
     expect(screen.getByRole('button', { name: /Remove from output/ })).toBeInTheDocument()
@@ -59,16 +73,32 @@ describe('ReviewPage', () => {
     fireEvent.click(screen.getByRole('button', { name: /Section heading needs confirmation/ }))
 
     expect(screen.getByText('Extracted result (reference only)')).toBeInTheDocument()
-    expect(screen.getByLabelText('Structure label')).toHaveValue('section_header_2')
-    expect(screen.getByLabelText('Structure label')).toBeDisabled()
+    expect(screen.getByRole('button', { name: 'Structure label: H2' })).toBeDisabled()
     expect(screen.queryByRole('textbox', { name: 'Corrected text' })).not.toBeInTheDocument()
 
     fireEvent.click(screen.getByRole('button', { name: 'Edit flagged item' }))
-    expect(screen.getByLabelText('Structure label')).toBeEnabled()
+    expect(screen.getByRole('button', { name: 'Structure label: H2' })).toBeEnabled()
+    expect(screen.getByText('Section within the current H1.')).toBeInTheDocument()
     expect(screen.getByRole('textbox', { name: 'Corrected text' })).toHaveValue('Purpose')
     expect(screen.getByRole('link', { name: /Open original page/ })).toHaveAttribute('target', '_blank')
     expect(screen.getByRole('button', { name: 'Save changes' })).toHaveClass('btn-primary')
     expect(screen.queryByRole('button', { name: 'Accept' })).not.toBeInTheDocument()
+  })
+
+  it('loads a uniquely versioned original-PDF crop for each selected flag', async () => {
+    renderReview()
+    await screen.findAllByText('Definitions table needs confirmation')
+
+    fireEvent.click(screen.getByRole('button', { name: /Definitions table needs confirmation/ }))
+    const tableEvidence = screen.getByRole('img', { name: /Original PDF evidence for Table on page 4/ })
+    expect(tableEvidence).toHaveAttribute('loading', 'eager')
+    expect(tableEvidence.getAttribute('src')).toContain('/review-items/review-table/evidence.png?v=')
+    const firstSource = tableEvidence.getAttribute('src')
+
+    fireEvent.click(screen.getByRole('button', { name: /Section heading needs confirmation/ }))
+    const headingEvidence = screen.getByRole('img', { name: /Original PDF evidence for H2 on page 2/ })
+    expect(headingEvidence.getAttribute('src')).toContain('/review-items/review-heading/evidence.png?v=')
+    expect(headingEvidence.getAttribute('src')).not.toBe(firstSource)
   })
 
   it('provides a cell-based editor for flagged tables', async () => {
@@ -103,7 +133,8 @@ describe('ReviewPage', () => {
 
     fireEvent.click(screen.getByRole('button', { name: /Definitions table needs confirmation/ }))
     fireEvent.click(screen.getByRole('button', { name: 'Edit flagged item' }))
-    fireEvent.change(screen.getByLabelText('Structure label'), { target: { value: 'list' } })
+    fireEvent.click(screen.getByRole('button', { name: 'Structure label: Table' }))
+    fireEvent.click(within(screen.getByRole('listbox', { name: 'Structure label' })).getByRole('option', { name: 'List' }))
 
     expect(screen.getByRole('group', { name: 'Editable corrected list' })).toBeInTheDocument()
     const firstListItem = screen.getByLabelText('List item 1') as HTMLTextAreaElement
@@ -113,7 +144,7 @@ describe('ReviewPage', () => {
 
     fireEvent.click(screen.getByRole('button', { name: 'Save changes' }))
     await waitFor(() => expect(screen.queryByRole('group', { name: 'Editable corrected list' })).not.toBeInTheDocument())
-    expect(screen.getByLabelText('Structure label')).toHaveValue('list')
+    expect(screen.getByRole('button', { name: 'Structure label: List' })).toBeDisabled()
   })
 
   it('converts a table directly into footnote prose without table delimiters', async () => {
@@ -122,7 +153,8 @@ describe('ReviewPage', () => {
 
     fireEvent.click(screen.getByRole('button', { name: /Definitions table needs confirmation/ }))
     fireEvent.click(screen.getByRole('button', { name: 'Edit flagged item' }))
-    fireEvent.change(screen.getByLabelText('Structure label'), { target: { value: 'footnote' } })
+    fireEvent.click(screen.getByRole('button', { name: 'Structure label: Table' }))
+    fireEvent.click(within(screen.getByRole('listbox', { name: 'Structure label' })).getByRole('option', { name: 'Footnote' }))
 
     const correction = screen.getByRole('textbox', { name: 'Corrected text' }) as HTMLTextAreaElement
     await waitFor(() => expect(correction.value).toContain('Term: Accessible format; Definition: Content that people can perceive'))
@@ -130,7 +162,7 @@ describe('ReviewPage', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Save changes' }))
 
     await waitFor(() => expect(screen.queryByRole('textbox', { name: 'Corrected text' })).not.toBeInTheDocument())
-    expect(screen.getByLabelText('Structure label')).toHaveValue('footnote')
+    expect(screen.getByRole('button', { name: 'Structure label: Footnote' })).toBeDisabled()
   })
 
   it('removes unnecessary content from output and allows it to be restored', async () => {
@@ -152,7 +184,8 @@ describe('ReviewPage', () => {
     expect(screen.getByText('3 selected')).toBeInTheDocument()
     expect(screen.getAllByRole('checkbox')).toHaveLength(3)
     fireEvent.change(screen.getByLabelText('Bulk action'), { target: { value: 'label' } })
-    fireEvent.change(screen.getByLabelText('Bulk structure label'), { target: { value: 'section_header_1' } })
+    fireEvent.click(screen.getByRole('button', { name: 'Bulk structure label: Text' }))
+    fireEvent.click(within(screen.getByRole('listbox', { name: 'Bulk structure label' })).getByRole('option', { name: 'H1' }))
     fireEvent.click(screen.getByRole('button', { name: 'Apply to 3 selected' }))
 
     expect(screen.getByRole('alertdialog')).toHaveTextContent('Change 3 selected items to H1?')
@@ -208,17 +241,16 @@ describe('ReviewPage', () => {
       target: { value: 'section_header_2' },
     })
     fireEvent.click(screen.getByRole('button', { name: /Section heading needs confirmation/ }))
-    expect(screen.getAllByText('Flag 1 of 2').length).toBeGreaterThan(0)
+    expect(screen.getByText(/Flag 1 of 2/)).toBeInTheDocument()
 
     fireEvent.click(screen.getByRole('button', { name: 'Edit flagged item' }))
-    fireEvent.change(screen.getByLabelText('Structure label'), {
-      target: { value: 'section_header_3' },
-    })
+    fireEvent.click(screen.getByRole('button', { name: 'Structure label: H2' }))
+    fireEvent.click(within(screen.getByRole('listbox', { name: 'Structure label' })).getByRole('option', { name: 'H3' }))
     fireEvent.click(screen.getByRole('button', { name: 'Save changes' }))
 
     expect(await screen.findByRole('heading', { name: 'Secondary heading needs confirmation' })).toBeInTheDocument()
     expect(screen.getByLabelText('Filter by structure label')).toHaveValue('section_header_2')
     expect(screen.getByLabelText('Sort')).toHaveValue('highest')
-    expect(screen.getAllByText('Flag 1 of 1').length).toBeGreaterThan(0)
+    expect(screen.getByText(/Flag 1 of 1/)).toBeInTheDocument()
   })
 })

@@ -43,6 +43,19 @@ class DocumentProcessingJob(ApiModel):
     message: str | None = None
 
 
+class ProcessingElementCoverage(ApiModel):
+    detected: int = 0
+    total: int = 0
+    needs_review: int = 0
+
+
+class ProcessingSummary(ApiModel):
+    pages: ProcessingElementCoverage
+    headings: ProcessingElementCoverage
+    images: ProcessingElementCoverage
+    tables: ProcessingElementCoverage
+
+
 ReviewStatus = Literal["pending", "accepted", "edited", "needs_attention", "removed"]
 ConfidenceBand = Literal["high", "med", "low"]
 ReviewKind = Literal["kv", "text", "table"]
@@ -50,7 +63,6 @@ ReviewKind = Literal["kv", "text", "table"]
 ReviewType = Literal[
     "box_section",
     "caption",
-    "chapter_title",
     "document_index",
     "footnote",
     "footer",
@@ -71,9 +83,19 @@ ReviewType = Literal[
 ]
 
 
+class SourceBounds(ApiModel):
+    left: float
+    top: float
+    right: float
+    bottom: float
+    page_width: float
+    page_height: float
+
+
 class SourceEvidence(ApiModel):
     page: int
     html: str
+    bounds: SourceBounds | None = None
 
 
 class ReviewTableData(ApiModel):
