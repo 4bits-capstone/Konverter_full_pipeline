@@ -85,8 +85,7 @@ const structureLabels: Array<{
   {
     value: "section_header_2",
     label: "H2",
-    description:
-      "A printed-contents entry nested under the current H1.",
+    description: "A printed-contents entry nested under the current H1.",
     shortMeaning: "Section within the current H1.",
   },
   {
@@ -238,7 +237,8 @@ function getStructureTooltipPosition(
 
   return {
     left,
-    top: placement === "below" ? rect.bottom + tooltipGap : rect.top - tooltipGap,
+    top:
+      placement === "below" ? rect.bottom + tooltipGap : rect.top - tooltipGap,
     placement,
   };
 }
@@ -291,10 +291,7 @@ function StructureGuideItem({
         onFocus={showTooltip}
         onBlur={() => setTooltipPosition(null)}
       >
-        <span
-          className="typechip structure-chip"
-          data-label={item.value}
-        >
+        <span className="typechip structure-chip" data-label={item.value}>
           {item.label}
         </span>
       </span>
@@ -356,7 +353,8 @@ function StructureLabelMenu({
   }, [open, selectedIndex]);
 
   const moveFocus = (currentIndex: number, step: number) => {
-    const next = (currentIndex + step + structureLabels.length) % structureLabels.length;
+    const next =
+      (currentIndex + step + structureLabels.length) % structureLabels.length;
     optionRefs.current[next]?.focus();
   };
 
@@ -387,13 +385,20 @@ function StructureLabelMenu({
             {selected.label}
           </span>
           {showMeaning && (
-            <span className="structure-select-meaning">{selected.shortMeaning}</span>
+            <span className="structure-select-meaning">
+              {selected.shortMeaning}
+            </span>
           )}
         </span>
         <ChevronDown aria-hidden="true" />
       </button>
       {open && (
-        <div className="structure-select-menu" id={menuId} role="listbox" aria-label={ariaLabel}>
+        <div
+          className="structure-select-menu"
+          id={menuId}
+          role="listbox"
+          aria-label={ariaLabel}
+        >
           {structureLabels.map((item, index) => (
             <button
               key={item.value}
@@ -424,16 +429,23 @@ function StructureLabelMenu({
                 } else if (event.key === "Escape") {
                   event.preventDefault();
                   setOpen(false);
-                  (document.getElementById(id ?? "") as HTMLElement | null)?.focus();
+                  (
+                    document.getElementById(id ?? "") as HTMLElement | null
+                  )?.focus();
                 }
               }}
             >
               <span className="structure-select-option-copy">
-                <span className="typechip structure-chip" data-label={item.value}>
+                <span
+                  className="typechip structure-chip"
+                  data-label={item.value}
+                >
                   {item.label}
                 </span>
                 {showMeaning && (
-                  <span className="structure-option-meaning">{item.shortMeaning}</span>
+                  <span className="structure-option-meaning">
+                    {item.shortMeaning}
+                  </span>
                 )}
               </span>
               {item.value === value && <Check aria-hidden="true" />}
@@ -481,9 +493,8 @@ function tableToListText(table: ReviewTableData): string {
       const [first, ...rest] = row;
       const marker = first?.match(/^\(?([0-9]+|[A-Za-z]|[ivxlcdm]+)[.)]?$/i);
       if (marker && rest.length) {
-        const sourceMarker = first.includes("(") || /[.)]$/.test(first)
-          ? first
-          : `${first}.`;
+        const sourceMarker =
+          first.includes("(") || /[.)]$/.test(first) ? first : `${first}.`;
         return `${sourceMarker} ${rest.join(" — ")}`;
       }
       return row.join(" — ");
@@ -791,7 +802,9 @@ function TableEditor({
         <input
           className="input"
           value={table.caption ?? ""}
-          onChange={(event) => onChange({ ...table, caption: event.target.value })}
+          onChange={(event) =>
+            onChange({ ...table, caption: event.target.value })
+          }
           placeholder="Use the caption from the original document"
         />
       </label>
@@ -1179,8 +1192,8 @@ export function ReviewPage() {
       ...(editType === "box_section"
         ? {}
         : usesTableEditor(editType)
-        ? { correctedTable: editTable }
-        : { correctedText: editText }),
+          ? { correctedTable: editTable }
+          : { correctedText: editText }),
     });
     preserveQueueScroll();
     setEditing(false);
@@ -1225,7 +1238,8 @@ export function ReviewPage() {
   const toggleAllVisible = () => {
     setBulkSelectedIds((current) => {
       const next = new Set(current);
-      if (allVisibleSelected) filteredItems.forEach((item) => next.delete(item.id));
+      if (allVisibleSelected)
+        filteredItems.forEach((item) => next.delete(item.id));
       else filteredItems.forEach((item) => next.add(item.id));
       return next;
     });
@@ -1282,13 +1296,14 @@ export function ReviewPage() {
     const ids = [...bulkSelectedIds];
     if (!ids.length) return;
     const selectedLabel =
-      structureLabels.find((entry) => entry.value === bulkType)?.label ?? bulkType;
+      structureLabels.find((entry) => entry.value === bulkType)?.label ??
+      bulkType;
     const message =
       bulkAction === "accept"
         ? `Accept ${ids.length} selected item${ids.length === 1 ? "" : "s"}?`
         : bulkAction === "remove"
-        ? `Remove ${ids.length} selected item${ids.length === 1 ? "" : "s"} from the final output?`
-        : `Change ${ids.length} selected item${ids.length === 1 ? "" : "s"} to ${selectedLabel}?`;
+          ? `Remove ${ids.length} selected item${ids.length === 1 ? "" : "s"} from the final output?`
+          : `Change ${ids.length} selected item${ids.length === 1 ? "" : "s"} to ${selectedLabel}?`;
     setPendingConfirmation({
       kind: "bulk",
       ids,
@@ -1308,16 +1323,16 @@ export function ReviewPage() {
       action === "accept"
         ? { status: "accepted" }
         : action === "remove"
-        ? { status: "removed" }
-        : { type: selectedType, label: selectedLabel, status: "edited" },
+          ? { status: "removed" }
+          : { type: selectedType, label: selectedLabel, status: "edited" },
     );
     preserveQueueScroll();
     showToast(
       action === "accept"
         ? `${ids.length} item${ids.length === 1 ? "" : "s"} accepted`
         : action === "remove"
-        ? `${ids.length} item${ids.length === 1 ? "" : "s"} removed from output`
-        : `${ids.length} item${ids.length === 1 ? "" : "s"} changed to ${selectedLabel}`,
+          ? `${ids.length} item${ids.length === 1 ? "" : "s"} removed from output`
+          : `${ids.length} item${ids.length === 1 ? "" : "s"} changed to ${selectedLabel}`,
     );
   };
 
@@ -1387,27 +1402,55 @@ export function ReviewPage() {
       <div className="section-title review-titlebar">
         <div>
           <span className="eyebrow">Stage 2 of 4</span>
-          <h2 id="review-heading">Review flagged exceptions</h2>
-          <p className="lead">Focus on the items that need a human decision. You do not need to review every page.</p>
+          <h2 id="review-heading">Review</h2>
+          <p className="lead">
+            Focus on the items that need a human decision and with low
+            confidence scores.
+          </p>
         </div>
         <div className="review-title-actions">
           <details className="review-guidance review-guidance-popover">
-            <summary className="btn btn-outline btn-sm"><CircleHelp aria-hidden="true" />Review guidance</summary>
-            <div className="review-guidance-body" role="region" aria-label="Review guidance">
+            <summary className="btn btn-outline btn-sm">
+              <CircleHelp aria-hidden="true" />
+              Review guidance
+            </summary>
+            <div
+              className="review-guidance-body"
+              role="region"
+              aria-label="Review guidance"
+            >
               <div>
                 <h3>What the confidence score means</h3>
-                <p>The percentage is the layout model’s certainty about the <b>structure label</b>—for example H2, Table or Picture—not the wording itself. Low-confidence labels are the most likely to need correction.</p>
+                <p>
+                  The percentage is the layout model’s certainty about the{" "}
+                  <b>structure label</b>—for example H2, Table or Picture—not
+                  the wording itself. Low-confidence labels are the most likely
+                  to need correction.
+                </p>
                 <h3>How to resolve a flag</h3>
                 <ol>
-                  <li>Compare the extracted result with the original PDF evidence.</li>
-                  <li>Select <b>Accept</b> when the result is correct.</li>
-                  <li>Select <b>Edit</b> to change the text, table cells, or structure label.</li>
-                  <li>Use <b>Remove from output</b> for duplicates, decoration, or extraction artefacts.</li>
+                  <li>
+                    Compare the extracted result with the original PDF evidence.
+                  </li>
+                  <li>
+                    Select <b>Accept</b> when the result is correct.
+                  </li>
+                  <li>
+                    Select <b>Edit</b> to change the text, table cells, or
+                    structure label.
+                  </li>
+                  <li>
+                    Use <b>Remove from output</b> for duplicates, decoration, or
+                    extraction artefacts.
+                  </li>
                 </ol>
               </div>
               <div>
                 <h3>Structure label guide</h3>
-                <div className="structure-guide" aria-label="Structure label definitions">
+                <div
+                  className="structure-guide"
+                  aria-label="Structure label definitions"
+                >
                   {structureLabels.map((item) => (
                     <StructureGuideItem key={item.value} item={item} />
                   ))}
@@ -1416,8 +1459,18 @@ export function ReviewPage() {
             </div>
           </details>
           <div className="review-next-step">
-            <span>{pendingCount ? 'Clear required items to continue' : 'Required review complete'}</span>
-            <button className="btn btn-primary btn-sm" disabled={pendingCount > 0} onClick={continueToMetadata}>Continue to metadata →</button>
+            <span>
+              {pendingCount
+                ? "Clear required items to continue"
+                : "Required review complete"}
+            </span>
+            <button
+              className="btn btn-primary btn-sm"
+              disabled={pendingCount > 0}
+              onClick={continueToMetadata}
+            >
+              Continue to metadata →
+            </button>
           </div>
         </div>
       </div>
@@ -1443,7 +1496,6 @@ export function ReviewPage() {
               role="status"
               aria-live="polite"
             >
-              <Check aria-hidden="true" />
               Currently reviewing:{" "}
               <strong>
                 {activeDocument?.fileName ?? completedDocuments[0].fileName}
@@ -1485,9 +1537,7 @@ export function ReviewPage() {
       <details
         className="processing-details-section"
         open={processingDetailsOpen}
-        onToggle={(event) =>
-          setProcessingDetailsOpen(event.currentTarget.open)
-        }
+        onToggle={(event) => setProcessingDetailsOpen(event.currentTarget.open)}
       >
         <summary>
           <span className="processing-details-title">
@@ -1510,9 +1560,7 @@ export function ReviewPage() {
             >
               <div>
                 <span className="eyebrow">Extraction coverage</span>
-                <h3 id="element-summary-heading">
-                  Document elements detected
-                </h3>
+                <h3 id="element-summary-heading">Document elements detected</h3>
               </div>
               {(
                 [
@@ -1570,7 +1618,15 @@ export function ReviewPage() {
             <div className="tb-control">
               <label htmlFor="show-filter">Status</label>
               <span className="review-filter-select">
-                <select id="show-filter" className="sel" value={statusFilter} onChange={(event) => { setStatusFilter(event.target.value as StatusFilter); setShowDetailMobile(false) }}>
+                <select
+                  id="show-filter"
+                  className="sel"
+                  value={statusFilter}
+                  onChange={(event) => {
+                    setStatusFilter(event.target.value as StatusFilter);
+                    setShowDetailMobile(false);
+                  }}
+                >
                   <option value="all">All items</option>
                   <option value="pending">Pending</option>
                   <option value="accepted">Accepted</option>
@@ -1583,9 +1639,22 @@ export function ReviewPage() {
             <div className="tb-control">
               <label htmlFor="label-filter">Filter by structure label</label>
               <span className="review-filter-select">
-                <select id="label-filter" className="sel" aria-label="Filter by structure label" value={labelFilter} onChange={(event) => { setLabelFilter(event.target.value as LabelFilter); setShowDetailMobile(false) }}>
+                <select
+                  id="label-filter"
+                  className="sel"
+                  aria-label="Filter by structure label"
+                  value={labelFilter}
+                  onChange={(event) => {
+                    setLabelFilter(event.target.value as LabelFilter);
+                    setShowDetailMobile(false);
+                  }}
+                >
                   <option value="all">All labels</option>
-                  {structureLabels.map((item) => <option key={item.value} value={item.value}>{item.label}</option>)}
+                  {structureLabels.map((item) => (
+                    <option key={item.value} value={item.value}>
+                      {item.label}
+                    </option>
+                  ))}
                 </select>
                 <ChevronDown aria-hidden="true" />
               </span>
@@ -1593,7 +1662,12 @@ export function ReviewPage() {
             <div className="tb-control">
               <label htmlFor="sort-filter">Sort</label>
               <span className="review-filter-select">
-                <select id="sort-filter" className="sel" value={sort} onChange={(event) => setSort(event.target.value as Sort)}>
+                <select
+                  id="sort-filter"
+                  className="sel"
+                  value={sort}
+                  onChange={(event) => setSort(event.target.value as Sort)}
+                >
                   <option value="highest">Highest confidence first</option>
                   <option value="lowest">Lowest confidence first</option>
                   <option value="page">Page order</option>
@@ -1610,9 +1684,13 @@ export function ReviewPage() {
         <div className="queue">
           <div className="queue-head">
             <h3 className="queue-title">Review queue</h3>
-            <span className="queue-count">{filteredItems.length} item{filteredItems.length === 1 ? '' : 's'}</span>
+            <span className="queue-count">
+              {filteredItems.length} item{filteredItems.length === 1 ? "" : "s"}
+            </span>
           </div>
-          <div className={`queue-selection-row${bulkSelectedIds.size ? ' has-selection' : ''}`}>
+          <div
+            className={`queue-selection-row${bulkSelectedIds.size ? " has-selection" : ""}`}
+          >
             <button
               className="btn btn-ghost btn-sm queue-select-all"
               type="button"
@@ -1621,17 +1699,31 @@ export function ReviewPage() {
               onClick={toggleAllVisible}
             >
               <Check aria-hidden="true" />
-              {allVisibleSelected ? "Clear visible selection" : "Select all visible"}
+              {allVisibleSelected
+                ? "Clear visible selection"
+                : "Select all visible"}
             </button>
             <span className="queue-count" role="status" aria-live="polite">
-              {bulkSelectedIds.size ? `${bulkSelectedIds.size} selected` : "Shift+click or Tab+click"}
+              {bulkSelectedIds.size
+                ? `${bulkSelectedIds.size} selected`
+                : "Shift+click or Tab+click"}
             </span>
           </div>
           {bulkSelectedIds.size > 0 && (
-            <div className="queue-bulk-action-panel" aria-label="Bulk review actions">
+            <div
+              className="queue-bulk-action-panel"
+              aria-label="Bulk review actions"
+            >
               <label>
                 Action
-                <select className="sel" aria-label="Bulk action" value={bulkAction} onChange={(event) => setBulkAction(event.target.value as BulkAction)}>
+                <select
+                  className="sel"
+                  aria-label="Bulk action"
+                  value={bulkAction}
+                  onChange={(event) =>
+                    setBulkAction(event.target.value as BulkAction)
+                  }
+                >
                   <option value="accept">Accept selected</option>
                   <option value="remove">Remove from output</option>
                   <option value="label">Change structure label</option>
@@ -1648,10 +1740,21 @@ export function ReviewPage() {
                   />
                 </div>
               )}
-              <button className="btn btn-primary btn-sm" type="button" onClick={requestBulkAction}>Apply to {bulkSelectedIds.size} selected</button>
+              <button
+                className="btn btn-primary btn-sm"
+                type="button"
+                onClick={requestBulkAction}
+              >
+                Apply to {bulkSelectedIds.size} selected
+              </button>
             </div>
           )}
-          <div className="qlist" role="list" aria-label="Flagged items" ref={queueListRef}>
+          <div
+            className="qlist"
+            role="list"
+            aria-label="Flagged items"
+            ref={queueListRef}
+          >
             {reviewLoading && (
               <div style={{ padding: 20 }}>Loading review items…</div>
             )}
@@ -1660,7 +1763,7 @@ export function ReviewPage() {
             )}
             {filteredItems.map((item) => (
               <div
-                className={`qitem-row tone-${itemTone(item)}${selected?.id === item.id ? ' is-current' : ''}`}
+                className={`qitem-row tone-${itemTone(item)}${selected?.id === item.id ? " is-current" : ""}`}
                 role="listitem"
                 key={item.id}
               >
@@ -1678,7 +1781,9 @@ export function ReviewPage() {
                   className={`qitem tone-${itemTone(item)}`}
                   aria-current={selected?.id === item.id ? "true" : undefined}
                   aria-pressed={
-                    bulkSelectedIds.size ? bulkSelectedIds.has(item.id) : undefined
+                    bulkSelectedIds.size
+                      ? bulkSelectedIds.has(item.id)
+                      : undefined
                   }
                   onClick={(event) => handleQueueItemClick(event, item)}
                 >
@@ -1715,7 +1820,8 @@ export function ReviewPage() {
                 />
                 <StatusTag status={selected.status} />
                 <span className="mono detail-page">
-                  Flag {selectedPosition} of {filteredItems.length} · page {selected.page}
+                  Flag {selectedPosition} of {filteredItems.length} · page{" "}
+                  {selected.page}
                 </span>
               </div>
               <div className="detail-body">
@@ -1753,8 +1859,14 @@ export function ReviewPage() {
                     {!evidenceFailed ? (
                       <>
                         {evidenceLoading && (
-                          <div className="source-evidence-loading" role="status">
-                            <LoaderCircle className="spinner-icon" aria-hidden="true" />
+                          <div
+                            className="source-evidence-loading"
+                            role="status"
+                          >
+                            <LoaderCircle
+                              className="spinner-icon"
+                              aria-hidden="true"
+                            />
                             Loading the matching source crop…
                           </div>
                         )}
@@ -1787,8 +1899,8 @@ export function ReviewPage() {
                   </div>
                   {!selected.source.bounds && !evidenceFailed && (
                     <p className="source-evidence-note">
-                      Precise coordinates were unavailable, so the complete source
-                      page is shown.
+                      Precise coordinates were unavailable, so the complete
+                      source page is shown.
                     </p>
                   )}
                 </div>
@@ -1798,7 +1910,9 @@ export function ReviewPage() {
                     <label htmlFor="selected-structure-label">
                       Structure label
                     </label>
-                    <small>Choose the label that best describes this content.</small>
+                    <small>
+                      Choose the label that best describes this content.
+                    </small>
                   </div>
                   <StructureLabelMenu
                     id="selected-structure-label"
@@ -1846,18 +1960,20 @@ export function ReviewPage() {
                   </>
                 )}
 
-                {selected.correctedText && !editing && selected.type !== "box_section" && (
-                  <>
-                    <div className="field-label">Saved correction</div>
-                    {selected.type === "list" ? (
-                      <ReviewListPreview text={selected.correctedText} />
-                    ) : (
-                      <div className="corrected-result pre-wrap">
-                        {selected.correctedText}
-                      </div>
-                    )}
-                  </>
-                )}
+                {selected.correctedText &&
+                  !editing &&
+                  selected.type !== "box_section" && (
+                    <>
+                      <div className="field-label">Saved correction</div>
+                      {selected.type === "list" ? (
+                        <ReviewListPreview text={selected.correctedText} />
+                      ) : (
+                        <div className="corrected-result pre-wrap">
+                          {selected.correctedText}
+                        </div>
+                      )}
+                    </>
+                  )}
 
                 {editing && (
                   <div className="correction-editor">
@@ -1866,7 +1982,7 @@ export function ReviewPage() {
                         ? "Corrected table"
                         : editType === "box_section"
                           ? "Box Section structure"
-                        : "Corrected result"}
+                          : "Corrected result"}
                     </div>
                     {usesTableEditor(editType) ? (
                       <TableEditor table={editTable} onChange={setEditTable} />
@@ -1874,9 +1990,10 @@ export function ReviewPage() {
                       <ListEditor text={editText} onChange={setEditText} />
                     ) : editType === "box_section" ? (
                       <div className="box-section-edit-note">
-                        Child paragraphs, lists, tables, figures and footnotes stay as
-                        separate semantic elements. Change the container label here;
-                        its child content is not flattened into one text field.
+                        Child paragraphs, lists, tables, figures and footnotes
+                        stay as separate semantic elements. Change the container
+                        label here; its child content is not flattened into one
+                        text field.
                       </div>
                     ) : (
                       <textarea
@@ -1895,7 +2012,7 @@ export function ReviewPage() {
                           ? "Enter one list item per line."
                           : editType === "box_section"
                             ? "The Box Section remains a container in every generated output."
-                          : "This structure is corrected as text."}
+                            : "This structure is corrected as text."}
                     </div>
                   </div>
                 )}
@@ -1931,7 +2048,6 @@ export function ReviewPage() {
                     </label>
                   </div>
                 )}
-
               </div>
               <div className="actionbar detail-actions">
                 {editing ? (
@@ -2000,11 +2116,15 @@ export function ReviewPage() {
       </div>
 
       {pendingConfirmation && (
-        <div className="overlay show" role="presentation" onMouseDown={(event) => {
-          if (event.target === event.currentTarget && !confirmationApplying) {
-            setPendingConfirmation(null);
-          }
-        }}>
+        <div
+          className="overlay show"
+          role="presentation"
+          onMouseDown={(event) => {
+            if (event.target === event.currentTarget && !confirmationApplying) {
+              setPendingConfirmation(null);
+            }
+          }}
+        >
           <section
             className="modal review-bulk-confirmation"
             role="alertdialog"
@@ -2012,30 +2132,36 @@ export function ReviewPage() {
             aria-labelledby="review-confirmation-heading"
             aria-describedby="review-confirmation-message"
           >
-            <div className="modal-ic"><TriangleAlert aria-hidden="true" /></div>
+            <div className="modal-ic">
+              <TriangleAlert aria-hidden="true" />
+            </div>
             <span className="eyebrow">
-              {pendingConfirmation.kind === "bulk" ? "Bulk review action" : "Unsaved review change"}
+              {pendingConfirmation.kind === "bulk"
+                ? "Bulk review action"
+                : "Unsaved review change"}
             </span>
             <h3 id="review-confirmation-heading">Confirm this change</h3>
-            <p id="review-confirmation-message">{pendingConfirmation.message}</p>
+            <p id="review-confirmation-message">
+              {pendingConfirmation.message}
+            </p>
             <div className="modal-actions">
-            <button
-              className="btn btn-outline"
-              type="button"
-              disabled={confirmationApplying}
-              onClick={() => setPendingConfirmation(null)}
-            >
-              Cancel
-            </button>
-            <button
-              className="btn btn-primary"
-              type="button"
-              disabled={confirmationApplying}
-              autoFocus
-              onClick={() => void confirmPendingAction()}
-            >
-              {confirmationApplying ? "Applying changes…" : "Confirm"}
-            </button>
+              <button
+                className="btn btn-outline"
+                type="button"
+                disabled={confirmationApplying}
+                onClick={() => setPendingConfirmation(null)}
+              >
+                Cancel
+              </button>
+              <button
+                className="btn btn-primary"
+                type="button"
+                disabled={confirmationApplying}
+                autoFocus
+                onClick={() => void confirmPendingAction()}
+              >
+                {confirmationApplying ? "Applying changes…" : "Confirm"}
+              </button>
             </div>
           </section>
         </div>

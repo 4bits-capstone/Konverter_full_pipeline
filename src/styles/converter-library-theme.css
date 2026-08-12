@@ -2150,10 +2150,19 @@
   box-shadow: var(--shadow-lg);
 }
 
-.converter-app .structure-label-editor .structure-select-menu,
 .converter-app .queue-bulk-action-panel .structure-select-menu {
   position: static;
   margin-top: 6px;
+}
+
+/*
+ * The inline editor uses a conventional overlay menu. Keeping this menu
+ * absolutely positioned prevents the Structure label card (and everything
+ * below it) from growing when the dropdown opens.
+ */
+.converter-app .structure-label-editor .structure-select-menu {
+  top: calc(100% + 6px);
+  margin-top: 0;
 }
 
 .converter-app .structure-select-menu > button {
@@ -2272,7 +2281,12 @@
   }
 
   .converter-app .structure-label-editor .structure-select-menu {
-    position: fixed;
+    position: absolute;
+    top: calc(100% + 6px);
+    right: 0;
+    bottom: auto;
+    left: 0;
+    max-height: min(360px, 52vh);
     margin-top: 0;
   }
 }
