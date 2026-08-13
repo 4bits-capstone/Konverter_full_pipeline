@@ -88,6 +88,7 @@ interface KonverterContextValue {
   toastState: ToastState;
   showToast: (message: string) => void;
   resetWorkflow: () => void;
+  resetSession: () => void;
 }
 
 const KonverterContext = createContext<KonverterContextValue | null>(null);
@@ -613,6 +614,21 @@ export function KonverterProvider({ children }: PropsWithChildren) {
     setDoneStages(new Set());
   }, [documents, queryClient]);
 
+  // Local state only — unlike resetWorkflow, does not delete documents from
+  // the backend. Used when the session ends, so the next login starts clean
+  // without touching anyone else's in-progress work.
+  const resetSession = useCallback(() => {
+    void queryClient.invalidateQueries({ queryKey: ["review-items"] });
+    setDocuments([]);
+    setActiveDocumentId(null);
+    setDocumentProcessing({});
+    setWorkflowByDocument({});
+    setUploaded(false);
+    setMetadataState(emptyMetadata);
+    setUnlocked(initialUnlocked);
+    setDoneStages(new Set());
+  }, [queryClient]);
+
   const value = useMemo<KonverterContextValue>(
     () => ({
       documents,
@@ -657,6 +673,7 @@ export function KonverterProvider({ children }: PropsWithChildren) {
       toastState,
       showToast,
       resetWorkflow,
+      resetSession,
     }),
     [
       documents,
@@ -700,6 +717,7 @@ export function KonverterProvider({ children }: PropsWithChildren) {
       toastState,
       showToast,
       resetWorkflow,
+      resetSession,
     ],
   );
 

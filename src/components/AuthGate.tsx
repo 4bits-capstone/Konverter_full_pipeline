@@ -1,6 +1,8 @@
-import { useEffect, useState, type FormEvent, type ReactNode } from 'react'
+import { useEffect, useRef, useState, type FormEvent, type ReactNode } from 'react'
 import type { Session } from '@supabase/supabase-js'
+import { useNavigate } from 'react-router-dom'
 import { supabase } from '../lib/supabaseClient'
+import { useKonverter } from '../state/KonverterContext'
 import '../styles/converter.css'
 import '../styles/converter-library-theme.css'
 
@@ -79,17 +81,29 @@ function LoginForm() {
 export default function AuthGate({ children }: { children: ReactNode }) {
   const [session, setSession] = useState<Session | null>(null)
   const [loading, setLoading] = useState(true)
+  const navigate = useNavigate()
+  const { resetSession } = useKonverter()
+  const hadSessionRef = useRef(false)
 
   useEffect(() => {
     supabase.auth.getSession().then(({ data }) => {
+      hadSessionRef.current = Boolean(data.session)
       setSession(data.session)
       setLoading(false)
     })
     const { data: subscription } = supabase.auth.onAuthStateChange((_event, nextSession) => {
+      // Only clear state on a real sign-out/expiry (had a session, now don't) —
+      // not on the initial unauthenticated load, so a deep link isn't clobbered
+      // before the user has even logged in.
+      if (hadSessionRef.current && !nextSession) {
+        resetSession()
+        navigate('/upload', { replace: true })
+      }
+      hadSessionRef.current = Boolean(nextSession)
       setSession(nextSession)
     })
     return () => subscription.subscription.unsubscribe()
-  }, [])
+  }, [navigate, resetSession])
 
   if (loading) {
     return (
