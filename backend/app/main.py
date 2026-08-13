@@ -14,6 +14,7 @@ from fastapi import Depends, FastAPI, File, HTTPException, Request, Response, Up
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
 
+from . import audit
 from .auth import get_current_user
 from .config import load_settings
 from .logging_utils import configure_logging
@@ -137,6 +138,13 @@ def list_documents() -> list[DocumentSummary]:
     return [_summary(record) for record in store.list_records()]
 
 
+@app.get("/api/audit-log")
+async def audit_log(user: CurrentUser) -> list[dict[str, Any]]:
+    """Recent audit trail rows, newest first. Read-only; for verification and
+    the future admin panel."""
+    return await audit.list_recent()
+
+
 @app.post("/api/documents", response_model=list[DocumentSummary], status_code=201)
 async def upload_documents(
     files: Annotated[list[UploadFile], File(description="One or more PDF files")],
@@ -233,6 +241,14 @@ async def upload_documents(
             }
             store.create_document(document_id, temporary_path, record)
             uploaded.append(_summary(record))
+            await audit.record_document(document_id, safe_name, user.get("id"))
+            await audit.record_audit(
+                "upload",
+                document_id=document_id,
+                actor_id=user.get("id"),
+                actor_email=user.get("email"),
+                detail={"file_name": safe_name, "pages": pages},
+            )
         finally:
             await upload.close()
             temporary_path.unlink(missing_ok=True)
@@ -257,20 +273,34 @@ def processing_summary(document_id: str) -> ProcessingSummary:
 
 
 @app.delete("/api/documents/{document_id}", status_code=204)
-def delete_document(document_id: str, user: CurrentUser) -> Response:
+async def delete_document(document_id: str, user: CurrentUser) -> Response:
     record = _record(document_id)
     if record["job"]["state"] == "running":
         raise HTTPException(
             status_code=409, detail="Stop processing before removing this document"
         )
     store.delete_document(document_id)
+    await audit.record_audit(
+        "delete_document",
+        document_id=document_id,
+        actor_id=user.get("id"),
+        actor_email=user.get("email"),
+        detail={"file_name": record.get("file_name")},
+    )
     return Response(status_code=204)
 
 
 @app.post("/api/documents/{document_id}/process", response_model=DocumentProcessingJob)
-def start_processing(document_id: str, user: CurrentUser) -> DocumentProcessingJob:
+async def start_processing(document_id: str, user: CurrentUser) -> DocumentProcessingJob:
     _record(document_id)
-    return DocumentProcessingJob(**processing.start(document_id))
+    job = DocumentProcessingJob(**processing.start(document_id))
+    await audit.record_audit(
+        "process_start",
+        document_id=document_id,
+        actor_id=user.get("id"),
+        actor_email=user.get("email"),
+    )
+    return job
 
 
 @app.delete(
@@ -319,18 +349,22 @@ def get_review_items(document_id: str) -> list[ReviewItem]:
 @app.patch(
     "/api/documents/{document_id}/review-items/{item_id}", response_model=ReviewItem
 )
-def update_review_item(
+async def update_review_item(
     document_id: str, item_id: str, patch: ReviewPatch, user: CurrentUser
 ) -> ReviewItem:
     _require_complete(document_id)
+    changes = patch.model_dump(exclude_unset=True)
     try:
-        item = workflow.update_review_item(
-            document_id,
-            item_id,
-            patch.model_dump(exclude_unset=True),
-        )
+        item = workflow.update_review_item(document_id, item_id, changes)
     except KeyError as exc:
         raise HTTPException(status_code=404, detail="Review item not found") from exc
+    await audit.record_audit(
+        "edit_review_item",
+        document_id=document_id,
+        actor_id=user.get("id"),
+        actor_email=user.get("email"),
+        detail={"item_id": item_id, "changes": changes},
+    )
     return ReviewItem(**item)
 
 
@@ -338,20 +372,24 @@ def update_review_item(
     "/api/documents/{document_id}/review-items/bulk",
     response_model=list[ReviewItem],
 )
-def update_review_items_bulk(
+async def update_review_items_bulk(
     document_id: str,
     patch: ReviewBulkPatch,
     user: CurrentUser,
 ) -> list[ReviewItem]:
     _require_complete(document_id)
+    changes = patch.changes.model_dump(exclude_unset=True)
     try:
-        items = workflow.update_review_items(
-            document_id,
-            patch.item_ids,
-            patch.changes.model_dump(exclude_unset=True),
-        )
+        items = workflow.update_review_items(document_id, patch.item_ids, changes)
     except KeyError as exc:
         raise HTTPException(status_code=404, detail="Review item not found") from exc
+    await audit.record_audit(
+        "edit_review_item",
+        document_id=document_id,
+        actor_id=user.get("id"),
+        actor_email=user.get("email"),
+        detail={"item_ids": patch.item_ids, "changes": changes},
+    )
     return [ReviewItem(**item) for item in items]
 
 
@@ -359,9 +397,17 @@ def update_review_items_bulk(
     "/api/documents/{document_id}/review-items/resolve-all",
     response_model=list[ReviewItem],
 )
-def resolve_all(document_id: str, user: CurrentUser) -> list[ReviewItem]:
+async def resolve_all(document_id: str, user: CurrentUser) -> list[ReviewItem]:
     _require_complete(document_id)
-    return [ReviewItem(**item) for item in workflow.resolve_all(document_id)]
+    items = workflow.resolve_all(document_id)
+    await audit.record_audit(
+        "edit_review_item",
+        document_id=document_id,
+        actor_id=user.get("id"),
+        actor_email=user.get("email"),
+        detail={"resolve_all": True, "count": len(items)},
+    )
+    return [ReviewItem(**item) for item in items]
 
 
 @app.get("/api/documents/{document_id}/metadata", response_model=MetadataPayload)
@@ -374,27 +420,48 @@ def get_metadata(document_id: str) -> MetadataPayload:
 
 
 @app.put("/api/documents/{document_id}/metadata", response_model=DocumentMetadata)
-def save_metadata(
+async def save_metadata(
     document_id: str, metadata: DocumentMetadata, user: CurrentUser
 ) -> DocumentMetadata:
     _require_complete(document_id)
     saved = workflow.save_metadata(document_id, metadata.model_dump())
+    await audit.record_audit(
+        "edit_metadata",
+        document_id=document_id,
+        actor_id=user.get("id"),
+        actor_email=user.get("email"),
+        detail={"title": metadata.title},
+    )
     return DocumentMetadata(**saved)
 
 
 @app.post("/api/documents/{document_id}/approval", response_model=ApprovalResult)
-def approve_document(document_id: str, user: CurrentUser) -> ApprovalResult:
+async def approve_document(document_id: str, user: CurrentUser) -> ApprovalResult:
     _require_complete(document_id)
     try:
-        return ApprovalResult(approved_at=workflow.approve(document_id))
+        approved_at = workflow.approve(document_id)
     except ValueError as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from exc
+    await audit.record_audit(
+        "approve",
+        document_id=document_id,
+        actor_id=user.get("id"),
+        actor_email=user.get("email"),
+        detail={"approved_at": approved_at},
+    )
+    return ApprovalResult(approved_at=approved_at)
 
 
 @app.delete("/api/documents/{document_id}/approval", status_code=204)
-def revoke_approval(document_id: str, user: CurrentUser) -> Response:
+async def revoke_approval(document_id: str, user: CurrentUser) -> Response:
     _record(document_id)
     workflow.revoke(document_id)
+    await audit.record_audit(
+        "revoke_approval",
+        document_id=document_id,
+        actor_id=user.get("id"),
+        actor_email=user.get("email"),
+    )
     return Response(status_code=204)
 
 

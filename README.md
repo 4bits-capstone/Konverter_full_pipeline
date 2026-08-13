@@ -71,6 +71,7 @@ VITE_SUPABASE_URL=                # Supabase project URL
 VITE_SUPABASE_ANON_KEY=           # Supabase anon public key
 SUPABASE_URL=                     # same as VITE_SUPABASE_URL
 SUPABASE_ANON_KEY=                # same as VITE_SUPABASE_ANON_KEY
+SUPABASE_SERVICE_ROLE_KEY=        # backend only, never exposed to the frontend
 ```
 
 ## Verify
