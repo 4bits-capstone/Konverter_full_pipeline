@@ -64,6 +64,15 @@ KONVERTER_DESCRIPTION_MAX_CHARS=600
 KONVERTER_LOG_LEVEL=INFO          # DEBUG | INFO | WARNING | ERROR
 ```
 
+## Auth settings
+
+```dotenv
+VITE_SUPABASE_URL=                # Supabase project URL
+VITE_SUPABASE_ANON_KEY=           # Supabase anon public key
+SUPABASE_URL=                     # same as VITE_SUPABASE_URL
+SUPABASE_ANON_KEY=                # same as VITE_SUPABASE_ANON_KEY
+```
+
 ## Verify
 
 ```powershell

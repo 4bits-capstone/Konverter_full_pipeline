@@ -10,10 +10,11 @@ from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Annotated, Any
 
-from fastapi import FastAPI, File, HTTPException, Request, Response, UploadFile
+from fastapi import Depends, FastAPI, File, HTTPException, Request, Response, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
 
+from .auth import get_current_user
 from .config import load_settings
 from .logging_utils import configure_logging
 from .media import pdf_page_count, render_pdf_region
@@ -34,6 +35,8 @@ from .storage import DocumentNotFoundError, LocalDocumentStore
 
 MAX_PDF_BYTES = 200 * 1024 * 1024
 MAX_DOCUMENTS_PER_UPLOAD = 5
+
+CurrentUser = Annotated[dict, Depends(get_current_user)]
 
 settings = load_settings()
 configure_logging(settings.log_level)
@@ -137,6 +140,7 @@ def list_documents() -> list[DocumentSummary]:
 @app.post("/api/documents", response_model=list[DocumentSummary], status_code=201)
 async def upload_documents(
     files: Annotated[list[UploadFile], File(description="One or more PDF files")],
+    user: CurrentUser,
 ) -> list[DocumentSummary]:
     if not files:
         raise HTTPException(status_code=400, detail="Choose at least one PDF")
@@ -253,7 +257,7 @@ def processing_summary(document_id: str) -> ProcessingSummary:
 
 
 @app.delete("/api/documents/{document_id}", status_code=204)
-def delete_document(document_id: str) -> Response:
+def delete_document(document_id: str, user: CurrentUser) -> Response:
     record = _record(document_id)
     if record["job"]["state"] == "running":
         raise HTTPException(
@@ -264,7 +268,7 @@ def delete_document(document_id: str) -> Response:
 
 
 @app.post("/api/documents/{document_id}/process", response_model=DocumentProcessingJob)
-def start_processing(document_id: str) -> DocumentProcessingJob:
+def start_processing(document_id: str, user: CurrentUser) -> DocumentProcessingJob:
     _record(document_id)
     return DocumentProcessingJob(**processing.start(document_id))
 
@@ -272,7 +276,7 @@ def start_processing(document_id: str) -> DocumentProcessingJob:
 @app.delete(
     "/api/documents/{document_id}/process", response_model=DocumentProcessingJob
 )
-def stop_processing(document_id: str) -> DocumentProcessingJob:
+def stop_processing(document_id: str, user: CurrentUser) -> DocumentProcessingJob:
     _record(document_id)
     return DocumentProcessingJob(**processing.stop(document_id))
 
@@ -316,7 +320,7 @@ def get_review_items(document_id: str) -> list[ReviewItem]:
     "/api/documents/{document_id}/review-items/{item_id}", response_model=ReviewItem
 )
 def update_review_item(
-    document_id: str, item_id: str, patch: ReviewPatch
+    document_id: str, item_id: str, patch: ReviewPatch, user: CurrentUser
 ) -> ReviewItem:
     _require_complete(document_id)
     try:
@@ -337,6 +341,7 @@ def update_review_item(
 def update_review_items_bulk(
     document_id: str,
     patch: ReviewBulkPatch,
+    user: CurrentUser,
 ) -> list[ReviewItem]:
     _require_complete(document_id)
     try:
@@ -354,7 +359,7 @@ def update_review_items_bulk(
     "/api/documents/{document_id}/review-items/resolve-all",
     response_model=list[ReviewItem],
 )
-def resolve_all(document_id: str) -> list[ReviewItem]:
+def resolve_all(document_id: str, user: CurrentUser) -> list[ReviewItem]:
     _require_complete(document_id)
     return [ReviewItem(**item) for item in workflow.resolve_all(document_id)]
 
@@ -369,14 +374,16 @@ def get_metadata(document_id: str) -> MetadataPayload:
 
 
 @app.put("/api/documents/{document_id}/metadata", response_model=DocumentMetadata)
-def save_metadata(document_id: str, metadata: DocumentMetadata) -> DocumentMetadata:
+def save_metadata(
+    document_id: str, metadata: DocumentMetadata, user: CurrentUser
+) -> DocumentMetadata:
     _require_complete(document_id)
     saved = workflow.save_metadata(document_id, metadata.model_dump())
     return DocumentMetadata(**saved)
 
 
 @app.post("/api/documents/{document_id}/approval", response_model=ApprovalResult)
-def approve_document(document_id: str) -> ApprovalResult:
+def approve_document(document_id: str, user: CurrentUser) -> ApprovalResult:
     _require_complete(document_id)
     try:
         return ApprovalResult(approved_at=workflow.approve(document_id))
@@ -385,7 +392,7 @@ def approve_document(document_id: str) -> ApprovalResult:
 
 
 @app.delete("/api/documents/{document_id}/approval", status_code=204)
-def revoke_approval(document_id: str) -> Response:
+def revoke_approval(document_id: str, user: CurrentUser) -> Response:
     _record(document_id)
     workflow.revoke(document_id)
     return Response(status_code=204)

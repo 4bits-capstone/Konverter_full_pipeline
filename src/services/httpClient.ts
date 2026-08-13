@@ -1,4 +1,5 @@
 import { runtimeConfig } from "../config/runtime";
+import { supabase } from "../lib/supabaseClient";
 
 export class ApiError extends Error {
   constructor(
@@ -34,6 +35,10 @@ export async function apiRequest<T>(
     headers.set("Content-Type", "application/json");
   }
 
+  const { data } = await supabase.auth.getSession();
+  const token = data.session?.access_token;
+  if (token) headers.set("Authorization", `Bearer ${token}`);
+
   try {
     const { timeoutMs: _timeoutMs, ...fetchInit } = init;
     const response = await fetch(`${runtimeConfig.apiBaseUrl}${path}`, {
@@ -43,6 +48,14 @@ export async function apiRequest<T>(
     });
 
     if (!response.ok) {
+      if (response.status === 401) {
+        await supabase.auth.signOut();
+        throw new ApiError(
+          "Your session has expired. Please sign in again.",
+          response.status,
+        );
+      }
+
       const details = await response.json().catch(() => null);
       const message =
         typeof details?.detail === "string"

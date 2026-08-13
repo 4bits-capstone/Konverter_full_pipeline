@@ -1,4 +1,5 @@
 import { lazy, Suspense } from 'react'
+import AuthGate from './components/AuthGate'
 
 const ConverterApp = lazy(() => import('./ConverterApp'))
 
@@ -7,5 +8,9 @@ function LoadingPage() {
 }
 
 export default function App() {
-  return <Suspense fallback={<LoadingPage />}><ConverterApp /></Suspense>
+  return (
+    <AuthGate>
+      <Suspense fallback={<LoadingPage />}><ConverterApp /></Suspense>
+    </AuthGate>
+  )
 }

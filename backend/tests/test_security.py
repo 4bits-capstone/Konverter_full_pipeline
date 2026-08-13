@@ -6,6 +6,7 @@ protections cannot silently regress.
 
 from __future__ import annotations
 
+import app.main as app_main
 from test_api import confirm_metadata, load_client, make_pdf, upload_and_process
 
 
@@ -131,3 +132,16 @@ def test_exports_require_approval(tmp_path):
         for suffix in ("accessible.html", "schema.jsonld", "structured.json"):
             response = client.get(f"/api/documents/{document_id}/exports/{suffix}")
             assert response.status_code == 409, suffix
+
+
+def test_action_endpoints_reject_missing_token(tmp_path):
+    with load_client(tmp_path) as client:
+        # The fixture overrides auth for every other test; drop it here to
+        # exercise the real dependency.
+        client.app.dependency_overrides.pop(app_main.get_current_user, None)
+
+        response = client.post(
+            "/api/documents",
+            files={"files": ("report.pdf", make_pdf(), "application/pdf")},
+        )
+        assert response.status_code == 401

@@ -420,6 +420,10 @@
   overscroll-behavior: contain
 }
 
+.converter-app .docbar-signout {
+  margin-left: auto;
+}
+
 .converter-app .screen {
   display: none;
   animation: fade .25s ease
@@ -6502,5 +6506,86 @@
 @media (prefers-reduced-motion:reduce) {
   .converter-app .count-live {
     animation: none;
+  }
+}
+
+/* ============ LOGIN SCREEN ============ */
+.converter-app .login-screen {
+  min-height: 100dvh;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 30px;
+  padding: 48px 20px;
+  background:
+    linear-gradient(180deg, rgba(0, 64, 120, .08), rgba(158, 24, 53, .2)),
+    linear-gradient(180deg, #155d99 0%, #24578d 42%, #8d3155 76%, #bd2a38 100%);
+}
+
+.converter-app .login-brand {
+  display: inline-flex;
+  min-width: 0;
+  align-items: center;
+  gap: 18px;
+}
+
+.converter-app .login-brand img {
+  width: 100px;
+  height: auto;
+}
+
+.converter-app .login-panel {
+  width: 100%;
+  max-width: 380px;
+}
+
+.converter-app .login-panel .eyebrow {
+  color: var(--red-2);
+}
+
+.converter-app .login-title {
+  font-size: 21px;
+  margin: 10px 0 6px;
+}
+
+.converter-app .login-panel .lead {
+  font-size: 13.5px;
+}
+
+.converter-app .login-form {
+  display: grid;
+  gap: 16px;
+  margin-top: 20px;
+}
+
+.converter-app .login-field {
+  display: grid;
+  gap: 7px;
+}
+
+.converter-app .login-field-label {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--ink);
+}
+
+.converter-app .login-form .banner {
+  font-size: 13px;
+  padding: 10px 13px;
+}
+
+@media (max-width: 480px) {
+  .converter-app .login-brand {
+    flex-direction: column;
+    text-align: center;
+    gap: 10px;
+  }
+
+  .converter-app .login-brand .converter-product {
+    padding-left: 0;
+    border-left: 0;
+    align-items: center;
+    text-align: center;
   }
 }

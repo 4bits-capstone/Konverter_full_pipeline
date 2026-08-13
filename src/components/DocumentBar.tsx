@@ -1,5 +1,7 @@
+import { LogOut } from 'lucide-react'
 import { useLocation } from 'react-router-dom'
 import { converterStageFromPath } from '../lib/converterRoutes'
+import { supabase } from '../lib/supabaseClient'
 import { useKonverter } from '../state/KonverterContext'
 import type { Stage } from '../types/konverter'
 
@@ -52,6 +54,14 @@ export function DocumentBar() {
         </div>
       ) : null}
       <span className="stagechip">Stage {stageMeta[stage].n} · {stageMeta[stage].label}</span>
+      <button
+        type="button"
+        className="btn btn-ghost btn-sm docbar-signout"
+        onClick={() => supabase.auth.signOut()}
+      >
+        <LogOut />
+        Sign out
+      </button>
     </header>
   )
 }

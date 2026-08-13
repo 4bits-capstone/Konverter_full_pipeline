@@ -141,6 +141,10 @@ def load_client(tmp_path):
     module.processing.pipeline.process = process_for_test
     from fastapi.testclient import TestClient
 
+    module.app.dependency_overrides[module.get_current_user] = (
+        lambda: {"id": "test-user", "email": "test-user@example.test"}
+    )
+
     return TestClient(module.app)
 
 
