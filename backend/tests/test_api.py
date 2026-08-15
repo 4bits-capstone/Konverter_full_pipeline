@@ -293,9 +293,12 @@ def test_upload_review_correct_and_export(tmp_path):
 
         accessible = client.get(f"/api/documents/{document_id}/exports/accessible.html")
         assert accessible.status_code == 200
-        assert b"Published on June 18, 2026." in accessible.content
+        assert b"Published on </span>June 18, 2026</li>" in accessible.content
         assert b"data-open-section" in accessible.content
         assert b'<script type="application/ld+json">' in accessible.content
+        assert b'class="btn-red" href="/project/accessibility-standards-report/"' in accessible.content
+        assert b"<span>Go to Project</span>" in accessible.content
+        assert b"--vlrc-content-gutter:clamp(" in accessible.content
         schema_response = client.get(
             f"/api/documents/{document_id}/exports/schema.jsonld"
         )

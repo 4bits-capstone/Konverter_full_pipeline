@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from app.exporter import _render_block, build_publication
+from app.exporter import _render_block, build_accessible_html, build_publication
 
 
 def test_all_printed_contents_sections_are_kept_before_and_after_chapters():
@@ -316,3 +316,139 @@ def test_box_section_uses_semantic_ordered_and_unordered_lists():
     rendered = _render_block(box)
     assert '<ol class="source-list" start="7">' in rendered
     assert '<ul class="source-list">' in rendered
+
+
+def test_accessible_html_matches_vlrc_publication_markup_without_site_shell(tmp_path):
+    publication = build_publication(
+        [
+            {"id": "title", "label": "title", "text": "Example report", "order": 0},
+            {
+                "id": "chapter",
+                "label": "section_header_1",
+                "text": "1. Introduction",
+                "order": 1,
+            },
+            {
+                "id": "purpose",
+                "label": "section_header_2",
+                "text": "Purpose",
+                "order": 2,
+            },
+            {
+                "id": "body",
+                "label": "text",
+                "text": "This report explains the publication workflow.",
+                "order": 3,
+            },
+            {
+                "id": "glossary",
+                "label": "section_header_1",
+                "text": "Glossary",
+                "order": 4,
+            },
+            {
+                "id": "glossary-body",
+                "label": "text",
+                "text": "Defined terms used in this report.",
+                "order": 5,
+            },
+        ],
+        {"title": "Example report", "pages": 3, "file_name": "example.pdf"},
+    )
+
+    rendered = build_accessible_html(
+        "document-1",
+        publication,
+        {
+            "title": "Example report",
+            "published_date": "2026-06-18",
+            "jurisdiction": "Victoria, Australia",
+        },
+        {"@context": "https://schema.org", "@type": "Report"},
+        tmp_path / "cover.png",
+        tmp_path / "logo.png",
+    )
+
+    # The WordPress theme supplies the global masthead, footer and back-to-top control.
+    assert "vlrc-masthead" not in rendered
+    assert "source-footer" not in rendered
+    assert "back-to-top" not in rendered
+    assert "vlrc-report-card" not in rendered
+    assert '<main class="vlrc-publication-embed"' not in rendered
+    assert "<header" not in rendered
+    assert "<footer" not in rendered
+    assert '<script type="application/ld+json">' in rendered
+
+    # These classes mirror the existing VLRC publication and child-page templates.
+    assert 'class="publication"' in rendered
+    assert 'class="article-header"' in rendered
+    assert 'class="entry-title single-title"' in rendered
+    assert 'class="no-bullet post-byline"' in rendered
+    assert 'class="main-column-pub"' in rendered
+    assert 'class="main-content-pub-inner"' in rendered
+    assert 'class="konverter-page-menu"' in rendered
+    assert 'class="toc-h2"' in rendered
+    assert 'class="toc-h3"' in rendered
+    assert 'class="btns-pub btns-pub-desktop"' in rendered
+    assert 'class="btn-blue"' in rendered
+    assert 'class="btn-red" href="/project/example-report/"' in rendered
+    assert '<span>Go to Project</span>' in rendered
+    assert 'class="btn-icon-pub"' in rendered
+
+    # The embed follows the width supplied by the WordPress template instead of
+    # imposing its own fixed desktop maximum.
+    assert "--vlrc-content-gutter:clamp(" in rendered
+    assert ".vlrc-site-publication{width:100%;max-width:none" in rendered
+    assert ".main-column-pub{display:flex;width:100%" in rendered
+    assert ".main-content-pub-inner{min-width:0;flex:1 1 0;max-width:none" in rendered
+
+    # The landing page mirrors the current VLRC bordered, collapsible contents rows.
+    assert 'class="publication-contents-heading"' in rendered
+    assert '<details class="publication-contents-item toc-h2">' in rendered
+    assert '<summary><span>1. Introduction</span>' in rendered
+    assert 'class="publication-contents-chevron"' in rendered
+    assert 'class="publication-contents-submenu"' in rendered
+    assert ">Read full section</a>" in rendered
+    assert 'class="publication-contents-item publication-contents-direct toc-h2"' in rendered
+    assert "vlrc-accordion" not in rendered
+    assert 'data-open-section="1-introduction"' in rendered
+    assert 'href="/api/documents/document-1/source"' in rendered
+    assert "Published on </span>June 18, 2026</li>" in rendered
+
+
+def test_project_button_accepts_a_safe_explicit_url_and_rejects_unsafe_urls(tmp_path):
+    publication = build_publication(
+        [
+            {"id": "title", "label": "title", "text": "Named project: Consultation Paper", "order": 0},
+            {"id": "chapter", "label": "section_header_1", "text": "1. Introduction", "order": 1},
+        ],
+        {"title": "Named project: Consultation Paper", "pages": 1, "file_name": "paper.pdf"},
+    )
+    arguments = (
+        "document-2",
+        publication,
+        {"@context": "https://schema.org", "@type": "Report"},
+        tmp_path / "cover.png",
+        tmp_path / "logo.png",
+    )
+
+    configured = build_accessible_html(
+        arguments[0],
+        arguments[1],
+        {"title": "Named project: Consultation Paper", "project_url": "https://example.test/project/custom/"},
+        arguments[2],
+        arguments[3],
+        arguments[4],
+    )
+    unsafe = build_accessible_html(
+        arguments[0],
+        arguments[1],
+        {"title": "Named project: Consultation Paper", "project_url": "javascript:alert(1)"},
+        arguments[2],
+        arguments[3],
+        arguments[4],
+    )
+
+    assert 'class="btn-red" href="https://example.test/project/custom/"' in configured
+    assert 'class="btn-red" href="/project/named-project/"' in unsafe
+    assert "javascript:alert" not in unsafe

@@ -16,6 +16,23 @@ def _slug(value: str) -> str:
     return result or "section"
 
 
+def _project_slug(value: str) -> str:
+    """Derive the parent project slug from a publication title.
+
+    VLRC publication titles commonly append the publication type after a colon,
+    for example ``Project name: Consultation Paper``.  The project page keeps
+    only the title before that suffix.
+    """
+    project_title = re.split(r"\s*:\s*", value.strip(), maxsplit=1)[0]
+    project_title = re.sub(
+        r"\s+[\-\u2013\u2014]\s+(?:consultation paper|issues paper|final report|report)$",
+        "",
+        project_title,
+        flags=re.IGNORECASE,
+    )
+    return _slug(project_title)
+
+
 def _unique_slug(value: str, counts: Counter[str]) -> str:
     base = _slug(value)
     counts[base] += 1
@@ -1403,67 +1420,105 @@ def build_accessible_html(
         footnotes = section.get("footnotes", [])
         if not footnotes:
             return ""
+        section_id = html.escape(str(section["id"]))
         return (
-            f'<details class="reader-footnotes"><summary>References and footnotes ({len(footnotes)})</summary><ol>'
+            f'<section class="reader-footnotes" aria-labelledby="footnotes-{section_id}">'
+            f'<h2 id="footnotes-{section_id}">References and footnotes</h2><ol>'
             + "".join(
                 f'<li id="{html.escape(str(note["id"]))}">{html.escape(str(note["text"]))}</li>'
                 for note in footnotes
             )
-            + "</ol></details>"
+            + "</ol></section>"
         )
 
-    def render_landing_section(section: dict[str, Any], index: int) -> str:
-        section_id = html.escape(str(section["id"]))
-        title = html.escape(str(section["displayTitle"]))
-        is_chapter = bool(
-            section.get(
-                "isChapter",
-                _is_chapter_title(str(section.get("displayTitle", ""))),
+    def render_contents_list(
+        list_class: str,
+        current_section_id: str | None = None,
+    ) -> str:
+        items: list[str] = []
+        for section in sections:
+            section_id = html.escape(str(section["id"]))
+            section_title = html.escape(str(section["displayTitle"]))
+            is_current = str(section["id"]) == current_section_id
+            current_class = " is-active" if is_current else ""
+            current_attribute = ' aria-current="page"' if is_current else ""
+            major_headings = [
+                heading
+                for heading in section.get("headings", [])
+                if int(heading.get("level", 2)) == 2
+            ]
+            major_headings.sort(
+                key=lambda heading: (
+                    int(heading["tocSequence"])
+                    if isinstance(heading.get("tocSequence"), int)
+                    else 1_000_000,
+                    int(heading.get("page", 0)),
+                )
             )
-        )
-        if not is_chapter:
-            return (
-                f'<div class="vlrc-direct-item"><a href="#reader-{section_id}" '
-                f'data-open-section="{section_id}"><span>{title}</span>'
-                '<span aria-hidden="true">›</span></a></div>'
-            )
-        major_headings = [
-            heading
-            for heading in section.get("headings", [])
-            if int(heading.get("level", 2)) == 2
-        ]
-        major_headings.sort(
-            key=lambda heading: (
-                int(heading["tocSequence"])
-                if isinstance(heading.get("tocSequence"), int)
-                else 1_000_000,
-                int(heading.get("page", 0)),
-            )
-        )
-        links = (
-            f'<li class="read-full"><a href="#reader-{section_id}" data-open-section="{section_id}">'
-            "Read full section</a></li>"
-            + "".join(
-                f'<li><a href="#reader-{section_id}" data-open-section="{section_id}" '
-                f'data-heading="{html.escape(str(heading["id"]))}">{html.escape(str(heading["text"]))}</a></li>'
+            child_items = "".join(
+                f'<li class="toc-h3"><a href="#reader-{section_id}" '
+                f'data-open-section="{section_id}" '
+                f'data-heading="{html.escape(str(heading["id"]))}">'
+                f'{html.escape(str(heading["text"]))}</a></li>'
                 for heading in major_headings
             )
-        )
-        open_attribute = " open" if index == 0 else ""
-        return (
-            f'<details class="vlrc-accordion-item"{open_attribute}>'
-            f'<summary><span>{title}</span><span aria-hidden="true">⌄</span></summary>'
-            f"<ul>{links}</ul></details>"
-        )
+            child_list = f"<ul>{child_items}</ul>" if child_items else ""
+            items.append(
+                f'<li class="toc-h2{current_class}"><a href="#reader-{section_id}" '
+                f'data-open-section="{section_id}"{current_attribute}>'
+                f"{section_title}</a>{child_list}</li>"
+            )
+        return f'<ul class="{html.escape(list_class)}">{"".join(items)}</ul>'
+
+    def render_landing_contents() -> str:
+        items: list[str] = []
+        for section in sections:
+            section_id = html.escape(str(section["id"]))
+            section_title = html.escape(str(section["displayTitle"]))
+            major_headings = [
+                heading
+                for heading in section.get("headings", [])
+                if int(heading.get("level", 2)) == 2
+            ]
+            major_headings.sort(
+                key=lambda heading: (
+                    int(heading["tocSequence"])
+                    if isinstance(heading.get("tocSequence"), int)
+                    else 1_000_000,
+                    int(heading.get("page", 0)),
+                )
+            )
+            if not major_headings:
+                items.append(
+                    '<div class="publication-contents-item publication-contents-direct toc-h2">'
+                    f'<a href="#reader-{section_id}" data-open-section="{section_id}">'
+                    f"<span>{section_title}</span></a></div>"
+                )
+                continue
+
+            child_items = (
+                f'<li class="read-full"><a href="#reader-{section_id}" '
+                f'data-open-section="{section_id}">Read full section</a></li>'
+                + "".join(
+                    f'<li class="toc-h3"><a href="#reader-{section_id}" '
+                    f'data-open-section="{section_id}" '
+                    f'data-heading="{html.escape(str(heading["id"]))}">'
+                    f'{html.escape(str(heading["text"]))}</a></li>'
+                    for heading in major_headings
+                )
+            )
+            items.append(
+                '<details class="publication-contents-item toc-h2">'
+                f'<summary><span>{section_title}</span>'
+                '<span class="publication-contents-chevron" aria-hidden="true"></span>'
+                '</summary>'
+                f'<div class="publication-contents-submenu"><ul>{child_items}</ul></div>'
+                '</details>'
+            )
+        return f'<div class="konverter-page-menu">{"".join(items)}</div>'
 
     def render_reader(section: dict[str, Any], index: int) -> str:
         section_id = html.escape(str(section["id"]))
-        heading_links = "".join(
-            f'<li class="heading-level-{int(heading.get("level", 2))}">'
-            f'<a href="#{html.escape(str(heading["id"]))}" data-reader-heading="{html.escape(str(heading["id"]))}">'
-            f"{html.escape(str(heading['text']))}</a></li>"
-            for heading in section.get("headings", [])
-        )
         previous_link = (
             f'<a href="#reader-{html.escape(str(sections[index - 1]["id"]))}" '
             f'data-open-section="{html.escape(str(sections[index - 1]["id"]))}"><span>Previous</span>'
@@ -1479,33 +1534,48 @@ def build_accessible_html(
             else '<span class="pagination-disabled"><span>Next</span>End of document</span>'
         )
         return (
-            f'<section class="vlrc-reader" id="reader-{section_id}" data-reader="{section_id}" tabindex="-1">'
-            '<nav class="vlrc-reader-breadcrumb" aria-label="Breadcrumb">'
-            f'<a href="#publication-landing" data-close-reader>← {title}</a>'
-            f'<span aria-hidden="true">›</span><span aria-current="page">{html.escape(str(section["displayTitle"]))}</span></nav>'
-            '<div class="vlrc-reader-layout">'
-            '<nav class="vlrc-reader-nav" aria-label="In this section"><h2>In this section</h2>'
-            f"<ul>{heading_links}</ul></nav>"
-            '<div class="vlrc-reader-content">'
-            f'<div class="chapter-label">{title}</div>'
-            f'<h1 tabindex="-1">{html.escape(str(section["displayTitle"]))}</h1>'
-            f'<div class="docling-content-blocks">{"".join(_render_block(block, figure_directory) for block in section.get("blocks", []))}</div>'
-            f"{render_footnotes(section)}"
-            f'<nav class="reader-pagination" aria-label="Document section pagination">{previous_link}{next_link}</nav>'
-            "</div></div></section>"
+            f'<section class="vlrc-reader body-content has-sidebar-left" id="reader-{section_id}" '
+            f'data-reader="{section_id}" tabindex="-1" aria-labelledby="reader-title-{section_id}">'
+            '<div class="inner-body-content">'
+            '<aside class="sidebar primary-sidebar" aria-label="Publication contents">'
+            '<div class="sidebar-widget-element sidebar-menu-widget publication-page-menu">'
+            '<div class="sidebar-title"><h2 class="h2-title-toc">Contents</h2></div>'
+            f'<nav class="sidebar-body" aria-label="Publication chapters">'
+            f'{render_contents_list("menu", str(section["id"]))}</nav></div></aside>'
+            '<div class="main-content"><article class="publication" role="article">'
+            '<div class="article-header">'
+            f'<a class="publication-parent-link" href="#publication-landing" data-close-reader>{title}</a>'
+            f'<h1 class="entry-title single-title" id="reader-title-{section_id}" tabindex="-1">'
+            f'{html.escape(str(section["displayTitle"]))}</h1></div>'
+            '<section class="entry-content" aria-label="Section content">'
+            f'<div class="docling-content-blocks">'
+            f'{"".join(_render_block(block, figure_directory) for block in section.get("blocks", []))}'
+            f'</div>{render_footnotes(section)}</section>'
+            f'<nav class="reader-pagination" aria-label="Document section pagination">'
+            f'{previous_link}{next_link}</nav>'
+            "</article></div></div></section>"
         )
 
-    title = html.escape(
-        str(
-            metadata.get("title")
-            or publication.get("sourceName")
-            or "Accessible document"
-        )
+    raw_title = str(
+        metadata.get("title")
+        or publication.get("sourceName")
+        or "Accessible document"
     )
-    jurisdiction = html.escape(str(metadata.get("jurisdiction", "")))
+    title = html.escape(raw_title)
     published_date = html.escape(
         _format_published_date(metadata.get("published_date", ""))
     )
+    configured_project_url = str(
+        metadata.get("project_url") or metadata.get("projectUrl") or ""
+    ).strip()
+    if (
+        configured_project_url.startswith("/")
+        and not configured_project_url.startswith("//")
+    ) or re.match(r"^https?://", configured_project_url, re.IGNORECASE):
+        project_url = configured_project_url
+    else:
+        project_url = f"/project/{_project_slug(raw_title)}/"
+    project_url = html.escape(project_url, quote=True)
     safe_json_ld = (
         json.dumps(json_ld, ensure_ascii=False)
         .replace("&", "\\u0026")
@@ -1514,30 +1584,21 @@ def build_accessible_html(
         .replace("\u2028", "\\u2028")
         .replace("\u2029", "\\u2029")
     )
-    logo_uri = _data_uri(logo_path)
     cover_uri = _data_uri(cover_path)
     summaries = publication.get("summary", [])
     summary_html = "".join(
         f'<p class="vlrc-summary publication-summary">{html.escape(str(value))}</p>'
         for value in summaries
     )
-    logo_html = (
-        f'<img src="{logo_uri}" alt="Victorian Law Reform Commission logo">'
-        if logo_uri
-        else "<strong>Victorian Law Reform Commission</strong>"
-    )
     cover_html = (
-        f'<img class="vlrc-cover publication-cover" src="{cover_uri}" alt="Cover of {title}">'
+        f'<img class="image-link-pub publication-cover" src="{cover_uri}" alt="Cover of {title}">'
         if cover_uri
         else ""
     )
-    landing_sections = "".join(
-        render_landing_section(section, index) for index, section in enumerate(sections)
-    )
+    landing_sections = render_landing_contents()
     reader_sections = "".join(
         render_reader(section, index) for index, section in enumerate(sections)
     )
-    pages = int(publication.get("stats", {}).get("pages", 0))
 
     return f"""<!doctype html>
 <html lang="en-AU">
@@ -1547,165 +1608,171 @@ def build_accessible_html(
 <title>{title}</title>
 <script type="application/ld+json">{safe_json_ld}</script>
 <style>
-:root{{font-family:"IBM Plex Sans","Segoe UI",system-ui,sans-serif;color:#151a23;background:#fff;line-height:1.65}}
-*{{box-sizing:border-box}}
-html{{scroll-behavior:smooth}}
-body{{margin:0}}
-a{{color:#165487}}
-.skip-link{{position:absolute;left:1rem;top:-5rem;z-index:10;padding:.75rem 1rem;background:#fff;color:#165487;font-weight:700}}
-.skip-link:focus{{top:1rem}}
-a:focus-visible,button:focus-visible,summary:focus-visible,[tabindex="0"]:focus-visible{{outline:3px solid #165487;outline-offset:2px;border-radius:2px}}
-.vlrc-masthead a:focus-visible,.vlrc-accordion-item[open]>summary:focus-visible{{outline-color:#fff}}
-.back-to-top{{position:fixed;right:22px;bottom:22px;z-index:60;display:none;align-items:center;gap:8px;min-height:44px;min-width:44px;padding:10px 16px;border:0;border-radius:999px;background:#165487;color:#fff;font:700 13px/1 "IBM Plex Sans","Segoe UI",system-ui,sans-serif;cursor:pointer;box-shadow:0 8px 22px rgba(22,35,61,.28)}}
-.back-to-top.is-visible{{display:inline-flex}}
-.back-to-top:hover{{background:#12466f}}
-.vlrc-preview{{width:100%;min-height:100vh;margin:0;background:#fff}}
-.vlrc-masthead{{min-height:96px;padding:18px 28px;background:linear-gradient(115deg,#155a91 0%,#234a8f 45%,#7a2b2b 100%);color:#fff;display:flex;align-items:center;justify-content:space-between;gap:20px}}
-.vlrc-masthead img{{display:block;width:150px;height:auto}}
-.vlrc-masthead-label{{border-left:1px solid rgba(255,255,255,.4);padding-left:18px;font-size:11px;font-weight:600;letter-spacing:.14em;text-transform:uppercase}}
-.vlrc-preview-body{{width:min(100%,74rem);margin:0 auto;padding:22px 28px 42px}}
-.vlrc-publication-layout{{display:grid;grid-template-columns:minmax(0,1fr) 210px;align-items:start;gap:34px;padding-top:30px}}
-.jurisdiction{{font-size:11px;font-weight:700;letter-spacing:.13em;text-transform:uppercase;color:#7a2b2b}}
-h1{{font-size:clamp(28px,4vw,42px);line-height:1.08;letter-spacing:-.035em;margin:10px 0 20px;max-width:22ch}}
-.published-date{{margin:0 0 20px;color:#6d7482;font-size:12.5px}}
-.publication-summary{{max-width:74ch;margin:0 0 12px;color:#2c3442;font-size:14px;line-height:1.7}}
-.vlrc-contents{{margin-top:34px}}
-.vlrc-accordion-item{{border-bottom:1px solid #9ea3ab}}
-.vlrc-accordion-item>summary{{cursor:pointer;list-style:none;display:flex;align-items:center;justify-content:space-between;gap:16px;min-height:48px;padding:12px 14px;background:#fff;font-size:13px;font-weight:700}}
-summary::-webkit-details-marker{{display:none}}
-.vlrc-accordion-item>summary:hover,.vlrc-accordion-item>summary:focus-visible{{background:#f4f7fa;color:#12466f}}
-.vlrc-accordion-item[open]>summary{{background:#165487;color:#fff}}
-.vlrc-accordion-item[open]>summary>span:last-child{{transform:rotate(180deg)}}
-.vlrc-accordion-item ul{{margin:0;padding:0;list-style:none;background:#f7f8f9}}
-.vlrc-accordion-item li{{border-bottom:1px solid #e0e3e7}}
-.vlrc-accordion-item li:last-child{{border-bottom:0}}
-.vlrc-accordion-item a{{display:block;padding:10px 16px 10px 28px;font-size:12.5px;text-decoration:none}}
-.vlrc-accordion-item a:hover,.vlrc-accordion-item a:focus-visible{{background:#eaf1f7;text-decoration:underline}}
-.vlrc-accordion-item .read-full a{{padding-left:16px;font-weight:700}}
-.vlrc-direct-item{{border-bottom:1px solid #9ea3ab}}
-.vlrc-direct-item>a{{min-height:48px;padding:12px 14px;background:#fff;color:#20242a;display:flex;align-items:center;justify-content:space-between;gap:16px;font-size:13px;font-weight:700;text-decoration:none}}
-.vlrc-direct-item>a:hover,.vlrc-direct-item>a:focus-visible{{background:#f4f7fa;color:#12466f;text-decoration:underline}}
-.vlrc-direct-item>a>span:last-child{{color:#165487;font-size:20px;line-height:1}}
-.vlrc-publication-aside{{position:sticky;top:24px;display:flex;flex-direction:column;gap:12px}}
-.publication-cover{{display:block;width:100%;height:auto;border:1px solid #d3d5d8;box-shadow:0 8px 22px rgba(22,35,61,.14)}}
-.vlrc-download{{min-height:46px;padding:11px 14px;background:#165487;color:#fff;display:flex;align-items:center;justify-content:center;font-size:13px;font-weight:700;text-decoration:none}}
-.vlrc-report-card{{padding:13px 14px;background:#7a2b2b;color:#fff;display:flex;flex-direction:column}}
-.vlrc-report-card span{{color:#f0dede;font-size:11px}}
-.vlrc-reader{{display:none;min-height:620px;width:min(100%,90rem);margin:0 auto}}
-.vlrc-reader:target,.vlrc-reader.is-active{{display:block}}
-.vlrc-reader-breadcrumb{{display:flex;align-items:center;gap:9px;padding:14px 26px;border-bottom:1px solid #d8dce1;color:#6d7482;font-size:12px}}
-.vlrc-reader-breadcrumb a{{font-weight:700;text-decoration:none}}
-.vlrc-reader-layout{{display:grid;grid-template-columns:220px minmax(0,1fr);align-items:start}}
-.vlrc-reader-nav{{position:sticky;top:0;max-height:100vh;overflow:auto;padding:24px 18px;border-right:1px solid #d8dce1;background:#f7f8f9}}
-.vlrc-reader-nav h2{{margin:0 0 12px;font-size:14px}}
-.vlrc-reader-nav ul{{margin:0;padding:0;list-style:none}}
-.vlrc-reader-nav li+li{{margin-top:2px}}
-.vlrc-reader-nav a{{display:block;padding:7px 8px;border-left:3px solid transparent;color:#46505d;font-size:12px;line-height:1.35;text-decoration:none}}
-.vlrc-reader-nav a:hover,.vlrc-reader-nav a:focus-visible,.vlrc-reader-nav a[aria-current="location"]{{border-left-color:#165487;background:#e7eef5;color:#12466f}}
-.vlrc-reader-nav .heading-level-3 a{{padding-left:18px;font-size:11.5px;font-weight:600}}
-.vlrc-reader-nav .heading-level-4 a{{padding-left:28px;font-size:11px}}
-.vlrc-reader-nav .heading-level-5 a,.vlrc-reader-nav .heading-level-6 a{{padding-left:38px;color:#5d6672;font-size:10.5px}}
-.vlrc-reader-content{{min-width:0;padding:34px 40px 46px}}
-.chapter-label{{color:#7a2b2b;font-size:10.5px;font-weight:700;letter-spacing:.09em;text-transform:uppercase}}
-.vlrc-reader-content>h1{{max-width:none;margin-bottom:32px}}
-.docling-content-blocks p{{color:#303744;font-size:14px;line-height:1.72}}
-.docling-content-blocks h2{{margin:38px 0 14px;font-size:24px;line-height:1.2}}
-.docling-content-blocks h3{{margin:32px 0 12px;padding-bottom:6px;border-bottom:1px solid #d8e1ea;color:#12466f;font-size:20px;line-height:1.28}}
-.docling-content-blocks h4{{margin:26px 0 10px;padding-left:10px;border-left:3px solid #8aa2b8;color:#20242a;font-size:16px;line-height:1.35}}
-.docling-content-blocks h5,.docling-content-blocks h6{{margin:21px 0 8px;color:#4d5865;font-size:14px;line-height:1.4;letter-spacing:.012em}}
-.document-box-section{{margin:28px 0;border:1px solid #c7c9cc;background:#efedef;color:#20242a}}
-.document-box-section>h3{{margin:0;padding:11px 18px;background:#c8c8c8;color:#111;font-size:17px;line-height:1.3}}
-.document-box-section-content{{padding:18px 22px 8px}}
-.document-box-section-content>p:first-child{{margin-top:0}}
-.document-box-section--case-study>h3{{background:transparent;color:#666;font-style:italic;font-weight:600}}
-.document-box-section--recommendations{{border-color:#111;background:#efefef}}
-.document-box-section--recommendations>h3{{background:#050505;color:#fff;text-transform:uppercase;letter-spacing:.03em}}
-.document-box-section--recommendations ol{{padding-left:2.25rem}}
-.document-box-section--recommendations li{{padding-left:.35rem;margin-bottom:1rem}}
-.source-list{{margin:8px 0 17px 52px;padding-left:20px;color:#303744;font-size:14px;line-height:1.65}}
-ul.source-list{{list-style:disc outside}}
-ol.source-list{{list-style:decimal outside}}
-.source-list .source-list{{margin:6px 0 4px}}
-.document-box-section-content .source-list{{margin-left:0;padding-left:1.5rem}}
-.document-footnote{{font-size:.92em;border-left:3px solid #8c929a;padding-left:12px;color:#505965}}
-.numbered-paragraph{{display:grid;grid-template-columns:minmax(3.5rem,max-content) minmax(0,1fr);gap:.625rem;margin:0 0 1rem}}
-.numbered-paragraph>span{{font:700 11.5px/1.9 monospace;color:#7a2b2b}}
-.numbered-paragraph p{{margin:0}}
-.table-scroll{{max-width:100%;overflow-x:auto;margin:1.5rem 0;border:1px solid #ccd1d8}}
-table{{border-collapse:collapse;width:100%;font-size:.78rem}}
-caption{{text-align:left;font-weight:700;padding:.75rem;background:#e8eef4}}
-th,td{{min-width:90px;border:1px solid #b9c0c9;padding:.55rem;text-align:left;vertical-align:top}}
-th{{background:#f2f5f8}}
-.document-figure-image{{display:block;max-width:100%;width:auto;height:auto;margin:0 auto;border:1px solid #d8dce1}}
-.figure-unavailable{{min-height:10rem;display:grid;place-items:center;border:.15rem dashed #87919f;background:#f4f6f8;color:#5b6573}}
-.caption,figcaption{{font-size:.85rem;color:#596270}}
-.document-formula{{margin:1.25rem 0;padding:1rem;border:1px solid #ccd1d8;background:#f7f8f9;font-family:"IBM Plex Mono",monospace;white-space:pre-wrap;overflow-wrap:anywhere}}
-.reader-footnotes{{margin-top:34px;border-top:1px solid #c9cdd4;padding-top:16px}}
-.reader-footnotes summary{{cursor:pointer;font-weight:700}}
-.reader-footnotes ol{{padding-left:28px}}
-.reader-pagination{{display:grid;grid-template-columns:1fr 1fr;gap:12px;margin-top:46px;padding-top:20px;border-top:1px solid #d8dce1}}
-.reader-pagination>a,.pagination-disabled{{display:flex;flex-direction:column;padding:12px;border:1px solid #d8dce1;color:#1d2733;font-size:12px;text-decoration:none}}
-.reader-pagination>a:last-child,.pagination-disabled:last-child{{text-align:right}}
-.reader-pagination span{{color:#6d7482;font-size:10px;text-transform:uppercase}}
-.pagination-disabled{{opacity:.55}}
-.source-footer{{width:100%;margin:0;padding:1.5rem max(28px,calc((100% - 74rem)/2 + 28px));border-top:1px solid #c9cdd4;background:#fff;color:#596270;font-size:.8rem}}
-.sr-only{{position:absolute;width:1px;height:1px;padding:0;margin:-1px;overflow:hidden;clip:rect(0,0,0,0);white-space:nowrap;border:0}}
-body.reader-open #publication-landing{{display:none}}
-@media(max-width:52rem){{.vlrc-publication-layout{{grid-template-columns:1fr}}.vlrc-publication-aside{{position:static;display:grid;grid-template-columns:minmax(150px,210px) 1fr;align-items:start}}.vlrc-reader-layout{{grid-template-columns:1fr}}.vlrc-reader-nav{{position:static;max-height:none;border-right:0;border-bottom:1px solid #d8dce1}}}}
-@media(max-width:36rem){{.vlrc-preview{{width:100%;margin:0;box-shadow:none}}.vlrc-masthead{{min-height:80px;padding:15px 18px}}.vlrc-preview-body{{padding-left:18px;padding-right:18px}}.vlrc-publication-aside{{display:flex}}.publication-cover{{width:min(100%,280px);align-self:center}}.vlrc-reader-content{{padding:26px 18px 36px}}.numbered-paragraph{{grid-template-columns:minmax(3rem,max-content) minmax(0,1fr)}}}}
-@media(prefers-reduced-motion:reduce){{html{{scroll-behavior:auto}}}}
-@media print{{.back-to-top{{display:none!important}}body{{background:#fff}}.vlrc-preview{{width:100%;margin:0;box-shadow:none}}#publication-landing{{display:block!important}}.vlrc-reader{{display:block!important;break-before:page}}.vlrc-publication-aside,.vlrc-reader-nav,.reader-pagination{{display:none}}.table-scroll{{overflow:visible}}}}
+.vlrc-publication-embed,.vlrc-publication-embed *{{box-sizing:border-box}}
+.vlrc-publication-embed{{--vlrc-content-gutter:clamp(1rem,2.75vw,3.5rem);width:100%;max-width:none;color:#262626;background:#fff;font-family:Raleway,"Segoe UI",Arial,sans-serif;font-size:16px;line-height:1.65}}
+.vlrc-publication-embed a{{color:#064d82;overflow-wrap:anywhere}}
+.vlrc-publication-embed a:focus-visible,.vlrc-publication-embed summary:focus-visible,.vlrc-publication-embed [tabindex="-1"]:focus-visible{{outline:3px solid #064d82;outline-offset:3px}}
+.vlrc-publication-embed .skip-link{{position:absolute;left:1rem;top:-6rem;z-index:10;padding:.75rem 1rem;background:#fff;color:#064d82;font-weight:700}}
+.vlrc-publication-embed .skip-link:focus{{top:1rem}}
+.vlrc-publication-embed .vlrc-site-publication{{width:100%;max-width:none;margin:0;padding:2rem var(--vlrc-content-gutter) 3rem}}
+.vlrc-publication-embed .article-header{{margin-bottom:1.75rem}}
+.vlrc-publication-embed .entry-title{{margin:0 0 1rem;color:#111;font-size:clamp(2rem,4vw,3.15rem);font-weight:700;line-height:1.14}}
+.vlrc-publication-embed .no-bullet{{margin:0;padding:0;list-style:none}}
+.vlrc-publication-embed .published-date{{color:#4d4d4d;font-size:.94rem}}
+.vlrc-publication-embed .published-date span{{font-weight:700}}
+.vlrc-publication-embed .main-column-pub{{display:flex;width:100%;align-items:flex-start;justify-content:space-between;gap:clamp(2rem,4vw,5rem);margin:0;flex-wrap:wrap}}
+.vlrc-publication-embed .main-content-pub-inner{{min-width:0;flex:1 1 0;max-width:none}}
+.vlrc-publication-embed .publication-summary{{max-width:74ch;margin:0 0 1rem}}
+.vlrc-publication-embed .publication-contents-heading{{margin:2.5rem 0 1rem;color:#064d82;font-size:1.65rem;line-height:1.25}}
+.vlrc-publication-embed .konverter-page-menu{{margin:0;padding:0;border-top:1px solid #9b9b9b}}
+.vlrc-publication-embed .publication-contents-item{{margin:0;border:0;border-bottom:1px solid #9b9b9b;background:#fff}}
+.vlrc-publication-embed .publication-contents-item>summary,.vlrc-publication-embed .publication-contents-direct>a{{display:flex;min-height:3.15rem;align-items:center;justify-content:space-between;gap:1.25rem;padding:.72rem .8rem;color:#1d1d1d;font-weight:700;line-height:1.35;text-decoration:none}}
+.vlrc-publication-embed .publication-contents-item>summary{{cursor:pointer;list-style:none}}
+.vlrc-publication-embed .publication-contents-item>summary::-webkit-details-marker{{display:none}}
+.vlrc-publication-embed .publication-contents-item>summary:hover,.vlrc-publication-embed .publication-contents-direct>a:hover{{background:#f4f7f9;color:#064d82}}
+.vlrc-publication-embed .publication-contents-chevron{{width:.55rem;height:.55rem;flex:0 0 .55rem;margin-right:.25rem;border-right:2px solid #1770a6;border-bottom:2px solid #1770a6;transform:rotate(45deg) translateY(-2px);transform-origin:center;transition:transform .16s ease}}
+.vlrc-publication-embed .publication-contents-item[open] .publication-contents-chevron{{transform:rotate(225deg) translate(-1px,-1px)}}
+.vlrc-publication-embed .publication-contents-submenu{{border-top:1px solid #e1e1e1;background:#f8fafb}}
+.vlrc-publication-embed .publication-contents-submenu ul{{margin:0;padding:0;list-style:none}}
+.vlrc-publication-embed .publication-contents-submenu li+li{{border-top:1px solid #e5e5e5}}
+.vlrc-publication-embed .publication-contents-submenu a{{display:block;padding:.64rem 1rem .64rem 2rem;color:#333;font-size:.92rem;text-decoration:none}}
+.vlrc-publication-embed .publication-contents-submenu .read-full a{{padding-left:1rem;color:#064d82;font-weight:700}}
+.vlrc-publication-embed .publication-contents-submenu a:hover,.vlrc-publication-embed .publication-contents-submenu a:focus-visible{{background:#edf3f7;color:#064d82;text-decoration:underline}}
+.vlrc-publication-embed .publication-page-menu .menu{{margin:1.25rem 0 0;padding:0;list-style:none}}
+.vlrc-publication-embed .publication-page-menu .menu ul{{margin:0;padding:0;list-style:none}}
+.vlrc-publication-embed .publication-page-menu .toc-h2>a{{display:block;padding:.78rem .9rem;border-bottom:1px solid #d8d8d8;color:#064d82;font-weight:700;text-decoration:none}}
+.vlrc-publication-embed .publication-page-menu .toc-h3>a{{display:block;padding:.56rem .9rem .56rem 2rem;border-bottom:1px solid #e7e7e7;color:#333;font-size:.92rem;text-decoration:none}}
+.vlrc-publication-embed .publication-page-menu .toc-h2>a:hover,.vlrc-publication-embed .publication-page-menu .toc-h2>a:focus-visible,.vlrc-publication-embed .publication-page-menu .toc-h3>a:hover,.vlrc-publication-embed .publication-page-menu .toc-h3>a:focus-visible{{background:#f2f2f2;color:#be1e2b;text-decoration:underline}}
+.vlrc-publication-embed .publication-page-menu .toc-h2.is-active>a{{border-left:4px solid #be1e2b;background:#eef4f8}}
+.vlrc-publication-embed .btns-pub{{display:flex;flex:0 1 clamp(16rem,22vw,22rem);width:min(100%,22rem);max-width:22rem;min-width:16rem;flex-direction:column;gap:.75rem;text-align:center}}
+.vlrc-publication-embed .image-link-pub{{display:block;width:100%;height:auto;margin:0 0 .2rem;border:1px solid #ddd}}
+.vlrc-publication-embed .btn-blue,.vlrc-publication-embed .btn-red{{display:flex;min-height:4.5rem;align-items:center;justify-content:space-between;gap:1rem;padding:.9rem 1.25rem;border-radius:.25rem;color:#fff;font-size:clamp(1.15rem,1.55vw,1.5rem);font-weight:700;line-height:1.2;text-decoration:none}}
+.vlrc-publication-embed .btn-blue{{background:#064d82}}
+.vlrc-publication-embed .btn-red{{background:#b33139}}
+.vlrc-publication-embed .btn-blue:hover,.vlrc-publication-embed .btn-blue:focus-visible{{background:#04395f;color:#fff}}
+.vlrc-publication-embed .btn-red:hover,.vlrc-publication-embed .btn-red:focus-visible{{background:#92272e;color:#fff}}
+.vlrc-publication-embed .btn-icon-pub{{display:block;width:2.7rem;height:2.7rem;flex:0 0 2.7rem;color:currentColor}}
+.vlrc-publication-embed .vlrc-reader{{display:none;width:100%;max-width:none;min-height:38rem;margin:0;padding:2rem var(--vlrc-content-gutter) 3rem}}
+.vlrc-publication-embed .vlrc-reader:target,.vlrc-publication-embed .vlrc-reader.is-active{{display:block}}
+.vlrc-publication-embed.reader-open #publication-landing{{display:none}}
+.vlrc-publication-embed .inner-body-content{{display:grid;grid-template-columns:minmax(15rem,18rem) minmax(0,1fr);align-items:start;gap:3rem}}
+.vlrc-publication-embed .primary-sidebar{{position:sticky;top:2rem;border:1px solid #ddd;background:#fff}}
+.vlrc-publication-embed .sidebar-title{{padding:1rem 1.1rem;background:#064d82;color:#fff}}
+.vlrc-publication-embed .h2-title-toc{{margin:0;color:#fff;font-size:1.35rem}}
+.vlrc-publication-embed .publication-page-menu .menu{{margin:0}}
+.vlrc-publication-embed .publication-page-menu .toc-h2>a{{padding:.66rem .75rem;font-size:.88rem}}
+.vlrc-publication-embed .publication-page-menu .toc-h3>a{{padding:.5rem .75rem .5rem 1.45rem;font-size:.8rem}}
+.vlrc-publication-embed .main-content{{min-width:0}}
+.vlrc-publication-embed .publication-parent-link{{display:inline-block;margin-bottom:.65rem;font-weight:700;text-decoration:none}}
+.vlrc-publication-embed .entry-content p{{margin:0 0 1.15rem}}
+.vlrc-publication-embed .docling-content-blocks h2{{margin:2.3rem 0 .85rem;color:#064d82;font-size:1.75rem;line-height:1.25}}
+.vlrc-publication-embed .docling-content-blocks h3{{margin:1.9rem 0 .7rem;font-size:1.4rem;line-height:1.3}}
+.vlrc-publication-embed .docling-content-blocks h4{{margin:1.6rem 0 .6rem;font-size:1.18rem;line-height:1.35}}
+.vlrc-publication-embed .docling-content-blocks h5,.vlrc-publication-embed .docling-content-blocks h6{{margin:1.4rem 0 .5rem;font-size:1rem;line-height:1.4}}
+.vlrc-publication-embed .document-box-section{{margin:1.75rem 0;border:1px solid #c7c9cc;background:#efedef}}
+.vlrc-publication-embed .document-box-section>h3{{margin:0;padding:.7rem 1.1rem;background:#c8c8c8;color:#111;font-size:1.08rem}}
+.vlrc-publication-embed .document-box-section-content{{padding:1.1rem 1.35rem .5rem}}
+.vlrc-publication-embed .document-box-section-content>p:first-child{{margin-top:0}}
+.vlrc-publication-embed .document-box-section--case-study>h3{{background:transparent;color:#666;font-style:italic}}
+.vlrc-publication-embed .document-box-section--recommendations{{border-color:#111;background:#efefef}}
+.vlrc-publication-embed .document-box-section--recommendations>h3{{background:#050505;color:#fff;text-transform:uppercase}}
+.vlrc-publication-embed .source-list{{margin:.5rem 0 1.1rem 2rem;padding-left:1.25rem}}
+.vlrc-publication-embed ul.source-list{{list-style:disc outside}}
+.vlrc-publication-embed ol.source-list{{list-style:decimal outside}}
+.vlrc-publication-embed .source-list .source-list{{margin:.35rem 0 .25rem}}
+.vlrc-publication-embed .document-box-section-content .source-list{{margin-left:0;padding-left:1.5rem}}
+.vlrc-publication-embed .document-footnote{{padding-left:.75rem;border-left:3px solid #8c929a;color:#505965;font-size:.92em}}
+.vlrc-publication-embed .numbered-paragraph{{display:grid;grid-template-columns:minmax(3.5rem,max-content) minmax(0,1fr);gap:.625rem;margin:0 0 1rem}}
+.vlrc-publication-embed .numbered-paragraph>span{{color:#be1e2b;font:700 .78rem/1.9 monospace}}
+.vlrc-publication-embed .numbered-paragraph p{{margin:0}}
+.vlrc-publication-embed .table-scroll{{max-width:100%;overflow-x:auto;margin:1.5rem 0;border:1px solid #ccd1d8}}
+.vlrc-publication-embed table{{width:100%;border-collapse:collapse;font-size:.86rem}}
+.vlrc-publication-embed caption{{padding:.75rem;background:#e8eef4;text-align:left;font-weight:700}}
+.vlrc-publication-embed th,.vlrc-publication-embed td{{min-width:5.6rem;padding:.55rem;border:1px solid #b9c0c9;text-align:left;vertical-align:top}}
+.vlrc-publication-embed th{{background:#f2f5f8}}
+.vlrc-publication-embed .document-figure-image{{display:block;max-width:100%;width:auto;height:auto;margin:0 auto;border:1px solid #d8dce1}}
+.vlrc-publication-embed .figure-unavailable{{min-height:10rem;display:grid;place-items:center;border:.15rem dashed #87919f;background:#f4f6f8;color:#5b6573}}
+.vlrc-publication-embed .caption,.vlrc-publication-embed figcaption{{color:#596270;font-size:.85rem}}
+.vlrc-publication-embed .document-formula{{margin:1.25rem 0;padding:1rem;border:1px solid #ccd1d8;background:#f7f8f9;font-family:monospace;white-space:pre-wrap;overflow-wrap:anywhere}}
+.vlrc-publication-embed .reader-footnotes{{margin-top:2.2rem;padding-top:1rem;border-top:1px solid #c9cdd4}}
+.vlrc-publication-embed .reader-footnotes h2{{color:#064d82;font-size:1.4rem}}
+.vlrc-publication-embed .reader-footnotes ol{{padding-left:1.75rem}}
+.vlrc-publication-embed .reader-pagination{{display:grid;grid-template-columns:1fr 1fr;gap:.75rem;margin-top:2.8rem;padding-top:1.25rem;border-top:1px solid #d8dce1}}
+.vlrc-publication-embed .reader-pagination>a,.vlrc-publication-embed .pagination-disabled{{display:flex;flex-direction:column;padding:.75rem;border:1px solid #d8dce1;color:#1d2733;font-size:.84rem;text-decoration:none}}
+.vlrc-publication-embed .reader-pagination>a:last-child,.vlrc-publication-embed .pagination-disabled:last-child{{text-align:right}}
+.vlrc-publication-embed .reader-pagination span{{color:#6d7482;font-size:.7rem;text-transform:uppercase}}
+.vlrc-publication-embed .pagination-disabled{{opacity:.55}}
+.vlrc-publication-embed .sr-only{{position:absolute;width:1px;height:1px;padding:0;margin:-1px;overflow:hidden;clip:rect(0,0,0,0);white-space:nowrap;border:0}}
+@media(max-width:55rem){{.vlrc-publication-embed .main-column-pub{{gap:2rem}}.vlrc-publication-embed .btns-pub{{width:min(100%,19.3rem);max-width:19.3rem}}.vlrc-publication-embed .inner-body-content{{grid-template-columns:1fr}}.vlrc-publication-embed .primary-sidebar{{position:static}}}}
+@media(max-width:36rem){{.vlrc-publication-embed{{--vlrc-content-gutter:1rem}}.vlrc-publication-embed .vlrc-site-publication,.vlrc-publication-embed .vlrc-reader{{padding-top:1.5rem;padding-bottom:2.25rem}}.vlrc-publication-embed .btns-pub{{min-width:0;width:100%;max-width:none;margin:0 auto}}.vlrc-publication-embed .reader-pagination{{grid-template-columns:1fr}}.vlrc-publication-embed .numbered-paragraph{{grid-template-columns:minmax(3rem,max-content) minmax(0,1fr)}}}}
+@media(prefers-reduced-motion:reduce){{.vlrc-publication-embed{{scroll-behavior:auto}}}}
+@media print{{.vlrc-publication-embed #publication-landing{{display:block!important}}.vlrc-publication-embed .vlrc-reader{{display:block!important;break-before:page}}.vlrc-publication-embed .btns-pub,.vlrc-publication-embed .primary-sidebar,.vlrc-publication-embed .reader-pagination{{display:none}}.vlrc-publication-embed .inner-body-content{{display:block}}.vlrc-publication-embed .table-scroll{{overflow:visible}}}}
 </style>
 </head>
 <body>
-<a class="skip-link" href="#main-content">Skip to main content</a>
-<main class="vlrc-preview" id="main-content">
-  <header class="vlrc-masthead">{logo_html}<span class="vlrc-masthead-label">Publication</span></header>
-  <section class="vlrc-preview-body" id="publication-landing">
-    <div class="vlrc-publication-layout">
-      <div class="vlrc-publication-main">
-        <div class="jurisdiction">{jurisdiction}</div>
-        <h1 tabindex="-1">{title}</h1>
-        <p class="vlrc-published-date published-date">Published on {published_date}.</p>
-        {summary_html}
-        <section class="vlrc-contents" aria-label="Document chapters">
-          <div class="vlrc-accordion">{landing_sections}</div>
-        </section>
+<div class="vlrc-publication-embed" data-konverter-publication>
+  <a class="skip-link" href="#publication-title">Skip to publication content</a>
+  <section class="vlrc-site-publication" id="publication-landing" aria-labelledby="publication-title">
+    <article class="publication" role="article" itemscope itemtype="https://schema.org/Report">
+      <div class="article-header">
+        <h1 class="entry-title single-title" id="publication-title" itemprop="headline" tabindex="-1">{title}</h1>
+        <ul class="no-bullet post-byline"><li class="published-date"><span>Published on </span>{published_date}</li></ul>
       </div>
-      <aside class="vlrc-publication-aside" aria-label="Publication files">
-        {cover_html}
-        <a class="vlrc-download" href="/api/documents/{document_id}/source">Download PDF</a>
-        <div class="vlrc-report-card"><strong>Report</strong><span>{pages} pages · {published_date}</span></div>
-      </aside>
-    </div>
+      <div class="main-column-pub">
+        <div class="main-content-pub-inner" itemprop="text">
+          {summary_html}
+          <nav aria-labelledby="publication-contents-heading">
+            <h2 class="publication-contents-heading" id="publication-contents-heading">Contents</h2>
+            {landing_sections}
+          </nav>
+        </div>
+        <aside class="btns-pub btns-pub-desktop" aria-label="Publication files">
+          {cover_html}
+          <a class="btn-blue" href="/api/documents/{document_id}/source">
+            <span>Download PDF</span>
+            <svg class="btn-icon-pub" viewBox="0 0 48 48" role="img" aria-label="PDF document">
+              <path d="M11 3h19l8 8v34H11zM30 3v9h8M17 34h14M24 19v12m-5-5 5 5 5-5" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"/>
+              <path d="M15 15h12" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"/>
+            </svg>
+          </a>
+          <a class="btn-red" href="{project_url}">
+            <span>Go to Project</span>
+            <svg class="btn-icon-pub" viewBox="0 0 48 48" role="img" aria-label="Project link">
+              <path d="m20.5 29.5 7-7m-12.2 12.2-2 2a7.5 7.5 0 0 1-10.6-10.6l7.4-7.4a7.5 7.5 0 0 1 10.6 0m12-5.4 2-2a7.5 7.5 0 1 1 10.6 10.6l-7.4 7.4a7.5 7.5 0 0 1-10.6 0" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"/>
+            </svg>
+          </a>
+        </aside>
+      </div>
+    </article>
   </section>
   {reader_sections}
-</main>
-<button class="back-to-top" type="button" aria-label="Back to top of page">↑ Top</button>
-<footer class="source-footer">Accessible HTML generated from reviewed document data. Schema.org JSON-LD is embedded in this page.</footer>
+</div>
 <script>
 (() => {{
+  const root = document.querySelector('[data-konverter-publication]');
   const landing = document.getElementById('publication-landing');
   const readers = Array.from(document.querySelectorAll('[data-reader]'));
-  const showLanding = () => {{
-    document.body.classList.remove('reader-open');
+  const showLanding = (updateHistory = true, moveFocus = true) => {{
+    root?.classList.remove('reader-open');
     readers.forEach((reader) => reader.classList.remove('is-active'));
-    landing?.querySelector('h1')?.focus({{ preventScroll: true }});
+    if (updateHistory && window.location.hash !== '#publication-landing') {{
+      window.history.pushState(null, '', '#publication-landing');
+    }}
+    if (moveFocus) landing?.querySelector('h1')?.focus({{ preventScroll: true }});
   }};
-  const openReader = (sectionId, headingId) => {{
+  const openReader = (sectionId, headingId, updateHistory = true) => {{
     const reader = document.querySelector(`[data-reader="${{CSS.escape(sectionId)}}"]`);
     if (!reader) return;
-    document.body.classList.add('reader-open');
+    root?.classList.add('reader-open');
     readers.forEach((candidate) => candidate.classList.toggle('is-active', candidate === reader));
+    if (updateHistory && window.location.hash !== `#reader-${{sectionId}}`) {{
+      window.history.pushState({{ sectionId, headingId }}, '', `#reader-${{sectionId}}`);
+    }}
     reader.focus({{ preventScroll: true }});
     if (headingId) {{
       const heading = document.getElementById(headingId);
       heading?.scrollIntoView({{ behavior: 'smooth', block: 'start' }});
-      reader.querySelectorAll('[data-reader-heading]').forEach((link) => {{
-        if (link.getAttribute('data-reader-heading') === headingId) link.setAttribute('aria-current', 'location');
-        else link.removeAttribute('aria-current');
-      }});
-    }} else window.scrollTo({{ top: 0, behavior: 'smooth' }});
+    }} else reader.scrollIntoView({{ behavior: 'smooth', block: 'start' }});
   }};
   document.querySelectorAll('[data-open-section]').forEach((link) => link.addEventListener('click', (event) => {{
     event.preventDefault();
@@ -1716,23 +1783,13 @@ body.reader-open #publication-landing{{display:none}}
     showLanding();
     landing?.scrollIntoView({{ behavior: 'smooth', block: 'start' }});
   }}));
-  document.querySelectorAll('[data-reader-heading]').forEach((link) => link.addEventListener('click', () => {{
-    const reader = link.closest('[data-reader]');
-    reader?.querySelectorAll('[data-reader-heading]').forEach((candidate) => candidate.removeAttribute('aria-current'));
-    link.setAttribute('aria-current', 'location');
-  }}));
-  const backToTop = document.querySelector('.back-to-top');
-  if (backToTop) {{
-    const prefersReducedMotion = window.matchMedia('(prefers-reduced-motion: reduce)');
-    const toggle = () => backToTop.classList.toggle('is-visible', window.scrollY > 480);
-    window.addEventListener('scroll', toggle, {{ passive: true }});
-    toggle();
-    backToTop.addEventListener('click', () => {{
-      window.scrollTo({{ top: 0, behavior: prefersReducedMotion.matches ? 'auto' : 'smooth' }});
-      const activeReader = document.querySelector('[data-reader].is-active');
-      (activeReader ?? landing)?.querySelector('h1')?.focus({{ preventScroll: true }});
-    }});
-  }}
+  const syncFromLocation = () => {{
+    const match = window.location.hash.match(/^#reader-(.+)$/);
+    if (match) openReader(decodeURIComponent(match[1]), window.history.state?.headingId, false);
+    else showLanding(false, false);
+  }};
+  window.addEventListener('popstate', syncFromLocation);
+  syncFromLocation();
 }})();
 </script>
 </body>
