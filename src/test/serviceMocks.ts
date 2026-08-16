@@ -1,5 +1,6 @@
 import type {
   ApprovalService,
+  AuditService,
   DocumentService,
   MetadataService,
   PublicationService,
@@ -33,6 +34,9 @@ export function resetTestServices(): void {
 export const documentService: DocumentService = {
   // Tests always start from an empty client-side queue.
   async listDocuments() {
+    return []
+  },
+  async listAllDocuments() {
     return []
   },
   async uploadDocuments(files) {
@@ -171,6 +175,15 @@ export const approvalService: ApprovalService = {
     return { approvedAt: '2026-07-30T12:00:00Z' }
   },
   async revoke() {},
+}
+
+export const auditService: AuditService = {
+  async list() {
+    return []
+  },
+  async listMine() {
+    return []
+  },
 }
 
 const documentUrl = (documentId: string, suffix: string) => `/api/documents/${documentId}${suffix}`

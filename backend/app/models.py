@@ -31,6 +31,7 @@ class DocumentSummary(ApiModel):
     processing_state: ProcessingState | None = None
     approved_at: str | None = None
     metadata_confirmed: bool = False
+    uploaded_by_email: str | None = None
 
 
 class DocumentProcessingJob(ApiModel):

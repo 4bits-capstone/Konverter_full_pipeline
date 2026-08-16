@@ -11,3 +11,15 @@ export function converterStageFromPath(pathname: string): Stage {
   const candidate = segments[0] === 'converter' ? segments[1] : segments[0]
   return converterStages.includes(candidate as Stage) ? candidate as Stage : 'upload'
 }
+
+export function converterHistoryPath(): string {
+  return '/history'
+}
+
+export function converterDocumentListPath(): string {
+  return '/admin/documents'
+}
+
+export function converterAuditLogPath(): string {
+  return '/admin/audit-log'
+}

@@ -420,8 +420,586 @@
   overscroll-behavior: contain
 }
 
-.converter-app .docbar-signout {
+/* ============ HEADER SETTINGS MENU (masthead) ============ */
+.converter-app .converter-brand-right {
+  display: flex;
+  align-items: center;
+  gap: 22px;
+}
+
+.converter-app .header-utilities {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.converter-app .header-utility {
+  position: relative
+}
+
+.converter-app .header-utility > summary,
+.converter-app .header-utility-link {
+  display: grid;
+  width: 40px;
+  height: 40px;
+  min-height: 40px;
+  place-items: center;
+  padding: 0;
+  border: 0;
+  border-radius: 8px;
+  background: transparent;
+  color: #fff;
+  list-style: none;
+  text-decoration: none;
+  cursor: pointer;
+  transition: background-color .15s ease, color .15s ease
+}
+
+.converter-app .header-utility > summary::-webkit-details-marker {
+  display: none
+}
+
+.converter-app .header-utility > summary svg,
+.converter-app .header-utility-link svg {
+  width: 20px;
+  height: 20px
+}
+
+.converter-app .header-utility > summary:hover,
+.converter-app .header-utility > summary:focus-visible,
+.converter-app .header-utility[open] > summary,
+.converter-app .header-utility-link:hover,
+.converter-app .header-utility-link:focus-visible,
+.converter-app .header-utility-link.is-active {
+  background: rgba(255, 255, 255, .17);
+  color: #fff
+}
+
+.converter-app .header-guidance-panel {
+  position: absolute;
+  top: calc(100% + 10px);
+  right: 0;
+  z-index: 120;
+  overflow: auto;
+  width: min(360px, calc(100vw - 40px));
+  max-height: min(70vh, 480px);
+  padding: 18px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: #fff;
+  color: var(--ink);
+  box-shadow: var(--shadow-lg)
+}
+
+.converter-app .header-guidance-panel h3 {
+  font-size: 14px;
+  margin-bottom: 10px
+}
+
+.converter-app .header-guidance-panel ol {
+  margin: 0;
+  padding-left: 20px;
+  display: grid;
+  gap: 8px;
+  font-size: 13px;
+  color: var(--ink-2);
+  line-height: 1.5
+}
+
+.converter-app .header-guidance-panel strong {
+  color: var(--ink)
+}
+
+.converter-app .header-settings-panel {
+  position: absolute;
+  top: calc(100% + 10px);
+  right: 0;
+  z-index: 120;
+  overflow: auto;
+  width: 260px;
+  padding: 10px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: #fff;
+  color: var(--ink);
+  box-shadow: var(--shadow-lg)
+}
+
+.converter-app .header-account {
+  display: flex;
+  align-items: center;
+  gap: 11px;
+  padding: 9px 8px 13px;
+  border-bottom: 1px solid var(--line)
+}
+
+.converter-app .header-account-avatar {
+  display: grid;
+  width: 36px;
+  height: 36px;
+  flex: none;
+  place-items: center;
+  border-radius: 50%;
+  background: var(--blue-dark);
+  color: #fff;
+  font-size: 13px;
+  font-weight: 800
+}
+
+.converter-app .header-account strong {
+  display: block;
+  min-width: 0;
+  color: var(--ink);
+  font-size: 13px;
+  overflow-wrap: anywhere
+}
+
+.converter-app .header-role-badge {
+  display: inline-flex;
+  margin-top: 6px;
+  padding: 2px 8px;
+  border: 1px solid var(--hi-line);
+  border-radius: 999px;
+  background: var(--hi-soft);
+  color: var(--hi);
+  font-size: 10px;
+  font-weight: 800;
+  letter-spacing: .06em;
+  line-height: 1.5;
+  text-transform: uppercase
+}
+
+.converter-app .header-profile-action,
+.converter-app .header-logout {
+  display: flex;
+  width: 100%;
+  min-height: 40px;
+  align-items: center;
+  gap: 10px;
+  margin-top: 4px;
+  padding: 9px 10px;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  font-size: 13px;
+  font-weight: 700;
+  text-decoration: none;
+  cursor: pointer
+}
+
+.converter-app .header-profile-action {
+  color: var(--blue-dark)
+}
+
+.converter-app .header-profile-action:hover,
+.converter-app .header-profile-action:focus-visible,
+.converter-app .header-profile-action.is-active {
+  background: var(--blue-soft);
+  color: var(--blue-dark)
+}
+
+.converter-app .header-logout {
+  color: var(--red)
+}
+
+.converter-app .header-logout:hover,
+.converter-app .header-logout:focus-visible {
+  background: var(--red-soft);
+  color: var(--red)
+}
+
+.converter-app .header-logout:disabled {
+  opacity: .55;
+  cursor: wait
+}
+
+.converter-app .header-profile-action svg,
+.converter-app .header-logout svg {
+  width: 17px;
+  height: 17px
+}
+
+.converter-app .header-profile-details {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin: 2px 10px 8px 36px;
+  color: var(--muted);
+  font-size: 11px
+}
+
+.converter-app .header-profile-details strong {
+  color: var(--ink);
+  font-size: 11px
+}
+
+/* ============ ADMIN PAGES (Doc list / Audit log / History) ============ */
+.converter-app .muted {
+  color: var(--muted)
+}
+
+.converter-app .admin-page-header {
+  display: flex;
+  align-items: flex-start;
+  gap: 14px;
+  margin-bottom: 20px
+}
+
+.converter-app .admin-toolbar {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  margin-bottom: 16px;
+  flex-wrap: wrap
+}
+
+.converter-app .admin-toolbar .input {
+  max-width: 360px
+}
+
+.converter-app .admin-count {
   margin-left: auto;
+  color: var(--muted);
+  font-size: 12.5px
+}
+
+.converter-app .admin-table-wrap {
+  overflow-x: auto
+}
+
+.converter-app .admin-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 13.5px
+}
+
+.converter-app .admin-table th,
+.converter-app .admin-table td {
+  border-bottom: 1px solid var(--line);
+  padding: 10px 12px;
+  text-align: left;
+  vertical-align: top
+}
+
+.converter-app .admin-table th {
+  color: var(--muted);
+  font-size: 11px;
+  letter-spacing: .06em;
+  text-transform: uppercase;
+  font-weight: 700
+}
+
+.converter-app .admin-table-detail {
+  max-width: 360px;
+  color: var(--ink-2);
+  font-size: 12.5px;
+  overflow-wrap: anywhere
+}
+
+.converter-app .audit-mode-switcher {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  margin-bottom: 20px
+}
+
+.converter-app .audit-mode-link {
+  position: relative;
+  display: grid;
+  grid-template-columns: 24px minmax(0, 1fr) auto;
+  min-height: 68px;
+  align-items: center;
+  gap: 12px;
+  padding: 13px 18px;
+  border: 1px solid var(--line);
+  border-bottom: 3px solid transparent;
+  border-radius: var(--radius) var(--radius) 0 0;
+  background: var(--white);
+  color: var(--ink-2);
+  cursor: pointer
+}
+
+.converter-app .audit-mode-link + .audit-mode-link {
+  border-left: 0
+}
+
+.converter-app .audit-mode-link:hover,
+.converter-app .audit-mode-link:focus-visible {
+  background: var(--surface-2);
+  color: var(--blue-dark)
+}
+
+.converter-app .audit-mode-link.is-active {
+  border-bottom-color: var(--blue);
+  background: var(--blue-tint);
+  color: var(--blue-dark)
+}
+
+.converter-app .audit-mode-link > svg {
+  width: 20px;
+  height: 20px;
+  color: var(--blue)
+}
+
+.converter-app .audit-mode-link span,
+.converter-app .audit-mode-link strong,
+.converter-app .audit-mode-link small {
+  display: block;
+  min-width: 0
+}
+
+.converter-app .audit-mode-link strong {
+  color: inherit;
+  font-size: 13px
+}
+
+.converter-app .audit-mode-link small {
+  margin-top: 2px;
+  color: var(--muted);
+  font-size: 11px
+}
+
+.converter-app .audit-mode-link > b {
+  display: grid;
+  min-width: 26px;
+  height: 26px;
+  place-items: center;
+  padding: 0 7px;
+  border-radius: 999px;
+  background: var(--white);
+  border: 1px solid var(--line);
+  color: var(--blue-dark);
+  font-size: 11px
+}
+
+@media (max-width: 640px) {
+  .converter-app .audit-mode-switcher {
+    grid-template-columns: minmax(0, 1fr)
+  }
+
+  .converter-app .audit-mode-link + .audit-mode-link {
+    border-top: 0;
+    border-left: 1px solid var(--line)
+  }
+}
+
+/* ============ CLICKABLE ACTION LIST + DETAIL PANEL ============ */
+.converter-app .audit-ledger-workspace {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 320px;
+  min-height: min(560px, calc(100dvh - 320px));
+  overflow: hidden;
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  background: var(--white);
+  box-shadow: var(--shadow)
+}
+
+.converter-app .audit-ledger-panel {
+  min-width: 0;
+  overflow: auto;
+  border-right: 1px solid var(--line)
+}
+
+.converter-app .audit-ledger-table-wrap {
+  width: 100%;
+  overflow: auto
+}
+
+.converter-app .audit-ledger-table {
+  width: 100%;
+  min-width: 520px;
+  border-collapse: collapse;
+  text-align: left;
+  font-size: 13.5px
+}
+
+.converter-app .audit-ledger-table th {
+  height: 40px;
+  padding: 10px 14px;
+  border-bottom: 1px solid var(--line);
+  color: var(--muted);
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: .06em;
+  text-transform: uppercase
+}
+
+.converter-app .audit-ledger-table td {
+  padding: 12px 14px;
+  border-bottom: 1px solid var(--line);
+  color: var(--ink-2);
+  vertical-align: top
+}
+
+.converter-app .audit-ledger-record {
+  cursor: pointer;
+  transition: background-color .15s ease
+}
+
+.converter-app .audit-ledger-record:hover {
+  background: var(--surface-2)
+}
+
+.converter-app .audit-ledger-record.is-selected {
+  background: var(--blue-tint);
+  box-shadow: inset 4px 0 0 var(--blue)
+}
+
+.converter-app .audit-ledger-select {
+  display: inline-flex;
+  padding: 4px 6px;
+  margin: -4px -6px;
+  border: 0;
+  border-radius: 4px;
+  background: transparent;
+  color: var(--blue-dark);
+  cursor: pointer
+}
+
+.converter-app .audit-ledger-select:hover,
+.converter-app .audit-ledger-select:focus-visible {
+  background: var(--blue-soft);
+  outline: 2px solid var(--blue);
+  outline-offset: 1px
+}
+
+.converter-app .audit-detail-panel {
+  min-width: 0;
+  overflow: auto;
+  padding: 20px;
+  background: var(--white)
+}
+
+.converter-app .audit-detail-heading {
+  display: flex;
+  align-items: flex-start;
+  gap: 11px;
+  padding-bottom: 16px;
+  border-bottom: 1px solid var(--line)
+}
+
+.converter-app .audit-detail-icon {
+  display: grid;
+  width: 34px;
+  height: 34px;
+  flex: none;
+  place-items: center;
+  border-radius: 50%;
+  background: var(--blue-soft);
+  color: var(--blue)
+}
+
+.converter-app .audit-detail-icon svg {
+  width: 18px;
+  height: 18px
+}
+
+.converter-app .audit-detail-kicker {
+  display: block;
+  color: var(--muted);
+  font-size: 10.5px;
+  font-weight: 800;
+  letter-spacing: .06em;
+  text-transform: uppercase
+}
+
+.converter-app .audit-detail-heading h3 {
+  margin-top: 3px;
+  color: var(--ink);
+  font-size: 15px;
+  line-height: 1.35
+}
+
+.converter-app .audit-detail-facts {
+  display: grid;
+  margin: 0
+}
+
+.converter-app .audit-detail-facts > div {
+  display: grid;
+  grid-template-columns: 100px minmax(0, 1fr);
+  gap: 12px;
+  padding: 13px 0;
+  border-bottom: 1px solid var(--line)
+}
+
+.converter-app .audit-detail-facts dt {
+  color: var(--muted);
+  font-size: 11px;
+  font-weight: 700
+}
+
+.converter-app .audit-detail-facts dd {
+  margin: 0;
+  color: var(--ink-2);
+  font-size: 12.5px;
+  overflow-wrap: anywhere
+}
+
+.converter-app .audit-detail-facts dd strong {
+  display: block;
+  color: var(--ink)
+}
+
+.converter-app .audit-detail-facts dd small {
+  display: block;
+  margin-top: 2px;
+  color: var(--muted);
+  font-size: 11px
+}
+
+.converter-app .audit-detail-description {
+  padding-top: 16px
+}
+
+.converter-app .audit-detail-description > span {
+  color: var(--muted);
+  font-size: 10.5px;
+  font-weight: 800;
+  letter-spacing: .06em;
+  text-transform: uppercase
+}
+
+.converter-app .audit-detail-description p {
+  margin: 8px 0 0;
+  color: var(--ink-2);
+  font-size: 12.5px;
+  line-height: 1.55;
+  overflow-wrap: anywhere
+}
+
+.converter-app .audit-detail-description p strong {
+  color: var(--ink)
+}
+
+.converter-app .audit-detail-seemore {
+  display: inline;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: var(--blue);
+  font-size: 12.5px;
+  font-weight: 700;
+  text-decoration: underline;
+  text-underline-offset: 2px;
+  cursor: pointer
+}
+
+.converter-app .audit-detail-seemore:hover,
+.converter-app .audit-detail-seemore:focus-visible {
+  color: var(--blue-dark)
+}
+
+@media (max-width: 900px) {
+  .converter-app .audit-ledger-workspace {
+    grid-template-columns: minmax(0, 1fr)
+  }
+
+  .converter-app .audit-ledger-panel {
+    border-right: 0;
+    border-bottom: 1px solid var(--line)
+  }
 }
 
 .converter-app .screen {

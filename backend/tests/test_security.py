@@ -145,3 +145,100 @@ def test_action_endpoints_reject_missing_token(tmp_path):
             files={"files": ("report.pdf", make_pdf(), "application/pdf")},
         )
         assert response.status_code == 401
+
+
+def test_audit_log_rejects_non_admin(tmp_path):
+    with load_client(tmp_path) as client:
+        # The fixture's fake user has no app_metadata.role at all.
+        response = client.get("/api/audit-log")
+        assert response.status_code == 403
+
+
+def test_my_audit_log_allows_any_authenticated_user(tmp_path):
+    with load_client(tmp_path) as client:
+        # Same non-admin fixture user as above — /mine must still work for them.
+        response = client.get("/api/audit-log/mine")
+        assert response.status_code == 200
+        assert response.json() == []
+
+
+def test_my_audit_log_rejects_missing_token(tmp_path):
+    with load_client(tmp_path) as client:
+        client.app.dependency_overrides.pop(app_main.get_current_user, None)
+        response = client.get("/api/audit-log/mine")
+        assert response.status_code == 401
+
+
+def test_audit_log_allows_admin(tmp_path):
+    with load_client(tmp_path) as client:
+        client.app.dependency_overrides[app_main.get_current_user] = lambda: {
+            "id": "admin-user",
+            "email": "admin@example.test",
+            "app_metadata": {"role": "admin"},
+        }
+        response = client.get("/api/audit-log")
+        assert response.status_code == 200
+        assert response.json() == []
+
+
+def _override_user(client, user_id: str, email: str) -> None:
+    client.app.dependency_overrides[app_main.get_current_user] = lambda: {
+        "id": user_id,
+        "email": email,
+    }
+
+
+def test_documents_are_scoped_to_their_uploader(tmp_path):
+    with load_client(tmp_path) as client:
+        # Fixture's default fake user ("test-user") uploads a document.
+        response = client.post(
+            "/api/documents",
+            files={"files": ("owned.pdf", make_pdf(), "application/pdf")},
+        )
+        document_id = response.json()[0]["id"]
+
+        # A different user can't see it in their list...
+        _override_user(client, "other-user", "other@example.test")
+        listing = client.get("/api/documents").json()
+        assert document_id not in [document["id"] for document in listing]
+
+        # ...and can't act on it either — 404, not 403, so its existence
+        # isn't confirmed to a non-owner.
+        assert client.post(f"/api/documents/{document_id}/process").status_code == 404
+        assert client.delete(f"/api/documents/{document_id}").status_code == 404
+
+        # The original owner still sees and can act on their own document.
+        _override_user(client, "test-user", "test-user@example.test")
+        listing = client.get("/api/documents").json()
+        assert document_id in [document["id"] for document in listing]
+        assert client.post(f"/api/documents/{document_id}/process").status_code == 200
+
+
+def test_admins_personal_workflow_is_scoped_like_anyone_elses(tmp_path):
+    with load_client(tmp_path) as client:
+        response = client.post(
+            "/api/documents",
+            files={"files": ("owned.pdf", make_pdf(), "application/pdf")},
+        )
+        document_id = response.json()[0]["id"]
+
+        client.app.dependency_overrides[app_main.get_current_user] = lambda: {
+            "id": "admin-user",
+            "email": "admin@example.test",
+            "app_metadata": {"role": "admin"},
+        }
+
+        # The admin's own upload/review workflow behaves like anyone else's —
+        # someone else's document doesn't clutter their personal queue...
+        assert document_id not in [document["id"] for document in client.get("/api/documents").json()]
+        # ...but full oversight is still available via the dedicated admin page...
+        all_documents = client.get("/api/documents/all").json()
+        assert document_id in [document["id"] for document in all_documents]
+        # ...and admin can still act on it despite not owning it (e.g. support/moderation).
+        assert client.post(f"/api/documents/{document_id}/process").status_code == 200
+
+
+def test_documents_all_rejects_non_admin(tmp_path):
+    with load_client(tmp_path) as client:
+        response = client.get("/api/documents/all")
+        assert response.status_code == 403

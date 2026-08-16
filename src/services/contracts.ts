@@ -1,4 +1,5 @@
 import type {
+  AuditLogEntry,
   DocumentMetadata,
   DocumentProcessingJob,
   DocumentSummary,
@@ -15,6 +16,7 @@ import type {
 export interface DocumentService {
   uploadDocuments(files: File[]): Promise<DocumentSummary[]>
   listDocuments(): Promise<DocumentSummary[]>
+  listAllDocuments(): Promise<DocumentSummary[]>
   getDocument(documentId?: string): Promise<DocumentSummary>
   removeDocument(documentId: string): Promise<void>
   startProcessing(documentId: string): Promise<DocumentProcessingJob>
@@ -42,6 +44,11 @@ export interface MetadataService {
 export interface ApprovalService {
   approve(documentId?: string): Promise<{ approvedAt: string }>
   revoke(documentId: string): Promise<void>
+}
+
+export interface AuditService {
+  list(): Promise<AuditLogEntry[]>
+  listMine(): Promise<AuditLogEntry[]>
 }
 
 export interface PublicationService {

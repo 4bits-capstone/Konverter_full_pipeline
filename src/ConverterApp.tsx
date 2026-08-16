@@ -1,6 +1,10 @@
 import { lazy, Suspense } from 'react'
 import { Navigate, Route, Routes } from 'react-router-dom'
 import { AppShell } from './components/AppShell'
+import { RequireAdmin } from './components/RequireAdmin'
+import { AuditLogPage } from './pages/AuditLogPage'
+import { DocumentListPage } from './pages/DocumentListPage'
+import { HistoryPage } from './pages/HistoryPage'
 import { MetadataPage } from './pages/MetadataPage'
 import { ReviewPage } from './pages/ReviewPage'
 import { UploadPage } from './pages/UploadPage'
@@ -36,6 +40,11 @@ export default function ConverterApp() {
             </ProtectedStage>
           )}
         />
+        <Route path="history" element={<HistoryPage />} />
+        <Route element={<RequireAdmin />}>
+          <Route path="admin/documents" element={<DocumentListPage />} />
+          <Route path="admin/audit-log" element={<AuditLogPage />} />
+        </Route>
         <Route path="converter/upload" element={<Navigate to="/upload" replace />} />
         <Route path="converter/review" element={<Navigate to="/review" replace />} />
         <Route path="converter/metadata" element={<Navigate to="/metadata" replace />} />

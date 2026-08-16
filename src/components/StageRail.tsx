@@ -1,4 +1,5 @@
 import { Link, useLocation, useNavigate } from 'react-router-dom'
+import { HeaderUtilities } from './HeaderUtilities'
 import { converterStageFromPath, converterStagePath } from '../lib/converterRoutes'
 import { useKonverter } from '../state/KonverterContext'
 import type { Stage } from '../types/konverter'
@@ -24,7 +25,10 @@ export function StageRail() {
             <img src="/vlrc_logo.png" alt="Victorian Law Reform Commission" />
             <span className="converter-product"><strong>Konverter</strong><small>Accessible publishing workspace</small></span>
           </Link>
-          <div className="converter-brand-context"><span>Reviewer console</span><strong>Convert, review and export accessible reports</strong></div>
+          <div className="converter-brand-right">
+            <div className="converter-brand-context"><span>Reviewer console</span><strong>Convert, review and export accessible reports</strong></div>
+            <HeaderUtilities />
+          </div>
         </div>
       </div>
       <nav className="rail" aria-label="Review pipeline">

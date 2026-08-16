@@ -1,7 +1,5 @@
-import { LogOut } from 'lucide-react'
 import { useLocation } from 'react-router-dom'
 import { converterStageFromPath } from '../lib/converterRoutes'
-import { supabase } from '../lib/supabaseClient'
 import { useKonverter } from '../state/KonverterContext'
 import type { Stage } from '../types/konverter'
 
@@ -13,10 +11,13 @@ const stageMeta: Record<Stage, { n: number; label: string }> = {
   preview: { n: 4, label: 'Preview' },
 }
 
+const stageSegments = new Set(['upload', 'review', 'metadata', 'approval', 'preview'])
+
 export function DocumentBar() {
   const { activeDocument, documentProcessing, reviewItems, resolvedCount } = useKonverter()
   const location = useLocation()
   const stage = converterStageFromPath(location.pathname)
+  const onStagePath = stageSegments.has(location.pathname.split('/').filter(Boolean)[0])
   const percent = reviewItems.length ? Math.round((resolvedCount / reviewItems.length) * 100) : 0
   const circumference = 94.2
   const offset = circumference - (circumference * percent) / 100
@@ -31,13 +32,13 @@ export function DocumentBar() {
           {activeDocument ? <><span className="mono">{activeDocument.fileName}</span><span>·</span><span className="mono">{activeDocument.pages ? `${activeDocument.pages} pages` : 'Page count pending'}</span><span>·</span><span>{activeDocument.publisher || processingLabel}</span></> : <span>Upload a PDF to begin</span>}
         </div>
       </div>
-      {stage === 'upload' && activeDocument ? (
+      {onStagePath && stage === 'upload' && activeDocument ? (
         <div className={`document-state-pill state-${processingState}`} aria-live="polite">
           <span className="document-state-dot" aria-hidden="true" />
           {processingLabel}
         </div>
       ) : null}
-      {stage !== 'upload' && activeDocument ? (
+      {onStagePath && stage !== 'upload' && activeDocument ? (
         <div
           className="progress-pill"
           role="progressbar"
@@ -53,15 +54,7 @@ export function DocumentBar() {
           <span><b className="mono">{resolvedCount}/{reviewItems.length}</b> decisions reviewed</span>
         </div>
       ) : null}
-      <span className="stagechip">Stage {stageMeta[stage].n} · {stageMeta[stage].label}</span>
-      <button
-        type="button"
-        className="btn btn-ghost btn-sm docbar-signout"
-        onClick={() => supabase.auth.signOut()}
-      >
-        <LogOut />
-        Sign out
-      </button>
+      {onStagePath ? <span className="stagechip">Stage {stageMeta[stage].n} · {stageMeta[stage].label}</span> : null}
     </header>
   )
 }

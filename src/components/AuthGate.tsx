@@ -82,7 +82,7 @@ export default function AuthGate({ children }: { children: ReactNode }) {
   const [session, setSession] = useState<Session | null>(null)
   const [loading, setLoading] = useState(true)
   const navigate = useNavigate()
-  const { resetSession } = useKonverter()
+  const { resetSession, refreshDocuments } = useKonverter()
   const hadSessionRef = useRef(false)
 
   useEffect(() => {
@@ -99,11 +99,17 @@ export default function AuthGate({ children }: { children: ReactNode }) {
         resetSession()
         navigate('/upload', { replace: true })
       }
+      // Mirror that on the way in: a fresh sign-in (not a token refresh of an
+      // already-active session) re-fetches the document list, since a prior
+      // resetSession() would have cleared it with nothing to repopulate it.
+      if (!hadSessionRef.current && nextSession) {
+        void refreshDocuments()
+      }
       hadSessionRef.current = Boolean(nextSession)
       setSession(nextSession)
     })
     return () => subscription.subscription.unsubscribe()
-  }, [navigate, resetSession])
+  }, [navigate, resetSession, refreshDocuments])
 
   if (loading) {
     return (

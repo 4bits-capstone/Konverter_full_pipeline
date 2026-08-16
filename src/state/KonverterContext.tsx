@@ -89,6 +89,7 @@ interface KonverterContextValue {
   showToast: (message: string) => void;
   resetWorkflow: () => void;
   resetSession: () => void;
+  refreshDocuments: () => Promise<void>;
 }
 
 const KonverterContext = createContext<KonverterContextValue | null>(null);
@@ -242,18 +243,17 @@ export function KonverterProvider({ children }: PropsWithChildren) {
     });
   }, []);
 
-  useEffect(() => {
-    let cancelled = false;
-    documentService
-      .listDocuments()
-      .then((existing) => {
-        if (!cancelled && existing.length) addDocuments(existing);
-      })
-      .catch(() => undefined);
-    return () => {
-      cancelled = true;
-    };
+  const refreshDocuments = useCallback(async () => {
+    const existing = await documentService.listDocuments().catch(() => []);
+    if (existing.length) addDocuments(existing);
   }, [addDocuments]);
+
+  useEffect(() => {
+    void refreshDocuments();
+    // Only run again if the underlying fetch changes; AuthGate also calls
+    // this directly on sign-in, since resetSession() clears `documents` on
+    // sign-out but nothing else would repopulate it for the next login.
+  }, [refreshDocuments]);
 
   const removeDocument = useCallback(
     (id: string) => {
@@ -674,6 +674,7 @@ export function KonverterProvider({ children }: PropsWithChildren) {
       showToast,
       resetWorkflow,
       resetSession,
+      refreshDocuments,
     }),
     [
       documents,
@@ -718,6 +719,7 @@ export function KonverterProvider({ children }: PropsWithChildren) {
       showToast,
       resetWorkflow,
       resetSession,
+      refreshDocuments,
     ],
   );
 

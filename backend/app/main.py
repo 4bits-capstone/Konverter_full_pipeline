@@ -15,7 +15,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
 
 from . import audit
-from .auth import get_current_user
+from .auth import get_current_user, require_admin
 from .config import load_settings
 from .logging_utils import configure_logging
 from .media import pdf_page_count, render_pdf_region
@@ -38,6 +38,7 @@ MAX_PDF_BYTES = 200 * 1024 * 1024
 MAX_DOCUMENTS_PER_UPLOAD = 5
 
 CurrentUser = Annotated[dict, Depends(get_current_user)]
+AdminUser = Annotated[dict, Depends(require_admin)]
 
 settings = load_settings()
 configure_logging(settings.log_level)
@@ -86,6 +87,7 @@ def _summary(record: dict) -> DocumentSummary:
         processing_state=record.get("job", {}).get("state"),
         approved_at=record.get("approved_at"),
         metadata_confirmed=bool(record.get("metadata_confirmed")),
+        uploaded_by_email=record.get("uploaded_by_email"),
     )
 
 
@@ -96,6 +98,19 @@ def _require_complete(document_id: str) -> dict:
             status_code=409, detail="Document processing is not complete"
         )
     return record
+
+
+def _is_admin(user: dict) -> bool:
+    return (user.get("app_metadata") or {}).get("role") == "admin"
+
+
+def _require_owner(record: dict, user: dict) -> None:
+    """Documents uploaded before per-user scoping have no owner and stay
+    visible/actionable by everyone. 404 (not 403) so a non-owner can't tell
+    the document exists at all."""
+    owner = record.get("uploaded_by")
+    if owner and owner != user.get("id") and not _is_admin(user):
+        raise HTTPException(status_code=404, detail="Document not found")
 
 
 def _pretty_json_download(
@@ -133,16 +148,37 @@ def health() -> dict[str, str]:
 
 
 @app.get("/api/documents", response_model=list[DocumentSummary])
-def list_documents() -> list[DocumentSummary]:
-    """List stored documents so a reloaded client can pick up where it left off."""
+def list_documents(user: CurrentUser) -> list[DocumentSummary]:
+    """List the caller's own documents (plus legacy documents uploaded before
+    per-user scoping, which have no recorded owner). This backs the normal
+    upload/review/metadata/preview workflow — even for admins, whose personal
+    workflow should behave the same as everyone else's. Admin oversight of
+    every document lives only in the dedicated /api/documents/all endpoint."""
+    records = [
+        record for record in store.list_records()
+        if record.get("uploaded_by") in (None, user.get("id"))
+    ]
+    return [_summary(record) for record in records]
+
+
+@app.get("/api/documents/all", response_model=list[DocumentSummary])
+def list_all_documents(user: AdminUser) -> list[DocumentSummary]:
+    """Every document regardless of owner. Admin only — backs the Doc list page."""
     return [_summary(record) for record in store.list_records()]
 
 
 @app.get("/api/audit-log")
-async def audit_log(user: CurrentUser) -> list[dict[str, Any]]:
-    """Recent audit trail rows, newest first. Read-only; for verification and
-    the future admin panel."""
+async def audit_log(user: AdminUser) -> list[dict[str, Any]]:
+    """Recent audit trail rows across all users, newest first. Admin only."""
     return await audit.list_recent()
+
+
+@app.get("/api/audit-log/mine")
+async def my_audit_log(user: CurrentUser) -> list[dict[str, Any]]:
+    """The current user's own recent actions, newest first. Any authenticated
+    user; filtered server-side to their own actor_id so they can never see
+    anyone else's activity through this endpoint."""
+    return await audit.list_recent_for_actor(user.get("id"))
 
 
 @app.post("/api/documents", response_model=list[DocumentSummary], status_code=201)
@@ -225,6 +261,8 @@ async def upload_documents(
                 "publisher": "Pending metadata extraction",
                 "size_bytes": size,
                 "size_label": f"{size / (1024 * 1024):.1f} MB",
+                "uploaded_by": user.get("id"),
+                "uploaded_by_email": user.get("email"),
                 "created_at": time.time(),
                 "updated_at": time.time(),
                 "approved_at": None,
@@ -275,6 +313,7 @@ def processing_summary(document_id: str) -> ProcessingSummary:
 @app.delete("/api/documents/{document_id}", status_code=204)
 async def delete_document(document_id: str, user: CurrentUser) -> Response:
     record = _record(document_id)
+    _require_owner(record, user)
     if record["job"]["state"] == "running":
         raise HTTPException(
             status_code=409, detail="Stop processing before removing this document"
@@ -292,7 +331,7 @@ async def delete_document(document_id: str, user: CurrentUser) -> Response:
 
 @app.post("/api/documents/{document_id}/process", response_model=DocumentProcessingJob)
 async def start_processing(document_id: str, user: CurrentUser) -> DocumentProcessingJob:
-    _record(document_id)
+    _require_owner(_record(document_id), user)
     job = DocumentProcessingJob(**processing.start(document_id))
     await audit.record_audit(
         "process_start",
@@ -307,7 +346,7 @@ async def start_processing(document_id: str, user: CurrentUser) -> DocumentProce
     "/api/documents/{document_id}/process", response_model=DocumentProcessingJob
 )
 def stop_processing(document_id: str, user: CurrentUser) -> DocumentProcessingJob:
-    _record(document_id)
+    _require_owner(_record(document_id), user)
     return DocumentProcessingJob(**processing.stop(document_id))
 
 
@@ -352,7 +391,7 @@ def get_review_items(document_id: str) -> list[ReviewItem]:
 async def update_review_item(
     document_id: str, item_id: str, patch: ReviewPatch, user: CurrentUser
 ) -> ReviewItem:
-    _require_complete(document_id)
+    _require_owner(_require_complete(document_id), user)
     changes = patch.model_dump(exclude_unset=True)
     try:
         item = workflow.update_review_item(document_id, item_id, changes)
@@ -377,7 +416,7 @@ async def update_review_items_bulk(
     patch: ReviewBulkPatch,
     user: CurrentUser,
 ) -> list[ReviewItem]:
-    _require_complete(document_id)
+    _require_owner(_require_complete(document_id), user)
     changes = patch.changes.model_dump(exclude_unset=True)
     try:
         items = workflow.update_review_items(document_id, patch.item_ids, changes)
@@ -398,7 +437,7 @@ async def update_review_items_bulk(
     response_model=list[ReviewItem],
 )
 async def resolve_all(document_id: str, user: CurrentUser) -> list[ReviewItem]:
-    _require_complete(document_id)
+    _require_owner(_require_complete(document_id), user)
     items = workflow.resolve_all(document_id)
     await audit.record_audit(
         "edit_review_item",
@@ -423,7 +462,7 @@ def get_metadata(document_id: str) -> MetadataPayload:
 async def save_metadata(
     document_id: str, metadata: DocumentMetadata, user: CurrentUser
 ) -> DocumentMetadata:
-    _require_complete(document_id)
+    _require_owner(_require_complete(document_id), user)
     saved = workflow.save_metadata(document_id, metadata.model_dump())
     await audit.record_audit(
         "edit_metadata",
@@ -437,7 +476,7 @@ async def save_metadata(
 
 @app.post("/api/documents/{document_id}/approval", response_model=ApprovalResult)
 async def approve_document(document_id: str, user: CurrentUser) -> ApprovalResult:
-    _require_complete(document_id)
+    _require_owner(_require_complete(document_id), user)
     try:
         approved_at = workflow.approve(document_id)
     except ValueError as exc:
@@ -454,7 +493,7 @@ async def approve_document(document_id: str, user: CurrentUser) -> ApprovalResul
 
 @app.delete("/api/documents/{document_id}/approval", status_code=204)
 async def revoke_approval(document_id: str, user: CurrentUser) -> Response:
-    _record(document_id)
+    _require_owner(_record(document_id), user)
     workflow.revoke(document_id)
     await audit.record_audit(
         "revoke_approval",

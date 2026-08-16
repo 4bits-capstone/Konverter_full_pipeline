@@ -32,6 +32,7 @@ export interface DocumentSummary {
   processingState?: ProcessingState
   approvedAt?: string | null
   metadataConfirmed?: boolean
+  uploadedByEmail?: string | null
 }
 
 export interface SourceEvidence {
@@ -144,4 +145,17 @@ export interface ProcessingSummary {
   headings: ProcessingElementCoverage
   images: ProcessingElementCoverage
   tables: ProcessingElementCoverage
+}
+
+/** One row from the backend's immutable Supabase-backed audit_log table. */
+export interface AuditLogEntry {
+  id: number
+  document_id: string | null
+  actor_id: string | null
+  actor_email: string | null
+  action: string
+  detail: Record<string, unknown> | null
+  prev_hash: string | null
+  entry_hash: string | null
+  created_at: string
 }

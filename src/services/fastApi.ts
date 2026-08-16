@@ -1,6 +1,6 @@
 import { apiRequest } from './httpClient'
 import { runtimeConfig } from '../config/runtime'
-import type { ApprovalService, DocumentService, MetadataService, PublicationService, ReviewService } from './contracts'
+import type { ApprovalService, AuditService, DocumentService, MetadataService, PublicationService, ReviewService } from './contracts'
 import type {
   DocumentMetadata,
   ReviewUpdate,
@@ -17,6 +17,9 @@ function requireDocumentId(documentId?: string): string {
 export const fastApiDocumentService: DocumentService = {
   listDocuments() {
     return apiRequest('/documents')
+  },
+  listAllDocuments() {
+    return apiRequest('/documents/all')
   },
   async uploadDocuments(files) {
     const body = new FormData()
@@ -118,6 +121,15 @@ export const fastApiApprovalService: ApprovalService = {
   },
   revoke(documentId) {
     return apiRequest(`/documents/${encodeURIComponent(documentId)}/approval`, { method: 'DELETE' })
+  },
+}
+
+export const fastApiAuditService: AuditService = {
+  list() {
+    return apiRequest('/audit-log')
+  },
+  listMine() {
+    return apiRequest('/audit-log/mine')
   },
 }
 

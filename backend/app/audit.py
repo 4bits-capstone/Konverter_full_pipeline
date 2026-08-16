@@ -82,10 +82,7 @@ async def record_audit(
     )
 
 
-async def list_recent(limit: int = 100) -> list[dict[str, Any]]:
-    """Fetch the most recent audit_log rows, newest first. Read-only convenience
-    for verification; returns [] if Supabase isn't configured or the read fails.
-    """
+async def _get(params: dict[str, str]) -> list[dict[str, Any]]:
     if not SUPABASE_URL or not SERVICE_KEY:
         log.warning("audit: Supabase not configured; returning empty audit log")
         return []
@@ -94,7 +91,7 @@ async def list_recent(limit: int = 100) -> list[dict[str, Any]]:
             response = await client.get(
                 f"{SUPABASE_URL}/rest/v1/audit_log",
                 headers={"apikey": SERVICE_KEY, "Authorization": f"Bearer {SERVICE_KEY}"},
-                params={"order": "id.desc", "limit": str(limit)},
+                params=params,
             )
         if response.status_code >= 300:
             log.warning("audit: list failed: %s %s", response.status_code, response.text)
@@ -103,3 +100,16 @@ async def list_recent(limit: int = 100) -> list[dict[str, Any]]:
     except Exception as exc:
         log.warning("audit: list error: %s", exc)
         return []
+
+
+async def list_recent(limit: int = 100) -> list[dict[str, Any]]:
+    """Fetch the most recent audit_log rows across all users, newest first.
+    Admin only — callers must gate this themselves (see require_admin)."""
+    return await _get({"order": "id.desc", "limit": str(limit)})
+
+
+async def list_recent_for_actor(actor_id: str, limit: int = 100) -> list[dict[str, Any]]:
+    """Fetch the most recent audit_log rows for one actor, newest first.
+    Filtered server-side so a caller can only ever see their own rows,
+    regardless of what any client sends."""
+    return await _get({"actor_id": f"eq.{actor_id}", "order": "id.desc", "limit": str(limit)})
