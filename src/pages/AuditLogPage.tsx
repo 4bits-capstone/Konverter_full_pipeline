@@ -1,29 +1,49 @@
 import { useQuery } from '@tanstack/react-query'
-import { ArrowLeft, ShieldAlert, ShieldCheck } from 'lucide-react'
-import { useMemo, useState } from 'react'
+import { ArrowLeft } from 'lucide-react'
+import { useEffect, useMemo, useState } from 'react'
 import { Link } from 'react-router-dom'
-import { auditActionLabel, auditChainStatus, formatAuditDetail, formatAuditTime } from '../lib/auditFormatting'
+import { AdminModeSwitcher } from '../components/AdminModeSwitcher'
+import { AuditActionDetailPanel, AuditLedgerTable } from '../components/AuditActionDetail'
+import { auditActionLabel, auditActionLabels, auditChainStatus } from '../lib/auditFormatting'
 import { converterStagePath } from '../lib/converterRoutes'
-import { auditService } from '../services'
+import { auditService, documentService } from '../services'
+
+const actionOptions = Object.keys(auditActionLabels)
 
 export function AuditLogPage() {
   const [search, setSearch] = useState('')
+  const [actionFilter, setActionFilter] = useState('all')
+  const [selectedId, setSelectedId] = useState<number | null>(null)
+
   const { data: entries = [], isLoading, isError } = useQuery({
     queryKey: ['audit-log'],
     queryFn: () => auditService.list(),
   })
+  const { data: documents = [] } = useQuery({
+    queryKey: ['documents', 'all'],
+    queryFn: () => documentService.listAllDocuments(),
+  })
 
   const visibleEntries = useMemo(() => {
     const query = search.trim().toLocaleLowerCase('en-AU')
-    if (!query) return entries
     return entries.filter((entry) => (
-      [entry.actor_email, entry.document_id, entry.action, auditActionLabel(entry.action)]
+      (actionFilter === 'all' || entry.action === actionFilter)
+      && (!query || [entry.actor_email, entry.document_id, auditActionLabel(entry.action)]
         .filter(Boolean)
         .join(' ')
         .toLocaleLowerCase('en-AU')
-        .includes(query)
+        .includes(query))
     ))
-  }, [entries, search])
+  }, [entries, search, actionFilter])
+
+  useEffect(() => {
+    if (selectedId && visibleEntries.some((entry) => entry.id === selectedId)) return
+    setSelectedId(visibleEntries[0]?.id ?? null)
+  }, [selectedId, visibleEntries])
+
+  const selectedEntry = visibleEntries.find((entry) => entry.id === selectedId) ?? null
+  const selectedDocument = selectedEntry ? documents.find((document) => document.id === selectedEntry.document_id) : undefined
+  const hasFilters = Boolean(search) || actionFilter !== 'all'
 
   return (
     <section className="screen active" aria-labelledby="audit-log-heading">
@@ -38,72 +58,71 @@ export function AuditLogPage() {
         </div>
       </div>
 
-      <div className="panel panel-pad">
-        <div className="admin-toolbar">
-          <input
-            className="input"
-            type="search"
-            value={search}
-            onChange={(event) => setSearch(event.target.value)}
-            placeholder="Search by actor, document, or action"
-            aria-label="Search audit log"
-          />
-          <span className="admin-count">{visibleEntries.length} of {entries.length} events</span>
-        </div>
+      <AdminModeSwitcher documentCount={documents.length} auditCount={entries.length} />
 
-        {isLoading ? (
+      {isLoading ? (
+        <div className="panel panel-pad">
           <div className="page-loading" role="status">Loading audit log…</div>
-        ) : isError ? (
+        </div>
+      ) : isError ? (
+        <div className="panel panel-pad">
           <div className="banner banner-err" role="alert">The audit log could not be loaded.</div>
-        ) : visibleEntries.length === 0 ? (
-          <p className="hint">No audit events{search ? ' match this search' : ' yet'}.</p>
-        ) : (
-          <div className="admin-table-wrap">
-            <table className="admin-table">
-              <caption className="sr-only">Audit log entries</caption>
-              <thead>
-                <tr>
-                  <th scope="col">Time</th>
-                  <th scope="col">Actor</th>
-                  <th scope="col">Action</th>
-                  <th scope="col">Detail</th>
-                  <th scope="col">Chain</th>
-                </tr>
-              </thead>
-              <tbody>
-                {visibleEntries.map((entry) => {
-                  const status = auditChainStatus(entries, entries.indexOf(entry))
-                  return (
-                    <tr key={entry.id}>
-                      <td><time className="mono" dateTime={entry.created_at}>{formatAuditTime(entry.created_at)}</time></td>
-                      <td>{entry.actor_email ?? '—'}</td>
-                      <td>{auditActionLabel(entry.action)}</td>
-                      <td className="admin-table-detail" title={entry.detail ? JSON.stringify(entry.detail) : undefined}>
-                        {formatAuditDetail(entry.detail)}
-                      </td>
-                      <td>
-                        {status === 'linked' ? (
-                          <span className="conf conf--high" title={entry.entry_hash ?? undefined}>
-                            <ShieldCheck className="ic" aria-hidden="true" />Linked
-                          </span>
-                        ) : status === 'broken' ? (
-                          <span className="conf conf--low" title="prev_hash does not match the previous entry">
-                            <ShieldAlert className="ic" aria-hidden="true" />Broken
-                          </span>
-                        ) : (
-                          <span className="conf conf--med" title="Written before hash chaining was enabled">
-                            <ShieldAlert className="ic" aria-hidden="true" />Unverifiable
-                          </span>
-                        )}
-                      </td>
-                    </tr>
-                  )
-                })}
-              </tbody>
-            </table>
+        </div>
+      ) : (
+        <>
+          <div className="admin-toolbar">
+            <input
+              className="input"
+              type="search"
+              value={search}
+              onChange={(event) => setSearch(event.target.value)}
+              placeholder="Search by actor, document, or action"
+              aria-label="Search audit log"
+            />
+            <label className="tb-control">
+              <span className="sr-only">Action</span>
+              <select className="sel" value={actionFilter} onChange={(event) => setActionFilter(event.target.value)}>
+                <option value="all">All actions</option>
+                {actionOptions.map((action) => (
+                  <option key={action} value={action}>{auditActionLabel(action)}</option>
+                ))}
+              </select>
+            </label>
+            <span className="admin-count">{visibleEntries.length} of {entries.length} events</span>
           </div>
-        )}
-      </div>
+
+          {entries.length === 0 ? (
+            <div className="panel panel-pad">
+              <p className="hint">No audit events yet.</p>
+            </div>
+          ) : visibleEntries.length === 0 ? (
+            <div className="panel panel-pad">
+              <p className="hint">No audit events match {hasFilters ? 'these filters' : 'this search'}.</p>
+            </div>
+          ) : (
+            <div className="audit-ledger-workspace">
+              <div className="audit-ledger-panel">
+                <AuditLedgerTable
+                  entries={visibleEntries}
+                  selectedId={selectedId}
+                  onSelect={setSelectedId}
+                  showActor
+                  getChainStatus={(entry) => auditChainStatus(entries, entries.indexOf(entry))}
+                  caption="Audit log entries"
+                />
+              </div>
+              {selectedEntry ? (
+                <AuditActionDetailPanel
+                  entry={selectedEntry}
+                  documentTitle={selectedDocument?.title ?? null}
+                  documentFileName={selectedDocument?.fileName ?? null}
+                  showActor
+                />
+              ) : null}
+            </div>
+          )}
+        </>
+      )}
     </section>
   )
 }

@@ -2,83 +2,13 @@ import { useQuery } from '@tanstack/react-query'
 import { ArrowLeft, Files, ScrollText } from 'lucide-react'
 import { useMemo, useState } from 'react'
 import { Link } from 'react-router-dom'
-import { auditActionLabel, extractUploadedDocuments, formatAuditDetail, formatAuditTime } from '../lib/auditFormatting'
+import { AuditActionDetailPanel, AuditLedgerTable } from '../components/AuditActionDetail'
+import { extractUploadedDocuments, formatAuditTime } from '../lib/auditFormatting'
 import { converterStagePath } from '../lib/converterRoutes'
 import { auditService } from '../services'
 import { useKonverter } from '../state/KonverterContext'
-import type { AuditLogEntry } from '../types/konverter'
 
 type HistoryView = 'documents' | 'actions'
-
-const ARRAY_PREVIEW_COUNT = 8
-
-function DetailArrayValue({ items }: { items: unknown[] }) {
-  const [expanded, setExpanded] = useState(false)
-  const isLong = items.length > ARRAY_PREVIEW_COUNT
-  const visible = expanded ? items : items.slice(0, ARRAY_PREVIEW_COUNT)
-  return (
-    <>
-      {visible.map((item) => JSON.stringify(item)).join(', ')}
-      {isLong ? (
-        <>
-          {!expanded ? ` and ${items.length - ARRAY_PREVIEW_COUNT} more` : null}{' '}
-          <button
-            type="button"
-            className="audit-detail-seemore"
-            onClick={() => setExpanded((current) => !current)}
-          >
-            {expanded ? 'Show less' : 'See more'}
-          </button>
-        </>
-      ) : null}
-    </>
-  )
-}
-
-function ActionDetailPanel({ entry, documentTitle, documentFileName }: {
-  entry: AuditLogEntry
-  documentTitle: string | null
-  documentFileName: string | null
-}) {
-  const details = entry.detail ? Object.entries(entry.detail) : []
-  return (
-    <aside className="audit-detail-panel" aria-label="Selected action details">
-      <div className="audit-detail-heading">
-        <span className="audit-detail-icon" aria-hidden="true"><ScrollText /></span>
-        <div>
-          <span className="audit-detail-kicker">Selected action</span>
-          <h3>{auditActionLabel(entry.action)}</h3>
-        </div>
-      </div>
-      <dl className="audit-detail-facts">
-        <div>
-          <dt>Date and time</dt>
-          <dd><time dateTime={entry.created_at}>{formatAuditTime(entry.created_at)}</time></dd>
-        </div>
-        {entry.document_id ? (
-          <div>
-            <dt>Document</dt>
-            <dd>
-              <strong>{documentTitle ?? 'Not currently loaded'}</strong>
-              <small className="mono">{documentFileName ?? entry.document_id}</small>
-            </dd>
-          </div>
-        ) : null}
-      </dl>
-      {details.length > 0 ? (
-        <div className="audit-detail-description">
-          <span>What happened</span>
-          {details.map(([key, value]) => (
-            <p key={key}>
-              <strong>{key}:</strong>{' '}
-              {Array.isArray(value) ? <DetailArrayValue items={value} /> : JSON.stringify(value)}
-            </p>
-          ))}
-        </div>
-      ) : null}
-    </aside>
-  )
-}
 
 export function HistoryPage() {
   const [view, setView] = useState<HistoryView>('documents')
@@ -172,46 +102,15 @@ export function HistoryPage() {
       ) : (
         <div className="audit-ledger-workspace">
           <div className="audit-ledger-panel">
-            <div className="audit-ledger-table-wrap">
-              <table className="audit-ledger-table">
-                <caption className="sr-only">Your actions</caption>
-                <thead>
-                  <tr>
-                    <th scope="col">Time</th>
-                    <th scope="col">Action</th>
-                    <th scope="col">Detail</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {entries.map((entry) => (
-                    <tr
-                      key={entry.id}
-                      className={`audit-ledger-record${selectedAction?.id === entry.id ? ' is-selected' : ''}`}
-                      onClick={() => setSelectedActionId(entry.id)}
-                    >
-                      <td>
-                        <button
-                          className="audit-ledger-select"
-                          type="button"
-                          aria-current={selectedAction?.id === entry.id ? 'true' : undefined}
-                          onClick={(event) => {
-                            event.stopPropagation()
-                            setSelectedActionId(entry.id)
-                          }}
-                        >
-                          <time className="mono" dateTime={entry.created_at}>{formatAuditTime(entry.created_at)}</time>
-                        </button>
-                      </td>
-                      <td>{auditActionLabel(entry.action)}</td>
-                      <td className="admin-table-detail">{formatAuditDetail(entry.detail)}</td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-            </div>
+            <AuditLedgerTable
+              entries={entries}
+              selectedId={selectedAction?.id ?? null}
+              onSelect={setSelectedActionId}
+              caption="Your actions"
+            />
           </div>
           {selectedAction ? (
-            <ActionDetailPanel
+            <AuditActionDetailPanel
               entry={selectedAction}
               documentTitle={selectedDocument?.title ?? null}
               documentFileName={selectedDocument?.fileName ?? null}

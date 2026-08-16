@@ -11,6 +11,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
+from . import audit
 from .config import Settings
 from .exporter import build_accessible_html, build_json_ld, build_publication
 from .logging_utils import document_logger, sanitize_for_log
@@ -259,7 +260,12 @@ class ProcessingManager:
         self._cancelled: set[str] = set()
         self._lock = threading.RLock()
 
-    def start(self, document_id: str) -> dict[str, Any]:
+    def start(
+        self,
+        document_id: str,
+        actor_id: str | None = None,
+        actor_email: str | None = None,
+    ) -> dict[str, Any]:
         record = self.store.get_record(document_id)
         current = record["job"]
         if current["state"] == "running":
@@ -296,7 +302,7 @@ class ProcessingManager:
         self.store.update_record(
             document_id, job=job, approved_at=None, metadata_confirmed=False
         )
-        self.executor.submit(self._run, document_id)
+        self.executor.submit(self._run, document_id, actor_id, actor_email)
         return self.status(document_id)
 
     def stop(self, document_id: str) -> dict[str, Any]:
@@ -357,7 +363,12 @@ class ProcessingManager:
             job={**record["job"], "current_step": step, "message": message},
         )
 
-    def _run(self, document_id: str) -> None:
+    def _run(
+        self,
+        document_id: str,
+        actor_id: str | None = None,
+        actor_email: str | None = None,
+    ) -> None:
         log = document_logger(__name__, document_id)
         started = time.monotonic()
         log.info("processing started")
@@ -390,14 +401,22 @@ class ProcessingManager:
             if record["job"]["state"] == "idle":
                 return
             log.error("processing failed: %s", sanitize_for_log(exc))
+            public_message = _public_processing_error(exc)
             self.store.update_record(
                 document_id,
                 job={
                     **record["job"],
                     "state": "failed",
                     "remaining_seconds": 0,
-                    "message": _public_processing_error(exc),
+                    "message": public_message,
                 },
+            )
+            audit.record_audit_sync(
+                "process_failed",
+                document_id=document_id,
+                actor_id=actor_id,
+                actor_email=actor_email,
+                detail={"error": public_message},
             )
 
     def _persist_output(

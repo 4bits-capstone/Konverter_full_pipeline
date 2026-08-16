@@ -332,7 +332,7 @@ async def delete_document(document_id: str, user: CurrentUser) -> Response:
 @app.post("/api/documents/{document_id}/process", response_model=DocumentProcessingJob)
 async def start_processing(document_id: str, user: CurrentUser) -> DocumentProcessingJob:
     _require_owner(_record(document_id), user)
-    job = DocumentProcessingJob(**processing.start(document_id))
+    job = DocumentProcessingJob(**processing.start(document_id, user.get("id"), user.get("email")))
     await audit.record_audit(
         "process_start",
         document_id=document_id,
@@ -345,9 +345,16 @@ async def start_processing(document_id: str, user: CurrentUser) -> DocumentProce
 @app.delete(
     "/api/documents/{document_id}/process", response_model=DocumentProcessingJob
 )
-def stop_processing(document_id: str, user: CurrentUser) -> DocumentProcessingJob:
+async def stop_processing(document_id: str, user: CurrentUser) -> DocumentProcessingJob:
     _require_owner(_record(document_id), user)
-    return DocumentProcessingJob(**processing.stop(document_id))
+    job = DocumentProcessingJob(**processing.stop(document_id))
+    await audit.record_audit(
+        "process_stop",
+        document_id=document_id,
+        actor_id=user.get("id"),
+        actor_email=user.get("email"),
+    )
+    return job
 
 
 def _processing_state_response(document_id: str) -> Response:

@@ -716,6 +716,7 @@
   border-radius: var(--radius) var(--radius) 0 0;
   background: var(--white);
   color: var(--ink-2);
+  text-decoration: none;
   cursor: pointer
 }
 
@@ -848,20 +849,20 @@
 
 .converter-app .audit-ledger-select {
   display: inline-flex;
-  padding: 4px 6px;
-  margin: -4px -6px;
+  width: 100%;
+  padding: 0;
   border: 0;
-  border-radius: 4px;
   background: transparent;
-  color: var(--blue-dark);
+  color: inherit;
+  font: inherit;
+  text-align: left;
   cursor: pointer
 }
 
-.converter-app .audit-ledger-select:hover,
 .converter-app .audit-ledger-select:focus-visible {
-  background: var(--blue-soft);
   outline: 2px solid var(--blue);
-  outline-offset: 1px
+  outline-offset: 2px;
+  border-radius: 4px
 }
 
 .converter-app .audit-detail-panel {

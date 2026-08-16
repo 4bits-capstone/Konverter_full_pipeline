@@ -4,6 +4,8 @@ export const auditActionLabels: Record<string, string> = {
   upload: 'Uploaded document',
   delete_document: 'Deleted document',
   process_start: 'Started processing',
+  process_stop: 'Stopped processing',
+  process_failed: 'Processing failed',
   edit_review_item: 'Edited review item',
   edit_metadata: 'Edited metadata',
   approve: 'Approved document',
@@ -43,11 +45,13 @@ export function formatAuditTime(value: string): string {
   return Number.isNaN(date.getTime()) ? value : auditTimeFormatter.format(date)
 }
 
+export type AuditChainStatus = 'linked' | 'unverifiable' | 'broken'
+
 /** Whether this row's prev_hash matches the entry_hash of the row right
  * before it in the chain (entries are newest-first, so "before" is the next
  * array element). Rows written before Layer 4's trigger existed have null
  * hashes and are treated as unverifiable rather than broken. */
-export function auditChainStatus(entries: AuditLogEntry[], index: number): 'linked' | 'unverifiable' | 'broken' {
+export function auditChainStatus(entries: AuditLogEntry[], index: number): AuditChainStatus {
   const entry = entries[index]
   const previous = entries[index + 1]
   if (!entry.prev_hash || !entry.entry_hash) return 'unverifiable'

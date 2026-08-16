@@ -82,6 +82,46 @@ async def record_audit(
     )
 
 
+def record_audit_sync(
+    action: str,
+    *,
+    document_id: str | None = None,
+    actor_id: str | None = None,
+    actor_email: str | None = None,
+    detail: dict[str, Any] | None = None,
+) -> None:
+    """Sync twin of record_audit, for callers outside an event loop — the
+    processing pipeline runs in a plain ThreadPoolExecutor thread, not
+    asyncio, so it can't await. Same swallow-and-log failure behaviour."""
+    if not SUPABASE_URL or not SERVICE_KEY:
+        log.warning("audit: Supabase not configured; skipping audit_log")
+        return
+    row = {
+        "action": action,
+        "document_id": document_id,
+        "actor_id": actor_id,
+        "actor_email": actor_email,
+        "detail": detail,
+    }
+    try:
+        with httpx.Client(timeout=10) as client:
+            response = client.post(
+                f"{SUPABASE_URL}/rest/v1/audit_log",
+                headers={
+                    "apikey": SERVICE_KEY,
+                    "Authorization": f"Bearer {SERVICE_KEY}",
+                    "Content-Type": "application/json",
+                },
+                json=row,
+            )
+        if response.status_code >= 300:
+            log.warning(
+                "audit: audit_log write failed: %s %s", response.status_code, response.text
+            )
+    except Exception as exc:
+        log.warning("audit: audit_log write error: %s", exc)
+
+
 async def _get(params: dict[str, str]) -> list[dict[str, Any]]:
     if not SUPABASE_URL or not SERVICE_KEY:
         log.warning("audit: Supabase not configured; returning empty audit log")
