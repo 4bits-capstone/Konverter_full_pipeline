@@ -29,8 +29,8 @@ function TableCell({ cell }: { cell: DoclingTableCell }) {
 
 function NumberedParagraph({ number, text }: { number?: string; text: string }) {
   return (
-    <div className="reader-numbered-paragraph">
-      <span className="reader-paragraph-number" aria-hidden="true">{number}</span>
+    <div className="numbered-paragraph">
+      <span aria-hidden="true">{number}</span>
       <p>
         {number ? <span className="sr-only">Paragraph {number}. </span> : null}
         {text}
@@ -97,8 +97,8 @@ function NestedList({ nodes, start }: { nodes: ListTreeNode[]; start?: number })
       </li>
     ))
     return group[0].ordered
-      ? <ol className="reader-source-list" start={groupIndex === 0 ? start : undefined} key={`ordered-${groupIndex}`}>{items}</ol>
-      : <ul className="reader-source-list" key={`unordered-${groupIndex}`}>{items}</ul>
+      ? <ol className="source-list" start={groupIndex === 0 ? start : undefined} key={`ordered-${groupIndex}`}>{items}</ol>
+      : <ul className="source-list" key={`unordered-${groupIndex}`}>{items}</ul>
   })}</>
 }
 
@@ -114,7 +114,7 @@ function ContentBlock({
   if (block.type === 'paragraph') {
     return block.number
       ? <NumberedParagraph number={block.number} text={block.text} />
-      : <p className="docling-paragraph">{block.text}</p>
+      : <p>{block.text}</p>
   }
 
   if (block.type === 'list') {
@@ -136,7 +136,7 @@ function ContentBlock({
             const numbered = numberedItems[index]
             return numbered
               ? <NumberedParagraph number={numbered[1]} text={numbered[2]} key={`${numbered[1]}-${index}`} />
-              : <ul className="reader-source-list" key={`${item.text}-${index}`}><li>{item.text}</li></ul>
+              : <ul className="source-list" key={`${item.text}-${index}`}><li>{item.text}</li></ul>
           })}
         </div>
       )
@@ -154,11 +154,11 @@ function ContentBlock({
     const titleId = `${block.id}-title`
     return (
       <section
-        className={`docling-box-section docling-box-section--${block.variant}`}
+        className={`document-box-section document-box-section--${block.variant}`}
         aria-labelledby={titleId}
       >
         <h3 id={titleId}>{block.title}</h3>
-        <div className="docling-box-section-content">
+        <div className="document-box-section-content">
           {block.blocks.map((child, index) => (
             <ContentBlock
               block={child}
@@ -173,12 +173,26 @@ function ContentBlock({
 
   if (block.type === 'table') {
     const caption = block.caption?.trim()
+    const headerRowIndex = block.rows.findIndex(
+      (row) => row.length > 0 && row.every((cell) => cell.columnHeader),
+    )
+    const headerRows = headerRowIndex >= 0 ? [block.rows[headerRowIndex]] : []
+    const bodyRows = block.rows.filter((_, index) => index !== headerRowIndex)
     return (
-      <div className="docling-table-scroll" tabIndex={0} role="region" aria-label={`${caption || 'Table'}; scroll horizontally when needed`}>
-        <table id={block.id} className="docling-table">
+      <div className="table-scroll" tabIndex={0} role="region" aria-label={`${caption || 'Table'}; scroll horizontally when needed`}>
+        <table id={block.id}>
           {caption ? <caption>{caption}</caption> : null}
+          {headerRows.length ? (
+            <thead>
+              {headerRows.map((row, rowIndex) => (
+                <tr key={`${block.id}-head-${rowIndex}`}>
+                  {row.map((cell, cellIndex) => <TableCell cell={cell} key={`${rowIndex}-${cell.startColumn}-${cellIndex}`} />)}
+                </tr>
+              ))}
+            </thead>
+          ) : null}
           <tbody>
-            {block.rows.map((row, rowIndex) => (
+            {bodyRows.map((row, rowIndex) => (
               <tr key={`${block.id}-row-${rowIndex}`}>
                 {row.map((cell, cellIndex) => <TableCell cell={cell} key={`${rowIndex}-${cell.startColumn}-${cellIndex}`} />)}
               </tr>
@@ -192,13 +206,13 @@ function ContentBlock({
   if (block.type === 'figure') {
     const imageUrl = block.imageKey && figureUrl ? figureUrl(block.imageKey) : undefined
     return (
-      <figure className="docling-figure" id={block.id}>
+      <figure id={block.id}>
         {imageUrl ? (
-          <img className="docling-figure-image" src={imageUrl} alt={block.caption || 'Document figure'} loading="lazy" />
+          <img className="document-figure-image" src={imageUrl} alt={block.caption || 'Document figure'} loading="lazy" />
         ) : (
-          <div className="docling-figure-placeholder" role="img" aria-label={block.caption}>
+          <div className="figure-unavailable" role="img" aria-label={block.caption}>
             <FileImage aria-hidden="true" />
-            <span>The original figure preview is unavailable.</span>
+            <span>The original figure image is unavailable.</span>
           </div>
         )}
         <figcaption>{block.caption}</figcaption>
@@ -206,14 +220,14 @@ function ContentBlock({
     )
   }
 
-  if (block.type === 'caption') return <p className="docling-caption">{block.text}</p>
+  if (block.type === 'caption') return <p className="caption">{block.text}</p>
 
   if (block.type === 'formula') {
-    return <div className="docling-formula" role="math" aria-label="Formula">{block.text}</div>
+    return <div className="document-formula" role="math" aria-label="Formula">{block.text}</div>
   }
 
   if (block.type === 'footnote') {
-    return <p className="docling-footnote" id={block.id} role="doc-footnote">{block.text}</p>
+    return <p className="document-footnote" id={block.id} role="doc-footnote">{block.text}</p>
   }
 
   if (block.type === 'checkbox') {
@@ -244,10 +258,12 @@ export function DoclingContent({
   blocks,
   footnotes,
   figureUrl,
+  sectionId = 'publication',
 }: {
   blocks: DoclingBlock[]
   footnotes: DoclingFootnote[]
   figureUrl?: (imageKey: string) => string
+  sectionId?: string
 }) {
   return (
     <>
@@ -256,8 +272,8 @@ export function DoclingContent({
       </div>
 
       {footnotes.length ? (
-        <details className="reader-footnotes">
-          <summary>References and footnotes ({footnotes.length})</summary>
+        <section className="reader-footnotes" aria-labelledby={`footnotes-${sectionId}`}>
+          <h2 id={`footnotes-${sectionId}`}>References and footnotes</h2>
           <ol>
             {footnotes.map((footnote) => (
               <li id={footnote.id} key={footnote.id}>
@@ -265,7 +281,7 @@ export function DoclingContent({
               </li>
             ))}
           </ol>
-        </details>
+        </section>
       ) : null}
     </>
   )

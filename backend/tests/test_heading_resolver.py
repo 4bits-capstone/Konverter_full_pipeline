@@ -251,6 +251,72 @@ def test_chapter_title_pages_repair_flattened_toc_h1_and_local_h2(
     )
 
 
+def test_toc_indentation_and_unlabelled_chapter_list_resolve_h2_h3(
+    tmp_path: Path,
+) -> None:
+    pdf_path = tmp_path / "indented-contents-and-chapter-list.pdf"
+    document = pymupdf.open()
+    for _ in range(9):
+        document.new_page(width=595, height=842)
+    document[0].insert_text((72, 90), "Example report", fontsize=24)
+
+    contents = document[1]
+    contents.insert_text((72, 70), "Contents", fontsize=20)
+    # The printed destination points to the first body page. The designed
+    # chapter-opening page with its local H2 list is immediately before it.
+    contents.insert_text((72, 115), "1. Introduction ........ 2", fontsize=11)
+    contents.insert_text((96, 140), "Origins ................. 2", fontsize=11)
+    contents.insert_text((96, 165), "Previous reviews ........ 3", fontsize=11)
+    contents.insert_text((96, 190), "Our process .............. 4", fontsize=11)
+    contents.insert_text((120, 215), "Submissions .............. 4", fontsize=10)
+    contents.insert_text((120, 240), "Consultations ............ 4", fontsize=10)
+    contents.insert_text((120, 265), "Survey ................... 4", fontsize=10)
+    # This row is deliberately over-indented in the main TOC. The chapter
+    # opening list below is the second source confirming that it is an H2.
+    contents.insert_text((120, 290), "Structure of the report . 5", fontsize=11)
+    contents.insert_text((72, 315), "2. Current law ........... 6", fontsize=11)
+
+    chapter = document[2]
+    chapter.insert_text((510, 65), "1", fontsize=34)
+    chapter.insert_text((72, 175), "Introduction", fontsize=28, fontname="hebo")
+    # The design has no literal CONTENTS heading. Every row in this compact
+    # chapter-opening list is nevertheless an H2.
+    chapter.insert_text((96, 285), "2 Origins", fontsize=11, fontname="hebo")
+    chapter.insert_text((96, 310), "3 Previous reviews", fontsize=11, fontname="hebo")
+    chapter.insert_text((96, 335), "4 Our process", fontsize=11, fontname="hebo")
+    chapter.insert_text((96, 360), "5 Structure of the report", fontsize=11, fontname="hebo")
+
+    document[3].insert_text((72, 90), "Origins", fontsize=16, fontname="hebo")
+    document[4].insert_text((72, 90), "Previous reviews", fontsize=16, fontname="hebo")
+    document[5].insert_text((72, 90), "Our process", fontsize=16, fontname="hebo")
+    document[5].insert_text((96, 135), "Submissions", fontsize=13, fontname="hebo")
+    document[5].insert_text((96, 170), "Consultations", fontsize=13, fontname="hebo")
+    document[5].insert_text((96, 205), "Survey", fontsize=13, fontname="hebo")
+    document[6].insert_text((72, 90), "Structure of the report", fontsize=16, fontname="hebo")
+    document[7].insert_text((72, 90), "2. Current law", fontsize=22, fontname="hebo")
+    document.set_page_labels(
+        [
+            {"startpage": 0, "prefix": "", "style": "r", "firstpagenum": 1},
+            {"startpage": 2, "prefix": "", "style": "D", "firstpagenum": 1},
+        ]
+    )
+    document.save(pdf_path)
+    document.close()
+
+    outline = extract_toc_outline(pdf_path)
+    levels = {entry.title: entry.level for entry in outline.entries}
+
+    assert levels["1. Introduction"] == 1
+    assert levels["Origins"] == 2
+    assert levels["Previous reviews"] == 2
+    assert levels["Our process"] == 2
+    assert levels["Structure of the report"] == 2
+    assert levels["Submissions"] == 3
+    assert levels["Consultations"] == 3
+    assert levels["Survey"] == 3
+    assert levels["2. Current law"] == 1
+
+
 def test_printed_page_labels_win_over_conflicting_duplicate_bookmarks(
     tmp_path: Path,
 ) -> None:

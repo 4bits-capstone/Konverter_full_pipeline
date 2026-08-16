@@ -3,9 +3,12 @@
 Docling's native heading hierarchy is the fallback signal for body headings.  This
 module supplies the publication contract that Docling cannot infer on its own:
 
-* the printed contents pages are authoritative for H1/H2 navigation;
+* the printed contents pages are authoritative for heading indentation;
 * front matter and back matter listed there are treated like any other H1;
-* chapter/part entries are H1 and their listed descendants are H2;
+* chapter/part entries are H1, their first indented tier is H2, and more
+  deeply indented rows remain H3;
+* every entry in a chapter-opening contents list is an H2, even when the
+  design omits a literal ``Contents`` label;
 * printed contents rows are removed from accessible output; and
 * a missing Docling heading is restored from the printed contents entry.
 
@@ -620,6 +623,36 @@ def _normalise_outline_levels(entries: list[TocEntry]) -> list[TocEntry]:
         for offset, entry in enumerate(candidates[:missing], start=1):
             entry.level = 1
             entry.title = f"Chapter {left_number + offset}: {entry.title}"
+
+    # Preserve the hierarchy encoded by the printed TOC's indentation.  The
+    # first child indentation beneath an H1 is H2; a visibly deeper tier is H3.
+    # Previously all non-H1 rows were flattened to H2, which incorrectly put
+    # entries such as Submissions/Consultations into the chapter navigation.
+    h1_indices = [index for index, entry in enumerate(output) if entry.level == 1]
+    for position, parent_index in enumerate(h1_indices):
+        end_index = (
+            h1_indices[position + 1]
+            if position + 1 < len(h1_indices)
+            else len(output)
+        )
+        children = [
+            entry
+            for entry in output[parent_index + 1 : end_index]
+            if entry.level != 1
+        ]
+        if not children:
+            continue
+        child_tiers = _cluster_positions(
+            [entry.indent for entry in children], tolerance=7.0
+        )
+        h2_indent = min(child_tiers) if child_tiers else min(
+            entry.indent for entry in children
+        )
+        for entry in children:
+            entry.level = 3 if entry.indent > h2_indent + 7.0 else 2
+
+    for sequence, entry in enumerate(output):
+        entry.sequence = sequence
     return output
 
 
@@ -653,7 +686,7 @@ def _locate_entry_targets(document: pymupdf.Document, outline: TocOutline) -> No
     # such as "Introduction" and "Conclusion"; selecting the best bookmark
     # first can therefore move Chapter 1 near the end of the document.
     for entry in outline.entries:
-        if entry.printed_page:
+        if entry.target_page is None and entry.printed_page:
             labelled = labels.get(entry.printed_page.casefold(), [])
             labelled = [page for page in labelled if page > (outline.last_page or 0)]
             if labelled:
@@ -919,16 +952,36 @@ def _chapter_page_from_lines(
     if not title:
         return None
 
+    # Chapter-opening pages often contain a compact page-number/title list but
+    # no literal CONTENTS label.  Once the chapter title itself has been
+    # confirmed, two or more concise rows below it are sufficient to identify
+    # that local contents list.  Every row in this list is an H2; the main TOC
+    # remains responsible for distinguishing any more deeply indented H3 rows.
+    parsed, _ = _entries_from_page(page, page_number)
+    local_candidates = [
+        entry
+        for entry in parsed
+        if entry.printed_page
+        and entry.bbox[1] > marker.y1 + 8
+        and entry.bbox[1] <= height * 0.9
+        and len(entry.title) <= 220
+        and len(entry.title.split()) <= 24
+        and not _INTERNAL_CONTENTS.fullmatch(entry.title)
+        and _similarity(entry.title, title) < 0.86
+        and not _CHAPTER_MARKER.fullmatch(entry.title)
+    ]
+    local_candidates.sort(key=lambda entry: (entry.bbox[1], entry.bbox[0]))
+    compact_unlabelled_list = bool(
+        len(local_candidates) >= 2
+        and sum(entry.prominent for entry in local_candidates) >= 2
+        and all(
+            following.bbox[1] - previous.bbox[3] <= height * 0.12
+            for previous, following in zip(local_candidates, local_candidates[1:])
+        )
+    )
     local_entries: list[TocEntry] = []
-    if local_contents:
-        parsed, _ = _entries_from_page(page, page_number)
-        for entry in parsed:
-            if (
-                _INTERNAL_CONTENTS.fullmatch(entry.title)
-                or _similarity(entry.title, title) >= 0.86
-                or _CHAPTER_MARKER.fullmatch(entry.title)
-            ):
-                continue
+    if local_contents or compact_unlabelled_list:
+        for entry in local_candidates:
             entry.level = 2
             local_entries.append(entry)
 
@@ -947,14 +1000,25 @@ def _detect_chapter_pages(
 ) -> list[ChapterPage]:
     """Find body chapter pages as a validation layer for TOC H1/H2 labels."""
 
+    # A printed chapter destination often points to the first body page while
+    # the designed chapter-opening page (with its H2 list) is immediately
+    # before it. Inspect the destination and its neighbours so that both pages
+    # can corroborate the hierarchy; duplicate chapter numbers are resolved to
+    # the earlier opening page below.
     candidate_pages = {
-        int(entry.target_page)
+        nearby_page
         for entry in outline.entries
         if entry.target_page is not None
         and (
             _CHAPTER_MARKER.match(entry.title)
             or _NUMBERED_CHAPTER_TITLE.match(entry.title)
         )
+        for nearby_page in (
+            int(entry.target_page) - 1,
+            int(entry.target_page),
+            int(entry.target_page) + 1,
+        )
+        if 1 <= nearby_page <= len(document)
     }
     existing_numbers: list[int] = []
     for entry in outline.entries:
@@ -1100,7 +1164,19 @@ def _repair_outline_from_chapter_pages(
             len(outline.entries),
         )
         for local in chapter.local_entries:
-            if any(_similarity(local.title, entry.title) >= 0.9 for entry in outline.entries):
+            existing = next(
+                (
+                    entry
+                    for entry in outline.entries[parent_index + 1 : insert_at]
+                    if _similarity(local.title, entry.title) >= 0.9
+                ),
+                None,
+            )
+            if existing is not None:
+                # The chapter-opening list is the second hierarchy signal and
+                # explicitly says this row is H2.  It therefore promotes a
+                # matching main-TOC row that indentation had classified as H3.
+                existing.level = 2
                 continue
             local.level = 2
             outline.entries.insert(insert_at, local)
