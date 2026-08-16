@@ -113,6 +113,26 @@ def _require_owner(record: dict, user: dict) -> None:
         raise HTTPException(status_code=404, detail="Document not found")
 
 
+_LARGE_REVIEW_FIELDS = {"corrected_text", "corrected_table"}
+
+
+def _safe_review_changes(changes: dict[str, Any]) -> dict[str, Any]:
+    """Audit-safe view of a review-item patch: short fields (status, type,
+    label) are logged as-is, but large content fields are replaced with a
+    marker so the immutable audit_log doesn't end up storing full corrected
+    text/table payloads (up to 200k chars) on every edit."""
+    return {
+        key: ("updated" if key in _LARGE_REVIEW_FIELDS else value)
+        for key, value in changes.items()
+    }
+
+
+def _review_item_label(item: dict[str, Any]) -> str:
+    title = item.get("title") or item.get("label") or item.get("id", "item")
+    page = item.get("page")
+    return f"{title} (p.{page})" if page is not None else str(title)
+
+
 def _pretty_json_download(
     payload: Any,
     filename: str,
@@ -402,7 +422,8 @@ def get_review_items(document_id: str) -> list[ReviewItem]:
 async def update_review_item(
     document_id: str, item_id: str, patch: ReviewPatch, user: CurrentUser
 ) -> ReviewItem:
-    _require_owner(_require_complete(document_id), user)
+    record = _require_complete(document_id)
+    _require_owner(record, user)
     changes = patch.model_dump(exclude_unset=True)
     try:
         item = workflow.update_review_item(document_id, item_id, changes)
@@ -413,7 +434,11 @@ async def update_review_item(
         document_id=document_id,
         actor_id=user.get("id"),
         actor_email=user.get("email"),
-        detail={"item_id": item_id, "changes": changes},
+        detail={
+            "file_name": record.get("file_name"),
+            "item": _review_item_label(item),
+            "changes": _safe_review_changes(changes),
+        },
     )
     return ReviewItem(**item)
 
@@ -427,7 +452,8 @@ async def update_review_items_bulk(
     patch: ReviewBulkPatch,
     user: CurrentUser,
 ) -> list[ReviewItem]:
-    _require_owner(_require_complete(document_id), user)
+    record = _require_complete(document_id)
+    _require_owner(record, user)
     changes = patch.changes.model_dump(exclude_unset=True)
     try:
         items = workflow.update_review_items(document_id, patch.item_ids, changes)
@@ -438,7 +464,11 @@ async def update_review_items_bulk(
         document_id=document_id,
         actor_id=user.get("id"),
         actor_email=user.get("email"),
-        detail={"item_ids": patch.item_ids, "changes": changes},
+        detail={
+            "file_name": record.get("file_name"),
+            "items": [_review_item_label(item) for item in items],
+            "changes": _safe_review_changes(changes),
+        },
     )
     return [ReviewItem(**item) for item in items]
 
@@ -448,14 +478,25 @@ async def update_review_items_bulk(
     response_model=list[ReviewItem],
 )
 async def resolve_all(document_id: str, user: CurrentUser) -> list[ReviewItem]:
-    _require_owner(_require_complete(document_id), user)
+    record = _require_complete(document_id)
+    _require_owner(record, user)
+    before = workflow.get_review_items(document_id)
+    changed_ids = {
+        item["id"] for item in before if item["status"] in {"pending", "needs_attention"}
+    }
     items = workflow.resolve_all(document_id)
+    changed_items = [item for item in items if item["id"] in changed_ids]
     await audit.record_audit(
         "edit_review_item",
         document_id=document_id,
         actor_id=user.get("id"),
         actor_email=user.get("email"),
-        detail={"resolve_all": True, "count": len(items)},
+        detail={
+            "file_name": record.get("file_name"),
+            "resolve_all": True,
+            "count": len(changed_items),
+            "items": [_review_item_label(item) for item in changed_items],
+        },
     )
     return [ReviewItem(**item) for item in items]
 
