@@ -101,10 +101,9 @@ export function DetailArrayValue({ items }: { items: unknown[] }) {
   const [expanded, setExpanded] = useState(false)
   const isLong = items.length > ARRAY_PREVIEW_COUNT
   const visible = expanded ? items : items.slice(0, ARRAY_PREVIEW_COUNT)
-  const format = (item: unknown) => (typeof item === 'string' ? item : JSON.stringify(item))
   return (
     <>
-      {visible.map(format).join(', ')}
+      {visible.map((item) => JSON.stringify(item)).join(', ')}
       {isLong ? (
         <>
           {!expanded ? ` and ${items.length - ARRAY_PREVIEW_COUNT} more` : null}{' '}

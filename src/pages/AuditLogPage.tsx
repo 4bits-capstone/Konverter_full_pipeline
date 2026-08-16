@@ -4,28 +4,15 @@ import { useEffect, useMemo, useState } from 'react'
 import { Link } from 'react-router-dom'
 import { AdminModeSwitcher } from '../components/AdminModeSwitcher'
 import { AuditActionDetailPanel, AuditLedgerTable } from '../components/AuditActionDetail'
-import { auditActionLabel, auditActionLabels, auditChainStatus, type AuditChainStatus } from '../lib/auditFormatting'
+import { auditActionLabel, auditActionLabels, auditChainStatus } from '../lib/auditFormatting'
 import { converterStagePath } from '../lib/converterRoutes'
 import { auditService, documentService } from '../services'
 
 const actionOptions = Object.keys(auditActionLabels)
 
-type SortOrder = 'newest' | 'oldest'
-type ChainFilter = 'all' | AuditChainStatus
-
-const chainFilterLabels: Record<ChainFilter, string> = {
-  all: 'All chain states',
-  linked: 'Linked',
-  unverifiable: 'Unverifiable',
-  broken: 'Broken (tampered)',
-}
-
 export function AuditLogPage() {
   const [search, setSearch] = useState('')
   const [actionFilter, setActionFilter] = useState('all')
-  const [actorFilter, setActorFilter] = useState('all')
-  const [chainFilter, setChainFilter] = useState<ChainFilter>('all')
-  const [sortOrder, setSortOrder] = useState<SortOrder>('newest')
   const [selectedId, setSelectedId] = useState<number | null>(null)
 
   const { data: entries = [], isLoading, isError } = useQuery({
@@ -37,28 +24,17 @@ export function AuditLogPage() {
     queryFn: () => documentService.listAllDocuments(),
   })
 
-  const actorOptions = useMemo(() => {
-    const emails = new Set<string>()
-    entries.forEach((entry) => {
-      if (entry.actor_email) emails.add(entry.actor_email)
-    })
-    return Array.from(emails).sort((a, b) => a.localeCompare(b))
-  }, [entries])
-
   const visibleEntries = useMemo(() => {
     const query = search.trim().toLocaleLowerCase('en-AU')
-    const filtered = entries.filter((entry, index) => (
+    return entries.filter((entry) => (
       (actionFilter === 'all' || entry.action === actionFilter)
-      && (actorFilter === 'all' || entry.actor_email === actorFilter)
-      && (chainFilter === 'all' || auditChainStatus(entries, index) === chainFilter)
       && (!query || [entry.actor_email, entry.document_id, auditActionLabel(entry.action)]
         .filter(Boolean)
         .join(' ')
         .toLocaleLowerCase('en-AU')
         .includes(query))
     ))
-    return sortOrder === 'oldest' ? [...filtered].reverse() : filtered
-  }, [entries, search, actionFilter, actorFilter, chainFilter, sortOrder])
+  }, [entries, search, actionFilter])
 
   useEffect(() => {
     if (selectedId && visibleEntries.some((entry) => entry.id === selectedId)) return
@@ -67,7 +43,7 @@ export function AuditLogPage() {
 
   const selectedEntry = visibleEntries.find((entry) => entry.id === selectedId) ?? null
   const selectedDocument = selectedEntry ? documents.find((document) => document.id === selectedEntry.document_id) : undefined
-  const hasFilters = Boolean(search) || actionFilter !== 'all' || actorFilter !== 'all' || chainFilter !== 'all'
+  const hasFilters = Boolean(search) || actionFilter !== 'all'
 
   return (
     <section className="screen active" aria-labelledby="audit-log-heading">
@@ -110,30 +86,6 @@ export function AuditLogPage() {
                 {actionOptions.map((action) => (
                   <option key={action} value={action}>{auditActionLabel(action)}</option>
                 ))}
-              </select>
-            </label>
-            <label className="tb-control">
-              <span className="sr-only">Actor</span>
-              <select className="sel" value={actorFilter} onChange={(event) => setActorFilter(event.target.value)}>
-                <option value="all">All actors</option>
-                {actorOptions.map((email) => (
-                  <option key={email} value={email}>{email}</option>
-                ))}
-              </select>
-            </label>
-            <label className="tb-control">
-              <span className="sr-only">Chain status</span>
-              <select className="sel" value={chainFilter} onChange={(event) => setChainFilter(event.target.value as ChainFilter)}>
-                {(Object.keys(chainFilterLabels) as ChainFilter[]).map((value) => (
-                  <option key={value} value={value}>{chainFilterLabels[value]}</option>
-                ))}
-              </select>
-            </label>
-            <label className="tb-control">
-              <span className="sr-only">Sort</span>
-              <select className="sel" value={sortOrder} onChange={(event) => setSortOrder(event.target.value as SortOrder)}>
-                <option value="newest">Newest first</option>
-                <option value="oldest">Oldest first</option>
               </select>
             </label>
             <span className="admin-count">{visibleEntries.length} of {entries.length} events</span>

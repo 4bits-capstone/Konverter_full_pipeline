@@ -52,13 +52,9 @@ export function auditEntrySummary(entry: AuditLogEntry): string {
     case 'edit_metadata':
       return typeof detail.title === 'string' ? `Title: ${detail.title}` : '—'
     case 'edit_review_item':
-      if (typeof detail.item === 'string') return detail.item
-      if (Array.isArray(detail.items) && detail.items.length > 0) {
-        return detail.resolve_all
-          ? `${detail.items.length} items resolved`
-          : `${detail.items.length} items`
-      }
+      if (Array.isArray(detail.item_ids)) return `${detail.item_ids.length} items`
       if (detail.resolve_all) return `${typeof detail.count === 'number' ? detail.count : 'all'} items resolved`
+      if (typeof detail.item_id === 'string') return '1 item'
       return '—'
     case 'process_failed':
       if (typeof detail.file_name === 'string' && typeof detail.error === 'string') {
