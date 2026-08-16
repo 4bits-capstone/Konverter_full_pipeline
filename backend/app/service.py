@@ -416,7 +416,7 @@ class ProcessingManager:
                 document_id=document_id,
                 actor_id=actor_id,
                 actor_email=actor_email,
-                detail={"error": public_message},
+                detail={"error": public_message, "file_name": record.get("file_name")},
             )
 
     def _persist_output(

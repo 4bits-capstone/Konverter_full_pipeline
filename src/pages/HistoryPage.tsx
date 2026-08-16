@@ -1,17 +1,21 @@
 import { useQuery } from '@tanstack/react-query'
 import { ArrowLeft, Files, ScrollText } from 'lucide-react'
-import { useMemo, useState } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 import { Link } from 'react-router-dom'
 import { AuditActionDetailPanel, AuditLedgerTable, PageCountBadge, TimeStack } from '../components/AuditActionDetail'
-import { extractUploadedDocuments } from '../lib/auditFormatting'
+import { auditActionLabel, auditActionLabels, extractUploadedDocuments } from '../lib/auditFormatting'
 import { converterStagePath } from '../lib/converterRoutes'
 import { auditService } from '../services'
 import { useKonverter } from '../state/KonverterContext'
 
 type HistoryView = 'documents' | 'actions'
 
+const actionOptions = Object.keys(auditActionLabels)
+
 export function HistoryPage() {
   const [view, setView] = useState<HistoryView>('documents')
+  const [search, setSearch] = useState('')
+  const [actionFilter, setActionFilter] = useState('all')
   const [selectedActionId, setSelectedActionId] = useState<number | null>(null)
   const { documents } = useKonverter()
   const { data: entries = [], isLoading, isError } = useQuery({
@@ -20,7 +24,21 @@ export function HistoryPage() {
   })
 
   const uploads = useMemo(() => extractUploadedDocuments(entries), [entries])
-  const selectedAction = entries.find((entry) => entry.id === selectedActionId) ?? entries[0] ?? null
+  const visibleEntries = useMemo(() => {
+    const query = search.trim().toLocaleLowerCase('en-AU')
+    return entries.filter((entry) => (
+      (actionFilter === 'all' || entry.action === actionFilter)
+      && (!query || auditActionLabel(entry.action).toLocaleLowerCase('en-AU').includes(query))
+    ))
+  }, [entries, search, actionFilter])
+  const hasFilters = Boolean(search) || actionFilter !== 'all'
+
+  useEffect(() => {
+    if (selectedActionId && visibleEntries.some((entry) => entry.id === selectedActionId)) return
+    setSelectedActionId(visibleEntries[0]?.id ?? null)
+  }, [selectedActionId, visibleEntries])
+
+  const selectedAction = visibleEntries.find((entry) => entry.id === selectedActionId) ?? null
   const selectedDocument = selectedAction ? documents.find((document) => document.id === selectedAction.document_id) : undefined
 
   return (
@@ -100,23 +118,52 @@ export function HistoryPage() {
           <p className="hint">No activity recorded yet.</p>
         </div>
       ) : (
-        <div className="audit-ledger-workspace">
-          <div className="audit-ledger-panel">
-            <AuditLedgerTable
-              entries={entries}
-              selectedId={selectedAction?.id ?? null}
-              onSelect={setSelectedActionId}
-              caption="Your actions"
+        <>
+          <div className="admin-toolbar">
+            <input
+              className="input"
+              type="search"
+              value={search}
+              onChange={(event) => setSearch(event.target.value)}
+              placeholder="Search by action"
+              aria-label="Search your actions"
             />
+            <label className="tb-control">
+              <span className="sr-only">Action</span>
+              <select className="sel" value={actionFilter} onChange={(event) => setActionFilter(event.target.value)}>
+                <option value="all">All actions</option>
+                {actionOptions.map((action) => (
+                  <option key={action} value={action}>{auditActionLabel(action)}</option>
+                ))}
+              </select>
+            </label>
+            <span className="admin-count">{visibleEntries.length} of {entries.length} events</span>
           </div>
-          {selectedAction ? (
-            <AuditActionDetailPanel
-              entry={selectedAction}
-              documentTitle={selectedDocument?.title ?? null}
-              documentFileName={selectedDocument?.fileName ?? null}
-            />
-          ) : null}
-        </div>
+
+          {visibleEntries.length === 0 ? (
+            <div className="panel panel-pad">
+              <p className="hint">No actions match your filters.</p>
+            </div>
+          ) : (
+            <div className="audit-ledger-workspace">
+              <div className="audit-ledger-panel">
+                <AuditLedgerTable
+                  entries={visibleEntries}
+                  selectedId={selectedAction?.id ?? null}
+                  onSelect={setSelectedActionId}
+                  caption="Your actions"
+                />
+              </div>
+              {selectedAction ? (
+                <AuditActionDetailPanel
+                  entry={selectedAction}
+                  documentTitle={selectedDocument?.title ?? null}
+                  documentFileName={selectedDocument?.fileName ?? null}
+                />
+              ) : null}
+            </div>
+          )}
+        </>
       )}
     </section>
   )

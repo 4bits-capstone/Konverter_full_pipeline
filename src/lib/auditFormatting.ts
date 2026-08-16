@@ -44,6 +44,10 @@ export function auditEntrySummary(entry: AuditLogEntry): string {
   switch (entry.action) {
     case 'upload':
     case 'delete_document':
+    case 'process_start':
+    case 'process_stop':
+    case 'approve':
+    case 'revoke_approval':
       return typeof detail.file_name === 'string' ? detail.file_name : '—'
     case 'edit_metadata':
       return typeof detail.title === 'string' ? `Title: ${detail.title}` : '—'
@@ -53,6 +57,10 @@ export function auditEntrySummary(entry: AuditLogEntry): string {
       if (typeof detail.item_id === 'string') return '1 item'
       return '—'
     case 'process_failed':
+      if (typeof detail.file_name === 'string' && typeof detail.error === 'string') {
+        return `${detail.file_name} — ${detail.error}`
+      }
+      if (typeof detail.file_name === 'string') return detail.file_name
       return typeof detail.error === 'string' ? detail.error : '—'
     default:
       return '—'

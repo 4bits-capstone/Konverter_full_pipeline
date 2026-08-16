@@ -331,13 +331,15 @@ async def delete_document(document_id: str, user: CurrentUser) -> Response:
 
 @app.post("/api/documents/{document_id}/process", response_model=DocumentProcessingJob)
 async def start_processing(document_id: str, user: CurrentUser) -> DocumentProcessingJob:
-    _require_owner(_record(document_id), user)
+    record = _record(document_id)
+    _require_owner(record, user)
     job = DocumentProcessingJob(**processing.start(document_id, user.get("id"), user.get("email")))
     await audit.record_audit(
         "process_start",
         document_id=document_id,
         actor_id=user.get("id"),
         actor_email=user.get("email"),
+        detail={"file_name": record.get("file_name")},
     )
     return job
 
@@ -346,13 +348,15 @@ async def start_processing(document_id: str, user: CurrentUser) -> DocumentProce
     "/api/documents/{document_id}/process", response_model=DocumentProcessingJob
 )
 async def stop_processing(document_id: str, user: CurrentUser) -> DocumentProcessingJob:
-    _require_owner(_record(document_id), user)
+    record = _record(document_id)
+    _require_owner(record, user)
     job = DocumentProcessingJob(**processing.stop(document_id))
     await audit.record_audit(
         "process_stop",
         document_id=document_id,
         actor_id=user.get("id"),
         actor_email=user.get("email"),
+        detail={"file_name": record.get("file_name")},
     )
     return job
 
@@ -483,7 +487,8 @@ async def save_metadata(
 
 @app.post("/api/documents/{document_id}/approval", response_model=ApprovalResult)
 async def approve_document(document_id: str, user: CurrentUser) -> ApprovalResult:
-    _require_owner(_require_complete(document_id), user)
+    record = _require_complete(document_id)
+    _require_owner(record, user)
     try:
         approved_at = workflow.approve(document_id)
     except ValueError as exc:
@@ -493,20 +498,22 @@ async def approve_document(document_id: str, user: CurrentUser) -> ApprovalResul
         document_id=document_id,
         actor_id=user.get("id"),
         actor_email=user.get("email"),
-        detail={"approved_at": approved_at},
+        detail={"approved_at": approved_at, "file_name": record.get("file_name")},
     )
     return ApprovalResult(approved_at=approved_at)
 
 
 @app.delete("/api/documents/{document_id}/approval", status_code=204)
 async def revoke_approval(document_id: str, user: CurrentUser) -> Response:
-    _require_owner(_record(document_id), user)
+    record = _record(document_id)
+    _require_owner(record, user)
     workflow.revoke(document_id)
     await audit.record_audit(
         "revoke_approval",
         document_id=document_id,
         actor_id=user.get("id"),
         actor_email=user.get("email"),
+        detail={"file_name": record.get("file_name")},
     )
     return Response(status_code=204)
 
