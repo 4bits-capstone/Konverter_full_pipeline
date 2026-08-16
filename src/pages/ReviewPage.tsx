@@ -1668,8 +1668,8 @@ export function ReviewPage() {
                   value={sort}
                   onChange={(event) => setSort(event.target.value as Sort)}
                 >
-                  <option value="highest">Highest confidence first</option>
-                  <option value="lowest">Lowest confidence first</option>
+                  <option value="highest">Highest confidence</option>
+                  <option value="lowest">Lowest confidence</option>
                   <option value="page">Page order</option>
                 </select>
                 <ChevronDown aria-hidden="true" />

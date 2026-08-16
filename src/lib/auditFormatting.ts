@@ -16,19 +16,47 @@ export function auditActionLabel(action: string): string {
   return auditActionLabels[action] ?? action
 }
 
-function formatDetailValue(value: unknown): string {
-  if (Array.isArray(value)) {
-    return value.length > 5 ? `[${value.length} items]` : JSON.stringify(value)
-  }
-  const text = JSON.stringify(value)
-  return text.length > 80 ? `${text.slice(0, 80)}…` : text
+export type AuditActionTone = 'high' | 'med' | 'low' | 'info' | 'neutral'
+
+const auditActionTones: Record<string, AuditActionTone> = {
+  upload: 'info',
+  delete_document: 'low',
+  process_start: 'info',
+  process_stop: 'neutral',
+  process_failed: 'low',
+  edit_review_item: 'med',
+  edit_metadata: 'med',
+  approve: 'high',
+  revoke_approval: 'med',
 }
 
-export function formatAuditDetail(detail: AuditLogEntry['detail']): string {
-  if (!detail) return '—'
-  const entries = Object.entries(detail)
-  if (!entries.length) return '—'
-  return entries.map(([key, value]) => `${key}: ${formatDetailValue(value)}`).join(', ')
+export function auditActionTone(action: string): AuditActionTone {
+  return auditActionTones[action] ?? 'neutral'
+}
+
+/** One short, human-readable line per entry for the ledger table — e.g. the
+ * file name for an upload, not the raw "pages: 519, file_name: …" dump. The
+ * full breakdown is still available by clicking through to the detail panel,
+ * so this only needs to carry the single most useful fact for scanning the
+ * list at a glance. */
+export function auditEntrySummary(entry: AuditLogEntry): string {
+  const detail = entry.detail ?? {}
+  switch (entry.action) {
+    case 'upload':
+    case 'delete_document':
+      return typeof detail.file_name === 'string' ? detail.file_name : '—'
+    case 'edit_metadata':
+      return typeof detail.title === 'string' ? `Title: ${detail.title}` : '—'
+    case 'edit_review_item':
+      if (Array.isArray(detail.item_ids)) return `${detail.item_ids.length} items`
+      if (detail.resolve_all) return `${typeof detail.count === 'number' ? detail.count : 'all'} items resolved`
+      if (typeof detail.item_id === 'string') return '1 item'
+      return '—'
+    case 'process_failed':
+      return typeof detail.error === 'string' ? detail.error : '—'
+    default:
+      return '—'
+  }
 }
 
 const auditTimeFormatter = new Intl.DateTimeFormat('en-AU', {
@@ -43,6 +71,35 @@ const auditTimeFormatter = new Intl.DateTimeFormat('en-AU', {
 export function formatAuditTime(value: string): string {
   const date = new Date(value)
   return Number.isNaN(date.getTime()) ? value : auditTimeFormatter.format(date)
+}
+
+const auditDateOnlyFormatter = new Intl.DateTimeFormat('en-AU', {
+  day: '2-digit',
+  month: 'short',
+  year: 'numeric',
+})
+
+const auditTimeOnlyFormatter = new Intl.DateTimeFormat('en-AU', {
+  hour: '2-digit',
+  minute: '2-digit',
+  second: '2-digit',
+})
+
+export interface AuditDateParts {
+  date: string
+  time: string
+}
+
+/** Splits a timestamp into separate date/time strings for a two-line
+ * display, instead of one long mono blob that wraps awkwardly in a table
+ * cell. */
+export function formatAuditDateParts(value: string): AuditDateParts {
+  const date = new Date(value)
+  if (Number.isNaN(date.getTime())) return { date: value, time: '' }
+  return {
+    date: auditDateOnlyFormatter.format(date),
+    time: auditTimeOnlyFormatter.format(date),
+  }
 }
 
 export type AuditChainStatus = 'linked' | 'unverifiable' | 'broken'

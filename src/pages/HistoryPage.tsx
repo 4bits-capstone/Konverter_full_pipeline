@@ -2,8 +2,8 @@ import { useQuery } from '@tanstack/react-query'
 import { ArrowLeft, Files, ScrollText } from 'lucide-react'
 import { useMemo, useState } from 'react'
 import { Link } from 'react-router-dom'
-import { AuditActionDetailPanel, AuditLedgerTable } from '../components/AuditActionDetail'
-import { extractUploadedDocuments, formatAuditTime } from '../lib/auditFormatting'
+import { AuditActionDetailPanel, AuditLedgerTable, PageCountBadge, TimeStack } from '../components/AuditActionDetail'
+import { extractUploadedDocuments } from '../lib/auditFormatting'
 import { converterStagePath } from '../lib/converterRoutes'
 import { auditService } from '../services'
 import { useKonverter } from '../state/KonverterContext'
@@ -78,7 +78,7 @@ export function HistoryPage() {
                 <thead>
                   <tr>
                     <th scope="col">File</th>
-                    <th scope="col">Pages</th>
+                    <th scope="col" className="admin-table-num">Pages</th>
                     <th scope="col">Uploaded</th>
                   </tr>
                 </thead>
@@ -86,8 +86,8 @@ export function HistoryPage() {
                   {uploads.map((upload, index) => (
                     <tr key={`${upload.documentId ?? 'unknown'}-${index}`}>
                       <td className="mono">{upload.fileName}</td>
-                      <td>{upload.pages ?? '—'}</td>
-                      <td><time className="mono" dateTime={upload.uploadedAt}>{formatAuditTime(upload.uploadedAt)}</time></td>
+                      <td className="admin-table-num"><PageCountBadge pages={upload.pages} /></td>
+                      <td><TimeStack value={upload.uploadedAt} /></td>
                     </tr>
                   ))}
                 </tbody>

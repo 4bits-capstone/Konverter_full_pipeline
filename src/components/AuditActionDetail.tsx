@@ -1,7 +1,77 @@
-import { ScrollText, ShieldAlert, ShieldCheck } from 'lucide-react'
+import {
+  CheckCircle2,
+  FileUp,
+  Pencil,
+  Play,
+  RotateCcw,
+  ScrollText,
+  ShieldAlert,
+  ShieldCheck,
+  Square,
+  Trash2,
+  TriangleAlert,
+  type LucideIcon,
+} from 'lucide-react'
 import { useState } from 'react'
-import { auditActionLabel, formatAuditDetail, formatAuditTime, type AuditChainStatus } from '../lib/auditFormatting'
+import {
+  auditActionLabel,
+  auditActionTone,
+  auditEntrySummary,
+  formatAuditDateParts,
+  type AuditActionTone,
+  type AuditChainStatus,
+} from '../lib/auditFormatting'
 import type { AuditLogEntry } from '../types/konverter'
+
+const actionIcons: Record<string, LucideIcon> = {
+  upload: FileUp,
+  delete_document: Trash2,
+  process_start: Play,
+  process_stop: Square,
+  process_failed: TriangleAlert,
+  edit_review_item: Pencil,
+  edit_metadata: Pencil,
+  approve: CheckCircle2,
+  revoke_approval: RotateCcw,
+}
+
+function actionIcon(action: string): LucideIcon {
+  return actionIcons[action] ?? ScrollText
+}
+
+export function ActionBadge({ action }: { action: string }) {
+  const Icon = actionIcon(action)
+  return (
+    <span className={`conf conf--${auditActionTone(action)}`}>
+      <Icon className="ic" aria-hidden="true" />{auditActionLabel(action)}
+    </span>
+  )
+}
+
+export function ActorChip({ email }: { email: string | null | undefined }) {
+  const resolved = email ?? 'Unknown user'
+  return (
+    <span className="audit-actor-chip">
+      <span className="audit-actor-avatar" aria-hidden="true">{resolved.charAt(0).toUpperCase()}</span>
+      {resolved}
+    </span>
+  )
+}
+
+export function PageCountBadge({ pages }: { pages: number | null | undefined }) {
+  if (pages == null) return <span className="muted">—</span>
+  return <span className="page-count-chip mono">{pages}</span>
+}
+
+export function TimeStack({ value }: { value: string }) {
+  const { date, time } = formatAuditDateParts(value)
+  return (
+    <span className="audit-time-stack">
+      <strong>{date}</strong>
+      <span className="mono">{time}</span>
+    </span>
+  )
+}
 
 function ChainBadge({ status }: { status: AuditChainStatus }) {
   if (status === 'linked') {
@@ -70,7 +140,7 @@ export function AuditLedgerTable({ entries, selectedId, onSelect, showActor = fa
             <th scope="col">Time</th>
             {showActor ? <th scope="col">Actor</th> : null}
             <th scope="col">Action</th>
-            <th scope="col">Detail</th>
+            <th scope="col">Summary</th>
             {getChainStatus ? <th scope="col">Chain</th> : null}
           </tr>
         </thead>
@@ -91,12 +161,12 @@ export function AuditLedgerTable({ entries, selectedId, onSelect, showActor = fa
                     onSelect(entry.id)
                   }}
                 >
-                  <time className="mono" dateTime={entry.created_at}>{formatAuditTime(entry.created_at)}</time>
+                  <TimeStack value={entry.created_at} />
                 </button>
               </td>
-              {showActor ? <td>{entry.actor_email ?? '—'}</td> : null}
-              <td>{auditActionLabel(entry.action)}</td>
-              <td className="admin-table-detail">{formatAuditDetail(entry.detail)}</td>
+              {showActor ? <td><ActorChip email={entry.actor_email} /></td> : null}
+              <td><ActionBadge action={entry.action} /></td>
+              <td className="audit-summary-cell" title={auditEntrySummary(entry)}>{auditEntrySummary(entry)}</td>
               {getChainStatus ? <td><ChainBadge status={getChainStatus(entry)} /></td> : null}
             </tr>
           ))}
@@ -113,10 +183,12 @@ export function AuditActionDetailPanel({ entry, documentTitle, documentFileName,
   showActor?: boolean
 }) {
   const details = entry.detail ? Object.entries(entry.detail) : []
+  const Icon = actionIcon(entry.action)
+  const tone: AuditActionTone = auditActionTone(entry.action)
   return (
     <aside className="audit-detail-panel" aria-label="Selected action details">
       <div className="audit-detail-heading">
-        <span className="audit-detail-icon" aria-hidden="true"><ScrollText /></span>
+        <span className={`audit-detail-icon audit-detail-icon--${tone}`} aria-hidden="true"><Icon /></span>
         <div>
           <span className="audit-detail-kicker">Selected action</span>
           <h3>{auditActionLabel(entry.action)}</h3>
@@ -125,12 +197,12 @@ export function AuditActionDetailPanel({ entry, documentTitle, documentFileName,
       <dl className="audit-detail-facts">
         <div>
           <dt>Date and time</dt>
-          <dd><time dateTime={entry.created_at}>{formatAuditTime(entry.created_at)}</time></dd>
+          <dd><TimeStack value={entry.created_at} /></dd>
         </div>
         {showActor ? (
           <div>
             <dt>Actor</dt>
-            <dd><strong>{entry.actor_email ?? 'Unknown user'}</strong></dd>
+            <dd><ActorChip email={entry.actor_email} /></dd>
           </div>
         ) : null}
         {entry.document_id ? (

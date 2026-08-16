@@ -1,8 +1,9 @@
 import { useQuery } from '@tanstack/react-query'
-import { ArrowLeft } from 'lucide-react'
+import { ArrowLeft, Check, Minus } from 'lucide-react'
 import { useMemo, useState } from 'react'
 import { Link } from 'react-router-dom'
 import { AdminModeSwitcher } from '../components/AdminModeSwitcher'
+import { ActorChip, PageCountBadge } from '../components/AuditActionDetail'
 import { converterStagePath } from '../lib/converterRoutes'
 import { auditService, documentService } from '../services'
 import type { ProcessingState } from '../types/konverter'
@@ -22,6 +23,13 @@ function StatusPill({ state }: { state?: ProcessingState }) {
       {statusLabels[resolved]}
     </span>
   )
+}
+
+function ApprovedBadge({ approvedAt }: { approvedAt?: string | null }) {
+  if (approvedAt) {
+    return <span className="conf conf--high"><Check className="ic" aria-hidden="true" />Approved</span>
+  }
+  return <span className="conf conf--neutral"><Minus className="ic" aria-hidden="true" />Not yet</span>
 }
 
 export function DocumentListPage() {
@@ -114,7 +122,7 @@ export function DocumentListPage() {
                     <tr>
                       <th scope="col">Title</th>
                       <th scope="col">File</th>
-                      <th scope="col">Pages</th>
+                      <th scope="col" className="admin-table-num">Pages</th>
                       <th scope="col">Uploaded by</th>
                       <th scope="col">Status</th>
                       <th scope="col">Approved</th>
@@ -125,10 +133,10 @@ export function DocumentListPage() {
                       <tr key={document.id}>
                         <td>{document.title}</td>
                         <td className="mono">{document.fileName}</td>
-                        <td>{document.pages}</td>
-                        <td>{document.uploadedByEmail ?? '—'}</td>
+                        <td className="admin-table-num"><PageCountBadge pages={document.pages} /></td>
+                        <td><ActorChip email={document.uploadedByEmail} /></td>
                         <td><StatusPill state={document.processingState} /></td>
-                        <td>{document.approvedAt ? 'Yes' : 'No'}</td>
+                        <td><ApprovedBadge approvedAt={document.approvedAt} /></td>
                       </tr>
                     ))}
                   </tbody>
