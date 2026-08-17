@@ -95,6 +95,65 @@ function ChainBadge({ status }: { status: AuditChainStatus }) {
   )
 }
 
+const CHANGE_PREVIEW_KEYS = new Set(['before', 'after'])
+
+interface SnippetValue {
+  preview: string
+  truncated: true
+  length: number
+}
+
+function isSnippetValue(value: unknown): value is SnippetValue {
+  return (
+    typeof value === 'object' &&
+    value !== null &&
+    'preview' in value &&
+    typeof (value as { preview: unknown }).preview === 'string'
+  )
+}
+
+function SnippetText({ value }: { value: unknown }) {
+  if (value == null) return <em className="audit-change-empty">Empty</em>
+  if (isSnippetValue(value)) {
+    return (
+      <>
+        {value.preview}
+        <span className="audit-change-truncated">… (truncated, {value.length} chars)</span>
+      </>
+    )
+  }
+  return <>{typeof value === 'string' ? value : JSON.stringify(value)}</>
+}
+
+/** Renders detail.before/detail.after (short snippets captured on
+ * review-item and metadata edits) as a compact previous/updated comparison,
+ * one row per changed field. Bulk edits and non-edit actions don't carry
+ * before/after, so this simply renders nothing for them. */
+export function AuditChangePreview({ before, after }: { before: Record<string, unknown>; after: Record<string, unknown> }) {
+  const fields = Object.keys(after)
+  if (fields.length === 0) return null
+  return (
+    <div className="audit-detail-description audit-change-preview">
+      <span>What changed</span>
+      {fields.map((field) => (
+        <div key={field} className="audit-change-row">
+          <span className="audit-change-field">{field}</span>
+          <div className="audit-change-values">
+            <div className="audit-change-block audit-change-block--before">
+              <span className="audit-change-label">Previous value</span>
+              <div className="audit-change-text"><SnippetText value={before[field]} /></div>
+            </div>
+            <div className="audit-change-block audit-change-block--after">
+              <span className="audit-change-label">Updated value</span>
+              <div className="audit-change-text"><SnippetText value={after[field]} /></div>
+            </div>
+          </div>
+        </div>
+      ))}
+    </div>
+  )
+}
+
 const ARRAY_PREVIEW_COUNT = 8
 
 export function DetailArrayValue({ items }: { items: unknown[] }) {
@@ -183,7 +242,11 @@ export function AuditActionDetailPanel({ entry, documentTitle, documentFileName,
   documentFileName: string | null
   showActor?: boolean
 }) {
-  const details = entry.detail ? Object.entries(entry.detail) : []
+  const details = entry.detail
+    ? Object.entries(entry.detail).filter(([key]) => !CHANGE_PREVIEW_KEYS.has(key))
+    : []
+  const before = entry.detail?.before
+  const after = entry.detail?.after
   const Icon = actionIcon(entry.action)
   const tone: AuditActionTone = auditActionTone(entry.action)
   return (
@@ -226,6 +289,12 @@ export function AuditActionDetailPanel({ entry, documentTitle, documentFileName,
             </p>
           ))}
         </div>
+      ) : null}
+      {before && after && typeof before === 'object' && typeof after === 'object' ? (
+        <AuditChangePreview
+          before={before as Record<string, unknown>}
+          after={after as Record<string, unknown>}
+        />
       ) : null}
     </aside>
   )

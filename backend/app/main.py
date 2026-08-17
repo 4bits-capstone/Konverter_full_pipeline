@@ -127,6 +127,21 @@ def _safe_review_changes(changes: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+AUDIT_SNIPPET_MAX = 200
+
+
+def _snippet(value: Any) -> Any:
+    """Bounded, audit-safe preview of a value for before/after logging. The
+    audit_log is immutable and hash-chained, so this must never grow
+    unbounded — long values are truncated rather than stored in full."""
+    if value is None:
+        return None
+    text = value if isinstance(value, str) else json.dumps(value, ensure_ascii=False, default=str)
+    if len(text) > AUDIT_SNIPPET_MAX:
+        return {"preview": text[:AUDIT_SNIPPET_MAX], "truncated": True, "length": len(text)}
+    return text
+
+
 def _review_item_label(item: dict[str, Any]) -> str:
     title = item.get("title") or item.get("label") or item.get("id", "item")
     page = item.get("page")
@@ -425,10 +440,16 @@ async def update_review_item(
     record = _require_complete(document_id)
     _require_owner(record, user)
     changes = patch.model_dump(exclude_unset=True)
+    existing = next(
+        (i for i in workflow.get_review_items(document_id) if i.get("id") == item_id),
+        {},
+    )
+    before = {k: _snippet(existing.get(k)) for k in changes}
     try:
         item = workflow.update_review_item(document_id, item_id, changes)
     except KeyError as exc:
         raise HTTPException(status_code=404, detail="Review item not found") from exc
+    after = {k: _snippet(v) for k, v in changes.items()}
     await audit.record_audit(
         "edit_review_item",
         document_id=document_id,
@@ -438,6 +459,8 @@ async def update_review_item(
             "file_name": record.get("file_name"),
             "item": _review_item_label(item),
             "changes": _safe_review_changes(changes),
+            "before": before,
+            "after": after,
         },
     )
     return ReviewItem(**item)
@@ -515,13 +538,18 @@ async def save_metadata(
     document_id: str, metadata: DocumentMetadata, user: CurrentUser
 ) -> DocumentMetadata:
     _require_owner(_require_complete(document_id), user)
-    saved = workflow.save_metadata(document_id, metadata.model_dump())
+    old = workflow.get_metadata(document_id).get("metadata") or {}
+    new = metadata.model_dump()
+    changed = {k: v for k, v in new.items() if old.get(k) != v}
+    before = {k: _snippet(old.get(k)) for k in changed}
+    after = {k: _snippet(v) for k, v in changed.items()}
+    saved = workflow.save_metadata(document_id, new)
     await audit.record_audit(
         "edit_metadata",
         document_id=document_id,
         actor_id=user.get("id"),
         actor_email=user.get("email"),
-        detail={"title": metadata.title},
+        detail={"title": metadata.title, "before": before, "after": after},
     )
     return DocumentMetadata(**saved)
 
