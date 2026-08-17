@@ -37,27 +37,25 @@ afterEach(cleanup)
 beforeEach(resetTestServices)
 
 describe('PreviewPage', () => {
-  it('uses the same native details rows as the accessible HTML', async () => {
-    const { container } = renderPreview()
+  it('expands and collapses publication chapters accessibly', async () => {
+    renderPreview()
 
-    await screen.findByRole('heading', { name: 'Contents' })
-    const rows = Array.from(
-      container.querySelectorAll<HTMLDetailsElement>('details.publication-contents-item'),
-    )
-    const firstChapter = rows.find((row) => row.textContent?.includes('1. Introduction'))!
-    const secondChapter = rows.find((row) => row.textContent?.includes('2. Requirements'))!
+    const firstChapterLabel = await screen.findByText('1. Introduction')
+    const secondChapterLabel = screen.getByText('2. Requirements')
+    const firstChapter = firstChapterLabel.closest('details')!
+    const secondChapter = secondChapterLabel.closest('details')!
 
-    expect(firstChapter).not.toHaveAttribute('open')
-    expect(secondChapter).not.toHaveAttribute('open')
-
-    fireEvent.click(firstChapter.querySelector('summary')!)
     expect(firstChapter).toHaveAttribute('open')
     expect(screen.getByRole('link', { name: 'Purpose' })).toBeVisible()
     expect(screen.queryByRole('link', { name: 'Background' })).not.toBeInTheDocument()
+    expect(secondChapter).not.toHaveAttribute('open')
 
     fireEvent.click(secondChapter.querySelector('summary')!)
     expect(secondChapter).toHaveAttribute('open')
     expect(screen.getByRole('link', { name: 'Semantic output' })).toBeVisible()
+
+    fireEvent.click(firstChapter.querySelector('summary')!)
+    expect(firstChapter).not.toHaveAttribute('open')
   })
 
   it('opens front matter directly instead of rendering it as an accordion', async () => {
@@ -73,8 +71,7 @@ describe('PreviewPage', () => {
 
   it('opens Chapter 1 content and returns to the publication landing page', async () => {
     renderPreview()
-    const chapterSummary = await screen.findByText('1. Introduction')
-    fireEvent.click(chapterSummary.closest('summary')!)
+    await screen.findByText('1. Introduction')
 
     expect(screen.getAllByRole('heading', { level: 1 })).toHaveLength(1)
     fireEvent.click(screen.getByRole('link', { name: 'Purpose' }))
@@ -83,16 +80,16 @@ describe('PreviewPage', () => {
     expect(screen.getByRole('heading', { level: 2, name: 'Purpose' })).toBeInTheDocument()
     expect(screen.getByText(/defines a review workflow/)).toBeInTheDocument()
     const paragraphNumber = screen.getByText('1.2')
-    expect(paragraphNumber.parentElement).toHaveClass('numbered-paragraph')
+    expect(paragraphNumber).toHaveClass('reader-paragraph-number')
     expect(paragraphNumber.nextElementSibling).toHaveTextContent(/Every flagged structure/)
     expect(screen.getByRole('link', { name: 'Purpose' })).toHaveAttribute('aria-current', 'location')
     expect(screen.getAllByRole('heading', { level: 1 })).toHaveLength(1)
 
-    fireEvent.click(screen.getByRole('link', { name: 'Accessibility Standards Report' }))
+    fireEvent.click(screen.getByRole('button', { name: 'Accessibility Standards Report' }))
 
     expect(screen.getByRole('heading', { level: 1, name: 'Accessibility Standards Report' })).toBeInTheDocument()
-    expect(screen.getByRole('heading', { name: 'Contents' })).toBeInTheDocument()
-    expect(document.querySelector('.konverter-page-menu')).toBeInTheDocument()
+    expect(screen.getByLabelText('Complete report chapters')).toBeInTheDocument()
+    expect(screen.getByRole('heading', { name: 'Table of contents' })).toBeInTheDocument()
   })
 
   it('opens the selected subsection in the reader navigation', async () => {
@@ -102,8 +99,7 @@ describe('PreviewPage', () => {
       value: scrollTo,
     })
     renderPreview()
-    const chapterSummary = await screen.findByText('1. Introduction')
-    fireEvent.click(chapterSummary.closest('summary')!)
+    await screen.findByText('1. Introduction')
 
     fireEvent.click(screen.getByRole('link', { name: 'Purpose' }))
 
@@ -125,7 +121,7 @@ describe('PreviewPage', () => {
     expect(screen.getByRole('button', { name: /Start new upload/ })).toBeInTheDocument()
     expect(screen.queryByRole('button', { name: /Open public page/ })).not.toBeInTheDocument()
 
-    const contents = document.querySelector('.konverter-page-menu')!
+    const contents = screen.getByLabelText('Complete report chapters')
     expect(Array.from(contents.children).map((item) => item.querySelector('a, summary')?.textContent?.trim())).toEqual([
       'Preface',
       '1. Introduction',
@@ -150,19 +146,22 @@ describe('PreviewPage', () => {
     expect(screen.getByText('June 18, 2026')).toBeInTheDocument()
     expect(screen.getByText(/practical requirements for producing accessible/)).toBeInTheDocument()
     expect(screen.getByText('2. Requirements').closest('summary')).toBeInTheDocument()
-    expect(screen.getByRole('link', { name: /Download PDF/ })).toBeInTheDocument()
-    expect(screen.getByRole('link', { name: /Go to Project/ })).toBeInTheDocument()
-    expect(screen.queryByRole('navigation', { name: 'VLRC website' })).not.toBeInTheDocument()
+    expect(screen.getByRole('link', { name: 'Download PDF' })).toBeInTheDocument()
+    expect(screen.getByRole('link', { name: 'Go to Project' })).toBeInTheDocument()
+    expect(document.querySelector('.preview-report-card')).toBeInTheDocument()
+    expect(screen.queryByRole('heading', { name: 'Search this report' })).not.toBeInTheDocument()
+    expect(screen.queryByText(/Find a heading, topic, or keyword/)).not.toBeInTheDocument()
+    expect(screen.queryByRole('searchbox')).not.toBeInTheDocument()
+    expect(screen.getByRole('heading', { name: 'Table of contents' })).toBeInTheDocument()
     expect(document.querySelector('.vlrc-masthead')).toBeInTheDocument()
     expect(screen.getByRole('contentinfo')).toBeInTheDocument()
-    expect(document.querySelector('.preview-report-card')).not.toBeInTheDocument()
-    expect(document.querySelector('.vlrc-accordion')).not.toBeInTheDocument()
+    expect(screen.queryByRole('navigation', { name: 'VLRC website' })).not.toBeInTheDocument()
+    expect(screen.getByText('Every heading nests one level at a time')).toHaveClass('valrow-detail')
   })
 
   it('embeds the generated JSON-LD while the landing page preview is open', async () => {
     renderPreview()
-    const chapterSummary = await screen.findByText('1. Introduction')
-    fireEvent.click(chapterSummary.closest('summary')!)
+    await screen.findByText('1. Introduction')
 
     const jsonLdScript = document.head.querySelector<HTMLScriptElement>('#konverter-publication-json-ld')
     expect(jsonLdScript).not.toBeNull()

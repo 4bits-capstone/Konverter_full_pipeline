@@ -36,9 +36,11 @@ describe('DoclingContent Box Sections', () => {
     const { container } = render(
       <DoclingContent
         sectionId="introduction"
-        footnotes={[{ id: 'note-1', text: 'Supporting reference.' }]}
+        footnotes={[{ id: 'footnote-1', text: 'Supporting reference.' }]}
         blocks={[
           { type: 'paragraph', number: '1.2', text: 'Numbered paragraph.' },
+          { type: 'paragraph', text: 'The disposal may occur in any manner. 1' },
+          { type: 'paragraph', text: 'Published in 2016.' },
           {
             type: 'list',
             style: 'unordered',
@@ -57,11 +59,14 @@ describe('DoclingContent Box Sections', () => {
       />,
     )
 
-    expect(container.querySelector('.numbered-paragraph')).toBeInTheDocument()
-    expect(container.querySelector('ul.source-list')).toBeInTheDocument()
-    expect(container.querySelector('.table-scroll thead th[scope="col"]')).toHaveTextContent('Heading')
-    expect(screen.getByRole('heading', { name: 'References and footnotes' })).toHaveAttribute('id', 'footnotes-introduction')
-    expect(screen.getByText('Supporting reference.')).toHaveAttribute('id', 'note-1')
-    expect(container.querySelector('details.reader-footnotes')).not.toBeInTheDocument()
+    expect(container.querySelector('.reader-numbered-paragraph .reader-paragraph-number')).toHaveTextContent('1.2')
+    expect(container.querySelector('ul.reader-source-list')).toBeInTheDocument()
+    expect(container.querySelector('.docling-table-scroll table.docling-table thead th[scope="col"]')).toHaveTextContent('Heading')
+    expect(container.querySelector('sup.footnote-reference a')).toHaveAttribute('href', '#footnote-1')
+    expect(container.querySelector('sup.footnote-reference a')).toHaveTextContent('1')
+    expect(screen.getByText('Published in 2016.').querySelector('sup')).not.toBeInTheDocument()
+    expect(screen.getByText('References and footnotes (1)')).toHaveAttribute('id', 'footnotes-introduction')
+    expect(screen.getByText('Supporting reference.')).toHaveAttribute('id', 'footnote-1')
+    expect(container.querySelector('details.reader-footnotes[open]')).toBeInTheDocument()
   })
 })

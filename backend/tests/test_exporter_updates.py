@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import re
+
 from app.exporter import _render_block, build_accessible_html, build_publication
 
 
@@ -318,7 +320,7 @@ def test_box_section_uses_semantic_ordered_and_unordered_lists():
     assert '<ul class="source-list">' in rendered
 
 
-def test_accessible_html_matches_vlrc_publication_markup_without_site_shell(tmp_path):
+def test_accessible_html_matches_restored_preview_without_site_shell(tmp_path):
     publication = build_publication(
         [
             {"id": "title", "label": "title", "text": "Example report", "order": 0},
@@ -341,20 +343,62 @@ def test_accessible_html_matches_vlrc_publication_markup_without_site_shell(tmp_
                 "order": 3,
             },
             {
+                "id": "detail",
+                "label": "section_header_3",
+                "text": "Detailed scope",
+                "order": 4,
+            },
+            {
+                "id": "detail-body",
+                "label": "text",
+                "text": "A lower-level topic that belongs in the chapter reader only.",
+                "order": 5,
+            },
+            {
                 "id": "glossary",
                 "label": "section_header_1",
                 "text": "Glossary",
-                "order": 4,
+                "order": 6,
             },
             {
                 "id": "glossary-body",
                 "label": "text",
                 "text": "Defined terms used in this report.",
-                "order": 5,
+                "order": 7,
+            },
+            {
+                "id": "recommendations",
+                "label": "section_header_1",
+                "text": "Recommendations",
+                "order": 8,
+            },
+            {
+                "id": "recommendation-list",
+                "label": "list",
+                "text": "1. Publish the accessible version.",
+                "list_entries": [
+                    {
+                        "text": "Publish the accessible version.",
+                        "marker": "1.",
+                        "enumerated": True,
+                        "level": 0,
+                    }
+                ],
+                "order": 9,
             },
         ],
         {"title": "Example report", "pages": 3, "file_name": "example.pdf"},
     )
+    publication["sections"][0]["blocks"].append(
+        {
+            "type": "paragraph",
+            "id": "footnote-example",
+            "text": "The disposal may occur in any manner. 1",
+        }
+    )
+    publication["sections"][0]["footnotes"] = [
+        {"id": "footnote-1", "text": "Supporting reference.", "page": 1}
+    ]
 
     rendered = build_accessible_html(
         "document-1",
@@ -369,51 +413,82 @@ def test_accessible_html_matches_vlrc_publication_markup_without_site_shell(tmp_
         tmp_path / "logo.png",
     )
 
-    # The WordPress theme supplies the global masthead, footer and back-to-top control.
+    # The publishing website supplies the global masthead and footer.
     assert "vlrc-masthead" not in rendered
-    assert "source-footer" not in rendered
-    assert "back-to-top" not in rendered
-    assert "vlrc-report-card" not in rendered
-    assert '<main class="vlrc-publication-embed"' not in rendered
+    assert "vlrc-site-footer" not in rendered
     assert "<header" not in rendered
     assert "<footer" not in rendered
     assert '<script type="application/ld+json">' in rendered
+    assert rendered.count("<script") == 1
+    assert "<script>" not in rendered
+    assert "onclick=" not in rendered
 
-    # These classes mirror the existing VLRC publication and child-page templates.
-    assert 'class="publication"' in rendered
-    assert 'class="article-header"' in rendered
-    assert 'class="entry-title single-title"' in rendered
-    assert 'class="no-bullet post-byline"' in rendered
-    assert 'class="main-column-pub"' in rendered
-    assert 'class="main-content-pub-inner"' in rendered
-    assert 'class="konverter-page-menu"' in rendered
-    assert 'class="toc-h2"' in rendered
-    assert 'class="toc-h3"' in rendered
-    assert 'class="btns-pub btns-pub-desktop"' in rendered
-    assert 'class="btn-blue"' in rendered
-    assert 'class="btn-red" href="/project/example-report/"' in rendered
-    assert '<span>Go to Project</span>' in rendered
-    assert 'class="btn-icon-pub"' in rendered
+    # The downloadable page uses the restored reviewer-preview design.
+    assert 'class="report-card preview-report-card"' in rendered
+    assert 'class="report-card-title"' in rendered
+    assert 'class="report-card-meta"' in rendered
+    assert 'class="report-search"' not in rendered
+    assert "Search this report" not in rendered
+    assert 'class="key-recommendations"' in rendered
+    assert 'class="preview-citation-card"' in rendered
+    assert 'class="vlrc-reader"' in rendered
+    assert 'class="vlrc-reader-nav"' in rendered
+    assert 'class="reader-pagination"' in rendered
+    assert 'class="button button-secondary" href="/project/example-report/"' in rendered
+    assert ">Go to Project</a>" in rendered
 
-    # The embed follows the width supplied by the WordPress template instead of
-    # imposing its own fixed desktop maximum.
-    assert "--vlrc-content-gutter:clamp(" in rendered
-    assert ".vlrc-site-publication{width:100%;max-width:none" in rendered
-    assert ".main-column-pub{display:flex;width:100%" in rendered
-    assert ".main-content-pub-inner{min-width:0;flex:1 1 0;max-width:none" in rendered
+    # The embed fills the width provided by the host template.
+    assert "width:100%;max-width:none;background:#fff" in rendered
+    assert ".vlrc-publication-embed .vlrc-preview-body{width:100%" in rendered
 
-    # The landing page mirrors the current VLRC bordered, collapsible contents rows.
-    assert 'class="publication-contents-heading"' in rendered
-    assert '<details class="publication-contents-item toc-h2">' in rendered
-    assert '<summary><span>1. Introduction</span>' in rendered
-    assert 'class="publication-contents-chevron"' in rendered
-    assert 'class="publication-contents-submenu"' in rendered
-    assert ">Read full section</a>" in rendered
-    assert 'class="publication-contents-item publication-contents-direct toc-h2"' in rendered
-    assert "vlrc-accordion" not in rendered
-    assert 'data-open-section="1-introduction"' in rendered
+    # Chapters are collapsible, with H2 headings on the landing page. H3 remains
+    # available in the full "In this section" list.
+    assert 'class="vlrc-contents"' in rendered
+    assert 'class="vlrc-accordion"' in rendered
+    assert '<details class="vlrc-accordion-item">' in rendered
+    assert '<details class="vlrc-accordion-item" open>' not in rendered
+    assert '<summary aria-controls="1-introduction-subsections">' in rendered
+    assert 'class="vlrc-accordion-panel"' in rendered
+    assert '.vlrc-accordion-item[open]>.vlrc-accordion-panel{display:block;max-height:none;overflow:visible' in rendered
+    assert ">Read full section</label>" in rendered
+    assert 'href="#purpose"' in rendered
+    landing_contents = rendered.split('id="report-contents"', 1)[1].split(
+        'class="preview-citation-card"', 1
+    )[0]
+    assert "Purpose" in landing_contents
+    assert "Detailed scope" not in landing_contents
+    assert 'class="heading-level-3"' in rendered
+    assert ">Detailed scope</a>" in rendered
+    assert 'class="vlrc-direct-item"' in rendered
+    assert 'for="vlrc-view-0-1-introduction"' in rendered
     assert 'href="/api/documents/document-1/source"' in rendered
-    assert "Published on </span>June 18, 2026</li>" in rendered
+    assert "June 18, 2026" in rendered
+    assert 'class="vlrc-publication-readers"' in rendered
+    assert 'id="vlrc-view-landing" checked' in rendered
+    assert '#vlrc-view-0-1-introduction:checked~.vlrc-publication-views #reader-1-introduction{display:block}' in rendered
+    assert '.vlrc-publication-views .vlrc-reader{display:none}' in rendered
+    assert ":has(" not in rendered
+    assert '<sup class="footnote-reference"><a href="#footnote-1" role="doc-noteref" aria-label="Footnote 1">1</a></sup>' in rendered
+    assert '<details class="reader-footnotes">' in rendered
+    assert '<details class="reader-footnotes" open>' not in rendered
+    assert 'type="search"' not in rendered
+    assert "data-expand-all" not in rendered
+    assert "data-search-result" not in rendered
+
+    # WordPress may remove every script element. The publication interactions
+    # remain available through native details, radio view controls and links.
+    wordpress_sanitized = re.sub(
+        r"<script\b[^>]*>.*?</script>", "", rendered, flags=re.IGNORECASE | re.DOTALL
+    )
+    assert "<script" not in wordpress_sanitized
+    assert '<details class="vlrc-accordion-item">' in wordpress_sanitized
+    assert '<details class="vlrc-accordion-item" open>' not in wordpress_sanitized
+    assert 'href="#purpose"' in wordpress_sanitized
+    assert 'id="purpose"' in wordpress_sanitized
+    assert 'for="vlrc-view-0-1-introduction"' in wordpress_sanitized
+    assert 'type="radio" name="vlrc-publication-view"' in wordpress_sanitized
+    assert 'href="#report-contents"' in wordpress_sanitized
+    assert '<sup class="footnote-reference"><a href="#footnote-1"' in wordpress_sanitized
 
 
 def test_project_button_accepts_a_safe_explicit_url_and_rejects_unsafe_urls(tmp_path):
@@ -449,6 +524,6 @@ def test_project_button_accepts_a_safe_explicit_url_and_rejects_unsafe_urls(tmp_
         arguments[4],
     )
 
-    assert 'class="btn-red" href="https://example.test/project/custom/"' in configured
-    assert 'class="btn-red" href="/project/named-project/"' in unsafe
+    assert 'class="button button-secondary" href="https://example.test/project/custom/"' in configured
+    assert 'class="button button-secondary" href="/project/named-project/"' in unsafe
     assert "javascript:alert" not in unsafe

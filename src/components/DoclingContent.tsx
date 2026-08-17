@@ -1,10 +1,74 @@
 import { FileImage } from 'lucide-react'
+import type { ReactNode } from 'react'
 import type {
   DoclingBlock,
   DoclingFootnote,
   DoclingHeadingBlock,
   DoclingTableCell,
 } from '../lib/docling'
+
+type FootnoteTargets = Map<string, string>
+
+const FOOTNOTE_CONTEXT_WORDS = new Set([
+  'appendix', 'article', 'chapter', 'clause', 'figure', 'item', 'number',
+  'option', 'paragraph', 'part', 'page', 'recommendation', 'rule', 'schedule',
+  'section', 'sections', 'stage', 'table', 'version', 'volume',
+])
+
+function buildFootnoteTargets(footnotes: DoclingFootnote[]): FootnoteTargets {
+  const targets = new Map<string, string>()
+  footnotes.forEach((footnote) => {
+    const match = footnote.id.match(/^footnote-(\d+)(?:-|$)/i)
+    if (match && !targets.has(match[1])) targets.set(match[1], footnote.id)
+  })
+  return targets
+}
+
+function InlineText({ text, targets }: { text: string; targets: FootnoteTargets }) {
+  if (!text || !targets.size) return <>{text}</>
+  let normalized = text
+  targets.forEach((_, number) => {
+    normalized = normalized.replace(
+      new RegExp(`(^|\\D)${number.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}[ \\t]+${number}(?!\\d)`, 'g'),
+      `$1${number}`,
+    )
+  })
+
+  const output: ReactNode[] = []
+  const pattern = /(^|\D)(\d{1,3})(?!\d)/g
+  let cursor = 0
+  let match: RegExpExecArray | null
+  while ((match = pattern.exec(normalized)) !== null) {
+    const number = match[2]
+    const noteId = targets.get(number)
+    const numberStart = match.index + match[1].length
+    const suffix = normalized.slice(numberStart + number.length, numberStart + number.length + 2).toLowerCase()
+    const decimalPart = (
+      numberStart >= 2
+      && normalized[numberStart - 1] === '.'
+      && /\d/.test(normalized[numberStart - 2])
+    ) || (
+      numberStart + number.length + 1 < normalized.length
+      && normalized[numberStart + number.length] === '.'
+      && /\d/.test(normalized[numberStart + number.length + 1])
+    )
+    const preceding = normalized.slice(0, numberStart)
+    const previousWord = preceding.match(/([A-Za-z]+)\s*$/)
+    if (!noteId || decimalPart || ['st', 'nd', 'rd', 'th'].includes(suffix) || (previousWord && FOOTNOTE_CONTEXT_WORDS.has(previousWord[1].toLowerCase()))) {
+      continue
+    }
+
+    output.push(normalized.slice(cursor, numberStart).replace(/[ \t]+$/, ''))
+    output.push(
+      <sup className="footnote-reference" key={`${noteId}-${numberStart}`}>
+        <a href={`#${noteId}`} role="doc-noteref" aria-label={`Footnote ${number}`}>{number}</a>
+      </sup>,
+    )
+    cursor = numberStart + number.length
+  }
+  output.push(normalized.slice(cursor))
+  return <>{output}</>
+}
 
 function Heading({ block }: { block: DoclingHeadingBlock }) {
   // The reader's chapter title is its single H1, so resolved H1/H2 content
@@ -16,24 +80,24 @@ function Heading({ block }: { block: DoclingHeadingBlock }) {
   return <h6 id={block.id}>{block.text}</h6>
 }
 
-function TableCell({ cell }: { cell: DoclingTableCell }) {
+function TableCell({ cell, targets }: { cell: DoclingTableCell; targets: FootnoteTargets }) {
   const props = {
     rowSpan: cell.rowSpan > 1 ? cell.rowSpan : undefined,
     colSpan: cell.colSpan > 1 ? cell.colSpan : undefined,
   }
 
-  if (cell.columnHeader) return <th scope="col" {...props}>{cell.text}</th>
-  if (cell.rowHeader) return <th scope="row" {...props}>{cell.text}</th>
-  return <td {...props}>{cell.text}</td>
+  if (cell.columnHeader) return <th scope="col" {...props}><InlineText text={cell.text} targets={targets} /></th>
+  if (cell.rowHeader) return <th scope="row" {...props}><InlineText text={cell.text} targets={targets} /></th>
+  return <td {...props}><InlineText text={cell.text} targets={targets} /></td>
 }
 
-function NumberedParagraph({ number, text }: { number?: string; text: string }) {
+function NumberedParagraph({ number, text, targets }: { number?: string; text: string; targets: FootnoteTargets }) {
   return (
-    <div className="numbered-paragraph">
-      <span aria-hidden="true">{number}</span>
+    <div className="reader-numbered-paragraph">
+      <span className="reader-paragraph-number" aria-hidden="true">{number}</span>
       <p>
         {number ? <span className="sr-only">Paragraph {number}. </span> : null}
-        {text}
+        <InlineText text={text} targets={targets} />
       </p>
     </div>
   )
@@ -79,7 +143,7 @@ function buildListTree(
   return roots
 }
 
-function NestedList({ nodes, start }: { nodes: ListTreeNode[]; start?: number }) {
+function NestedList({ nodes, targets, start }: { nodes: ListTreeNode[]; targets: FootnoteTargets; start?: number }) {
   const groups: ListTreeNode[][] = []
   nodes.forEach((node) => {
     const group = groups.at(-1)
@@ -92,29 +156,31 @@ function NestedList({ nodes, start }: { nodes: ListTreeNode[]; start?: number })
         value={item.ordered ? item.value : undefined}
         key={`${item.text}-${index}`}
       >
-        {item.text}
-        {item.children.length ? <NestedList nodes={item.children} /> : null}
+        <InlineText text={item.text} targets={targets} />
+        {item.children.length ? <NestedList nodes={item.children} targets={targets} /> : null}
       </li>
     ))
     return group[0].ordered
-      ? <ol className="source-list" start={groupIndex === 0 ? start : undefined} key={`ordered-${groupIndex}`}>{items}</ol>
-      : <ul className="source-list" key={`unordered-${groupIndex}`}>{items}</ul>
+      ? <ol className="reader-source-list" start={groupIndex === 0 ? start : undefined} key={`ordered-${groupIndex}`}>{items}</ol>
+      : <ul className="reader-source-list" key={`unordered-${groupIndex}`}>{items}</ul>
   })}</>
 }
 
 function ContentBlock({
   block,
   figureUrl,
+  targets,
 }: {
   block: DoclingBlock
   figureUrl?: (imageKey: string) => string
+  targets: FootnoteTargets
 }) {
   if (block.type === 'heading') return <Heading block={block} />
 
   if (block.type === 'paragraph') {
     return block.number
-      ? <NumberedParagraph number={block.number} text={block.text} />
-      : <p>{block.text}</p>
+      ? <NumberedParagraph number={block.number} text={block.text} targets={targets} />
+      : <p className="docling-paragraph"><InlineText text={block.text} targets={targets} /></p>
   }
 
   if (block.type === 'list') {
@@ -122,7 +188,7 @@ function ContentBlock({
       return (
         <div className="docling-numbered-group">
           {block.items.map((item, index) => (
-            <NumberedParagraph number={item.marker} text={item.text} key={`${item.marker}-${index}`} />
+            <NumberedParagraph number={item.marker} text={item.text} targets={targets} key={`${item.marker}-${index}`} />
           ))}
         </div>
       )
@@ -135,8 +201,8 @@ function ContentBlock({
           {block.items.map((item, index) => {
             const numbered = numberedItems[index]
             return numbered
-              ? <NumberedParagraph number={numbered[1]} text={numbered[2]} key={`${numbered[1]}-${index}`} />
-              : <ul className="source-list" key={`${item.text}-${index}`}><li>{item.text}</li></ul>
+              ? <NumberedParagraph number={numbered[1]} text={numbered[2]} targets={targets} key={`${numbered[1]}-${index}`} />
+              : <ul className="reader-source-list" key={`${item.text}-${index}`}><li><InlineText text={item.text} targets={targets} /></li></ul>
           })}
         </div>
       )
@@ -145,6 +211,7 @@ function ContentBlock({
     return (
       <NestedList
         nodes={buildListTree(block.items, block.style === 'ordered')}
+        targets={targets}
         start={block.start}
       />
     )
@@ -154,15 +221,16 @@ function ContentBlock({
     const titleId = `${block.id}-title`
     return (
       <section
-        className={`document-box-section document-box-section--${block.variant}`}
+        className={`docling-box-section docling-box-section--${block.variant}`}
         aria-labelledby={titleId}
       >
         <h3 id={titleId}>{block.title}</h3>
-        <div className="document-box-section-content">
+        <div className="docling-box-section-content">
           {block.blocks.map((child, index) => (
             <ContentBlock
               block={child}
               figureUrl={figureUrl}
+              targets={targets}
               key={`${child.type}-${index}`}
             />
           ))}
@@ -179,14 +247,14 @@ function ContentBlock({
     const headerRows = headerRowIndex >= 0 ? [block.rows[headerRowIndex]] : []
     const bodyRows = block.rows.filter((_, index) => index !== headerRowIndex)
     return (
-      <div className="table-scroll" tabIndex={0} role="region" aria-label={`${caption || 'Table'}; scroll horizontally when needed`}>
-        <table id={block.id}>
+      <div className="docling-table-scroll" tabIndex={0} role="region" aria-label={`${caption || 'Table'}; scroll horizontally when needed`}>
+        <table className="docling-table" id={block.id}>
           {caption ? <caption>{caption}</caption> : null}
           {headerRows.length ? (
             <thead>
               {headerRows.map((row, rowIndex) => (
                 <tr key={`${block.id}-head-${rowIndex}`}>
-                  {row.map((cell, cellIndex) => <TableCell cell={cell} key={`${rowIndex}-${cell.startColumn}-${cellIndex}`} />)}
+                  {row.map((cell, cellIndex) => <TableCell cell={cell} targets={targets} key={`${rowIndex}-${cell.startColumn}-${cellIndex}`} />)}
                 </tr>
               ))}
             </thead>
@@ -194,7 +262,7 @@ function ContentBlock({
           <tbody>
             {bodyRows.map((row, rowIndex) => (
               <tr key={`${block.id}-row-${rowIndex}`}>
-                {row.map((cell, cellIndex) => <TableCell cell={cell} key={`${rowIndex}-${cell.startColumn}-${cellIndex}`} />)}
+                {row.map((cell, cellIndex) => <TableCell cell={cell} targets={targets} key={`${rowIndex}-${cell.startColumn}-${cellIndex}`} />)}
               </tr>
             ))}
           </tbody>
@@ -206,11 +274,11 @@ function ContentBlock({
   if (block.type === 'figure') {
     const imageUrl = block.imageKey && figureUrl ? figureUrl(block.imageKey) : undefined
     return (
-      <figure id={block.id}>
+      <figure className="docling-figure" id={block.id}>
         {imageUrl ? (
-          <img className="document-figure-image" src={imageUrl} alt={block.caption || 'Document figure'} loading="lazy" />
+          <img className="docling-figure-image" src={imageUrl} alt={block.caption || 'Document figure'} loading="lazy" />
         ) : (
-          <div className="figure-unavailable" role="img" aria-label={block.caption}>
+          <div className="docling-figure-placeholder" role="img" aria-label={block.caption}>
             <FileImage aria-hidden="true" />
             <span>The original figure image is unavailable.</span>
           </div>
@@ -220,14 +288,14 @@ function ContentBlock({
     )
   }
 
-  if (block.type === 'caption') return <p className="caption">{block.text}</p>
+  if (block.type === 'caption') return <p className="docling-caption"><InlineText text={block.text} targets={targets} /></p>
 
   if (block.type === 'formula') {
-    return <div className="document-formula" role="math" aria-label="Formula">{block.text}</div>
+    return <div className="docling-formula" role="math" aria-label="Formula">{block.text}</div>
   }
 
   if (block.type === 'footnote') {
-    return <p className="document-footnote" id={block.id} role="doc-footnote">{block.text}</p>
+    return <p className="docling-footnote" id={block.id} role="doc-footnote">{block.text}</p>
   }
 
   if (block.type === 'checkbox') {
@@ -265,15 +333,16 @@ export function DoclingContent({
   figureUrl?: (imageKey: string) => string
   sectionId?: string
 }) {
+  const targets = buildFootnoteTargets(footnotes)
   return (
     <>
       <div className="docling-content-blocks">
-        {blocks.map((block, index) => <ContentBlock block={block} figureUrl={figureUrl} key={`${block.type}-${index}`} />)}
+        {blocks.map((block, index) => <ContentBlock block={block} figureUrl={figureUrl} targets={targets} key={`${block.type}-${index}`} />)}
       </div>
 
       {footnotes.length ? (
-        <section className="reader-footnotes" aria-labelledby={`footnotes-${sectionId}`}>
-          <h2 id={`footnotes-${sectionId}`}>References and footnotes</h2>
+        <details className="reader-footnotes" open>
+          <summary id={`footnotes-${sectionId}`}>References and footnotes ({footnotes.length})</summary>
           <ol>
             {footnotes.map((footnote) => (
               <li id={footnote.id} key={footnote.id}>
@@ -281,7 +350,7 @@ export function DoclingContent({
               </li>
             ))}
           </ol>
-        </section>
+        </details>
       ) : null}
     </>
   )

@@ -1794,3 +1794,9 @@ def build_accessible_html(
 </script>
 </body>
 </html>"""
+
+
+# The reviewer preview's report-card design is the publishing contract for the
+# downloadable HTML. This late binding keeps the publication/JSON-LD builders
+# in this module while the sizeable HTML template remains isolated and testable.
+from .preview_html import build_accessible_html as build_accessible_html

@@ -3127,6 +3127,16 @@
   margin: 26px 0
 }
 
+.converter-app .docling-figure-image {
+  display: block;
+  width: auto;
+  max-width: 100%;
+  height: auto;
+  margin: 0 auto;
+  border: 1px solid var(--line);
+  box-shadow: 0 7px 24px rgba(22, 35, 61, .12)
+}
+
 .converter-app .docling-figure>a {
   display: inline-flex;
   margin-top: 4px;
@@ -3160,6 +3170,23 @@
   color: var(--muted);
   font-size: 12px;
   line-height: 1.55
+}
+
+.converter-app .docling-formula {
+  margin: 18px 0;
+  padding: 14px 16px;
+  border: 1px solid var(--line);
+  background: var(--surface-2);
+  font-family: "IBM Plex Mono", monospace;
+  font-size: 13px;
+  white-space: pre-wrap
+}
+
+.converter-app .docling-footnote {
+  padding-left: 12px;
+  border-left: 3px solid var(--line-2);
+  color: var(--ink-2);
+  font-size: .92em
 }
 
 .converter-app .docling-checkbox {
@@ -3268,6 +3295,26 @@
   margin-top: 38px;
   border-top: 1px solid #c9cdd4;
   padding-top: 18px
+}
+
+.converter-app .footnote-reference {
+  position: relative;
+  top: -.38em;
+  font-size: .72em;
+  line-height: 0;
+  vertical-align: baseline
+}
+
+.converter-app .footnote-reference a {
+  color: var(--blue);
+  font-weight: 700;
+  text-decoration: none
+}
+
+.converter-app .footnote-reference a:hover,
+.converter-app .footnote-reference a:focus {
+  text-decoration: underline;
+  text-underline-offset: 2px
 }
 
 .converter-app .reader-footnotes h2 {
