@@ -32,6 +32,7 @@ class DocumentSummary(ApiModel):
     approved_at: str | None = None
     metadata_confirmed: bool = False
     uploaded_by_email: str | None = None
+    uploaded_at: str | None = None
 
 
 class DocumentProcessingJob(ApiModel):

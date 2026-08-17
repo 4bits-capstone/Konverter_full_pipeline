@@ -33,6 +33,7 @@ export interface DocumentSummary {
   approvedAt?: string | null
   metadataConfirmed?: boolean
   uploadedByEmail?: string | null
+  uploadedAt?: string | null
 }
 
 export interface SourceEvidence {

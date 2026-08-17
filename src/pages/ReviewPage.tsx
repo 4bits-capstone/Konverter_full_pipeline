@@ -1008,6 +1008,7 @@ export function ReviewPage() {
   const [confirmationApplying, setConfirmationApplying] = useState(false);
   const [processingDetailsOpen, setProcessingDetailsOpen] = useState(true);
   const [editing, setEditing] = useState(false);
+  const [actingItemId, setActingItemId] = useState<string | null>(null);
   const [editText, setEditText] = useState("");
   const [editType, setEditType] = useState<ReviewType>("text");
   const [editTable, setEditTable] = useState<ReviewTableData>(emptyTable);
@@ -1161,14 +1162,20 @@ export function ReviewPage() {
   };
 
   const act = async (item: ReviewItem, status: "accepted" | "removed") => {
-    await setReviewStatus(item.id, status);
-    preserveQueueScroll();
-    showToast(
-      status === "accepted"
-        ? "Item accepted"
-        : "Item removed from generated output",
-    );
-    setEditing(false);
+    if (actingItemId === item.id) return;
+    setActingItemId(item.id);
+    try {
+      await setReviewStatus(item.id, status);
+      preserveQueueScroll();
+      showToast(
+        status === "accepted"
+          ? "Item accepted"
+          : "Item removed from generated output",
+      );
+      setEditing(false);
+    } finally {
+      setActingItemId(null);
+    }
   };
 
   const beginEdit = (item: ReviewItem) => {
@@ -1221,9 +1228,15 @@ export function ReviewPage() {
   };
 
   const restoreToOutput = async (item: ReviewItem) => {
-    await setReviewStatus(item.id, "accepted");
-    preserveQueueScroll();
-    showToast("Item restored to generated output");
+    if (actingItemId === item.id) return;
+    setActingItemId(item.id);
+    try {
+      await setReviewStatus(item.id, "accepted");
+      preserveQueueScroll();
+      showToast("Item restored to generated output");
+    } finally {
+      setActingItemId(null);
+    }
   };
 
   const toggleBulkItem = (id: string) => {
@@ -2070,7 +2083,10 @@ export function ReviewPage() {
                   <>
                     <button
                       className="btn btn-outline"
-                      disabled={selected.status === "accepted"}
+                      disabled={
+                        selected.status === "accepted" ||
+                        actingItemId === selected.id
+                      }
                       onClick={() => act(selected, "accepted")}
                     >
                       <Check />
@@ -2087,6 +2103,7 @@ export function ReviewPage() {
                     {selected.status === "removed" ? (
                       <button
                         className="btn btn-outline"
+                        disabled={actingItemId === selected.id}
                         onClick={() => restoreToOutput(selected)}
                       >
                         <RotateCcw />
@@ -2095,6 +2112,7 @@ export function ReviewPage() {
                     ) : (
                       <button
                         className="btn btn-danger"
+                        disabled={actingItemId === selected.id}
                         onClick={() => act(selected, "removed")}
                       >
                         <Trash2 />

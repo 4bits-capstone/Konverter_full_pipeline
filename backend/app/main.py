@@ -7,6 +7,7 @@ import tempfile
 import time
 import uuid
 from contextlib import asynccontextmanager
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Annotated, Any
 
@@ -76,6 +77,13 @@ def _record(document_id: str) -> dict:
         raise HTTPException(status_code=404, detail="Document not found") from exc
 
 
+def _uploaded_at(record: dict) -> str | None:
+    created_at = record.get("created_at")
+    if created_at is None:
+        return None
+    return datetime.fromtimestamp(float(created_at), tz=timezone.utc).isoformat()
+
+
 def _summary(record: dict) -> DocumentSummary:
     return DocumentSummary(
         id=record["id"],
@@ -88,6 +96,7 @@ def _summary(record: dict) -> DocumentSummary:
         approved_at=record.get("approved_at"),
         metadata_confirmed=bool(record.get("metadata_confirmed")),
         uploaded_by_email=record.get("uploaded_by_email"),
+        uploaded_at=_uploaded_at(record),
     )
 
 
