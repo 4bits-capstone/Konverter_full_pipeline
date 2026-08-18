@@ -25,7 +25,7 @@ function renderMetadata() {
   const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } })
   return render(
     <QueryClientProvider client={queryClient}>
-      <MemoryRouter>
+      <MemoryRouter initialEntries={['/metadata']}>
         <KonverterProvider>
           <SeedCompletedDocument />
           <DocumentBar />

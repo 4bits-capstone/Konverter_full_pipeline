@@ -2,6 +2,7 @@ import { lazy, Suspense } from 'react'
 import { Navigate, Route, Routes } from 'react-router-dom'
 import { AppShell } from './components/AppShell'
 import { RequireAdmin } from './components/RequireAdmin'
+import { AdminOverviewPage } from './pages/AdminOverviewPage'
 import { AuditLogPage } from './pages/AuditLogPage'
 import { DocumentListPage } from './pages/DocumentListPage'
 import { HistoryPage } from './pages/HistoryPage'
@@ -42,6 +43,7 @@ export default function ConverterApp() {
         />
         <Route path="history" element={<HistoryPage />} />
         <Route element={<RequireAdmin />}>
+          <Route path="admin/overview" element={<AdminOverviewPage />} />
           <Route path="admin/documents" element={<DocumentListPage />} />
           <Route path="admin/audit-log" element={<AuditLogPage />} />
         </Route>

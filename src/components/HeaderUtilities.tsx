@@ -1,7 +1,7 @@
-import { CircleHelp, Files, History, LogOut, ScrollText, Settings, UserRound } from 'lucide-react'
+import { CircleHelp, History, LayoutDashboard, LogOut, Settings, UserRound } from 'lucide-react'
 import { useState } from 'react'
 import { Link, useLocation } from 'react-router-dom'
-import { converterAuditLogPath, converterDocumentListPath, converterHistoryPath } from '../lib/converterRoutes'
+import { converterHistoryPath, converterOverviewPath, isAdminPath } from '../lib/converterRoutes'
 import { supabase } from '../lib/supabaseClient'
 import { useIsAdmin } from '../lib/useIsAdmin'
 
@@ -19,15 +19,40 @@ function ReviewGuidanceContent() {
   )
 }
 
+function AdminGuidanceContent() {
+  return (
+    <div className="header-guidance-panel" role="region" aria-label="Admin guidance">
+      <h3>Using the admin console</h3>
+      <ol>
+        <li><strong>Overview</strong> — a snapshot of documents, contributors, and audit health.</li>
+        <li><strong>Doc list</strong> — every document uploaded by every user, regardless of ownership.</li>
+        <li><strong>Audit log</strong> — a permanent, tamper-evident record of every action taken in the workspace.</li>
+      </ol>
+    </div>
+  )
+}
+
+function HistoryGuidanceContent() {
+  return (
+    <div className="header-guidance-panel" role="region" aria-label="History guidance">
+      <h3>Using your history</h3>
+      <ol>
+        <li><strong>Documents</strong> — PDFs you've uploaded in this workspace.</li>
+        <li><strong>Actions</strong> — your own activity, like edits and approvals.</li>
+      </ol>
+    </div>
+  )
+}
+
 export function HeaderUtilities() {
   const { isAdmin, email } = useIsAdmin()
   const location = useLocation()
   const [profileOpen, setProfileOpen] = useState(false)
   const [loggingOut, setLoggingOut] = useState(false)
   const onHistoryPage = location.pathname === converterHistoryPath()
-  const onDocumentListPage = location.pathname === converterDocumentListPath()
-  const onAuditLogPage = location.pathname === converterAuditLogPath()
+  const onAdminPage = isAdminPath(location.pathname)
   const initials = (email ?? 'account').charAt(0).toUpperCase()
+  const guidanceLabel = onAdminPage ? 'Admin guidance' : onHistoryPage ? 'History guidance' : 'Review guidance'
 
   const handleLogout = async () => {
     setLoggingOut(true)
@@ -43,8 +68,8 @@ export function HeaderUtilities() {
   return (
     <div className="header-utilities" role="group" aria-label="Help, history and account">
       <details className="header-utility header-help">
-        <summary aria-label="Review guidance" title="Review guidance"><CircleHelp aria-hidden="true" /></summary>
-        <ReviewGuidanceContent />
+        <summary aria-label={guidanceLabel} title={guidanceLabel}><CircleHelp aria-hidden="true" /></summary>
+        {onAdminPage ? <AdminGuidanceContent /> : onHistoryPage ? <HistoryGuidanceContent /> : <ReviewGuidanceContent />}
       </details>
 
       <Link
@@ -93,26 +118,15 @@ export function HeaderUtilities() {
             <span>History</span>
           </Link>
           {isAdmin ? (
-            <>
-              <Link
-                className={`header-profile-action${onDocumentListPage ? ' is-active' : ''}`}
-                to={converterDocumentListPath()}
-                aria-current={onDocumentListPage ? 'page' : undefined}
-                onClick={(event) => event.currentTarget.closest('details')?.removeAttribute('open')}
-              >
-                <Files aria-hidden="true" />
-                <span>Doc list</span>
-              </Link>
-              <Link
-                className={`header-profile-action${onAuditLogPage ? ' is-active' : ''}`}
-                to={converterAuditLogPath()}
-                aria-current={onAuditLogPage ? 'page' : undefined}
-                onClick={(event) => event.currentTarget.closest('details')?.removeAttribute('open')}
-              >
-                <ScrollText aria-hidden="true" />
-                <span>Audit log</span>
-              </Link>
-            </>
+            <Link
+              className={`header-profile-action${onAdminPage ? ' is-active' : ''}`}
+              to={converterOverviewPath()}
+              aria-current={onAdminPage ? 'page' : undefined}
+              onClick={(event) => event.currentTarget.closest('details')?.removeAttribute('open')}
+            >
+              <LayoutDashboard aria-hidden="true" />
+              <span>Admin dashboard</span>
+            </Link>
           ) : null}
           <button className="header-logout" type="button" onClick={handleLogout} disabled={loggingOut}>
             <LogOut aria-hidden="true" />
