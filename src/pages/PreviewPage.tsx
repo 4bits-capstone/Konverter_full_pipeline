@@ -20,13 +20,14 @@ import { useEffect, useMemo, useRef, useState, type MouseEvent } from "react";
 import { useNavigate } from "react-router-dom";
 import { ConfidenceBadge } from "../components/ConfidenceBadge";
 import { DoclingContent } from "../components/DoclingContent";
-import { ReportSummaryCard, type ReportSummaryRecord } from "../components/ReportSummaryCard";
+import {
+  ReportSummaryCard,
+  type ReportSummaryRecord,
+} from "../components/ReportSummaryCard";
 import { emptyMetadata } from "../config/workflow";
 import { converterStagePath } from "../lib/converterRoutes";
 import type { DoclingSection } from "../lib/docling";
-import {
-  formatPublicationDate,
-} from "../lib/publicationFormatting";
+import { formatPublicationDate } from "../lib/publicationFormatting";
 import { publicationService } from "../services";
 import { useKonverter } from "../state/KonverterContext";
 
@@ -185,16 +186,32 @@ function isChapterSection(section: DoclingSection): boolean {
 }
 
 function recommendationSnippets(sections: DoclingSection[]): string[] {
-  const recommendationSections = sections.filter((section) => /recommend/i.test(section.displayTitle))
-  const candidates = recommendationSections.flatMap((section) => section.blocks.flatMap((block) => {
-    if (block.type === 'paragraph') return [block.text]
-    if (block.type === 'list') return block.items.map((item) => item.text)
-    if (block.type === 'box_section' && /recommend/i.test(`${block.title} ${block.variant}`)) {
-      return block.blocks.flatMap((child) => child.type === 'paragraph' ? [child.text] : child.type === 'list' ? child.items.map((item) => item.text) : [])
-    }
-    return []
-  }))
-  return candidates.map((value) => value.replace(/\s+/g, ' ').trim()).filter((value) => value.length >= 24).slice(0, 3)
+  const recommendationSections = sections.filter((section) =>
+    /recommend/i.test(section.displayTitle),
+  );
+  const candidates = recommendationSections.flatMap((section) =>
+    section.blocks.flatMap((block) => {
+      if (block.type === "paragraph") return [block.text];
+      if (block.type === "list") return block.items.map((item) => item.text);
+      if (
+        block.type === "box_section" &&
+        /recommend/i.test(`${block.title} ${block.variant}`)
+      ) {
+        return block.blocks.flatMap((child) =>
+          child.type === "paragraph"
+            ? [child.text]
+            : child.type === "list"
+              ? child.items.map((item) => item.text)
+              : [],
+        );
+      }
+      return [];
+    }),
+  );
+  return candidates
+    .map((value) => value.replace(/\s+/g, " ").trim())
+    .filter((value) => value.length >= 24)
+    .slice(0, 3);
 }
 
 function projectSlug(title: string): string {
@@ -203,9 +220,14 @@ function projectSlug(title: string): string {
     .split(/\s*:\s*/, 1)[0]
     .replace(
       /\s+[-\u2013\u2014]\s+(?:consultation paper|issues paper|final report|report)$/i,
-      '',
-    )
-  return projectTitle.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '') || 'publication'
+      "",
+    );
+  return (
+    projectTitle
+      .toLowerCase()
+      .replace(/[^a-z0-9]+/g, "-")
+      .replace(/^-|-$/g, "") || "publication"
+  );
 }
 
 function scrollToReaderHeading(headingId: string): void {
@@ -265,10 +287,17 @@ export function PreviewPage() {
     () => buildValidationChecks(publication, pageMetadata, jsonLd),
     [jsonLd, pageMetadata, publication],
   );
-  const recommendations = useMemo(() => recommendationSnippets(publicationSections), [publicationSections]);
-  const citation = pageMetadata.citations.split(';').map((value) => value.trim()).find(Boolean)
-    ?? `${pageMetadata.publisher}, ${pageMetadata.title}`;
-  const reportNumber = citation.match(/(?:Report(?:\s+No)?\.?\s*)(\d+)/i)?.[1] ?? '—';
+  const recommendations = useMemo(
+    () => recommendationSnippets(publicationSections),
+    [publicationSections],
+  );
+  const citation =
+    pageMetadata.citations
+      .split(";")
+      .map((value) => value.trim())
+      .find(Boolean) ?? `${pageMetadata.publisher}, ${pageMetadata.title}`;
+  const reportNumber =
+    citation.match(/(?:Report(?:\s+No)?\.?\s*)(\d+)/i)?.[1] ?? "—";
   const previewReport: ReportSummaryRecord = {
     title: pageMetadata.title,
     reportNumber,
@@ -277,12 +306,18 @@ export function PreviewPage() {
     publishedDate: formatPublicationDate(pageMetadata.publishedDate),
     currentAsOf: formatPublicationDate(pageMetadata.publishedDate),
     jurisdiction: pageMetadata.jurisdiction,
-    status: 'Reviewed publication',
+    status: "Reviewed publication",
     summary: publicationSummary,
     citation,
-    topics: Array.from(new Set([pageMetadata.jurisdiction, 'Law reform'].filter(Boolean))),
-    coverUrl: activeDocumentId ? publicationService.coverUrl(activeDocumentId) : '',
-    localPdfUrl: activeDocumentId ? publicationService.sourceUrl(activeDocumentId) : '#',
+    topics: Array.from(
+      new Set([pageMetadata.jurisdiction, "Law reform"].filter(Boolean)),
+    ),
+    coverUrl: activeDocumentId
+      ? publicationService.coverUrl(activeDocumentId)
+      : "",
+    localPdfUrl: activeDocumentId
+      ? publicationService.sourceUrl(activeDocumentId)
+      : "#",
   };
   const projectUrl = `/project/${projectSlug(pageMetadata.title)}/`;
   const selectedSectionIndex = selectedSection
@@ -436,7 +471,8 @@ export function PreviewPage() {
           <Info />
           <div>
             The generated publication could not be loaded. Return to Review,
-            confirm the document changes, then run the final system checks again.
+            confirm the document changes, then run the final system checks
+            again.
           </div>
         </div>
       </section>
@@ -449,7 +485,10 @@ export function PreviewPage() {
         <div>
           <span className="eyebrow">Stage 4 of 4</span>
           <h2 id="preview-heading">Publication preview</h2>
-          <p className="lead">Check the reviewed reading experience and export the accessible version when it is ready.</p>
+          <p className="lead">
+            Check the reviewed reading experience and export the accessible
+            version when it is ready.
+          </p>
         </div>
         <div className="preview-title-actions">
           {documentConfidence?.band && documentConfidence.score != null && (
@@ -506,7 +545,10 @@ export function PreviewPage() {
       <nav className="preview-navigation" aria-label="Preview navigation">
         <div>
           <strong>Preview safely</strong>
-          <span>The original PDF is unchanged. Return to Review to adjust the converted document.</span>
+          <span>
+            The original PDF is unchanged. Return to Review to adjust the
+            converted document.
+          </span>
         </div>
         <div className="preview-navigation-actions">
           <button
@@ -530,7 +572,7 @@ export function PreviewPage() {
       <div className="banner banner-info preview-banner">
         <Info />
         <div>
-          Reviewed Docling data is loaded: {publication.stats.pages} pages,{" "}
+          Reviewed data is loaded: {publication.stats.pages} pages,{" "}
           {publication.stats.textItems.toLocaleString()} text items,{" "}
           {publication.stats.tables} tables, {publication.stats.pictures}{" "}
           picture records and {publication.stats.footnotes} footnotes. Select
@@ -580,38 +622,80 @@ export function PreviewPage() {
                     headingRef={publicationTitleRef}
                     headingTabIndex={-1}
                     className="preview-report-card"
-                    actions={(
+                    actions={
                       <>
-                        <button className="button button-primary" type="button" onClick={(event) => firstPublicationSection && openReader(event, firstPublicationSection)}>
+                        <button
+                          className="button button-primary"
+                          type="button"
+                          onClick={(event) =>
+                            firstPublicationSection &&
+                            openReader(event, firstPublicationSection)
+                          }
+                        >
                           <BookOpen aria-hidden="true" /> Read online
                         </button>
-                        <a className="button button-secondary" href={previewReport.localPdfUrl} target="_blank" rel="noreferrer">
+                        <a
+                          className="button button-secondary"
+                          href={previewReport.localPdfUrl}
+                          target="_blank"
+                          rel="noreferrer"
+                        >
                           <Download aria-hidden="true" /> Download PDF
                         </a>
-                        <a className="button button-secondary" href={projectUrl}>
+                        <a
+                          className="button button-secondary"
+                          href={projectUrl}
+                        >
                           <ChevronRight aria-hidden="true" /> Go to Project
                         </a>
-                        <a className="text-action" href="#report-contents"><ListTree aria-hidden="true" /> View report sections</a>
-                        <a className="text-action" href="#preview-citation"><Quote aria-hidden="true" /> View citation</a>
+                        <a className="text-action" href="#report-contents">
+                          <ListTree aria-hidden="true" /> View report sections
+                        </a>
+                        <a className="text-action" href="#preview-citation">
+                          <Quote aria-hidden="true" /> View citation
+                        </a>
                       </>
-                    )}
+                    }
                   />
                 </div>
 
                 <div className="preview-publication-main">
                   {recommendations.length > 0 && (
-                    <section className="key-recommendations" aria-labelledby="recommendations-heading">
-                      <span className="eyebrow">At a glance</span><h2 id="recommendations-heading">Key recommendations</h2>
-                      <div>{recommendations.map((recommendation, index) => <article key={`${recommendation}-${index}`}><strong>{String(index + 1).padStart(2, '0')}</strong><p>{recommendation}</p></article>)}</div>
+                    <section
+                      className="key-recommendations"
+                      aria-labelledby="recommendations-heading"
+                    >
+                      <span className="eyebrow">At a glance</span>
+                      <h2 id="recommendations-heading">Key recommendations</h2>
+                      <div>
+                        {recommendations.map((recommendation, index) => (
+                          <article key={`${recommendation}-${index}`}>
+                            <strong>
+                              {String(index + 1).padStart(2, "0")}
+                            </strong>
+                            <p>{recommendation}</p>
+                          </article>
+                        ))}
+                      </div>
                     </section>
                   )}
 
-                  <section className="vlrc-contents" id="report-contents" aria-labelledby="contents-heading">
+                  <section
+                    className="vlrc-contents"
+                    id="report-contents"
+                    aria-labelledby="contents-heading"
+                  >
                     <div className="contents-heading-row">
-                      <div><span className="eyebrow">Full report</span><h2 id="contents-heading">Table of contents</h2></div>
+                      <div>
+                        <span className="eyebrow">Full report</span>
+                        <h2 id="contents-heading">Table of contents</h2>
+                      </div>
                     </div>
 
-                    <div className="vlrc-accordion" aria-label="Complete report chapters">
+                    <div
+                      className="vlrc-accordion"
+                      aria-label="Complete report chapters"
+                    >
                       {publicationSections.map((section) => {
                         if (!isChapterSection(section)) {
                           return (
@@ -627,12 +711,53 @@ export function PreviewPage() {
                           );
                         }
                         const panelId = `${section.id}-subsections`;
-                        const majorHeadings = section.headings.filter((heading) => heading.level === 2).sort((left, right) => (left.tocSequence ?? Number.MAX_SAFE_INTEGER) - (right.tocSequence ?? Number.MAX_SAFE_INTEGER) || (left.page ?? 0) - (right.page ?? 0));
+                        const majorHeadings = section.headings
+                          .filter((heading) => heading.level === 2)
+                          .sort(
+                            (left, right) =>
+                              (left.tocSequence ?? Number.MAX_SAFE_INTEGER) -
+                                (right.tocSequence ??
+                                  Number.MAX_SAFE_INTEGER) ||
+                              (left.page ?? 0) - (right.page ?? 0),
+                          );
                         return (
-                          <details className="vlrc-accordion-item" key={section.id} open={section.id === firstChapterSection?.id}>
-                            <summary aria-controls={panelId}><span>{section.displayTitle}</span><ChevronDown className="accordion-chevron" aria-hidden="true" /></summary>
+                          <details
+                            className="vlrc-accordion-item"
+                            key={section.id}
+                            open={section.id === firstChapterSection?.id}
+                          >
+                            <summary aria-controls={panelId}>
+                              <span>{section.displayTitle}</span>
+                              <ChevronDown
+                                className="accordion-chevron"
+                                aria-hidden="true"
+                              />
+                            </summary>
                             <div className="vlrc-accordion-panel" id={panelId}>
-                              <ul><li className="vlrc-read-full"><a href={`#${section.id}`} onClick={(event) => openReader(event, section)}>Read full section</a></li>{majorHeadings.map((heading) => <li key={heading.id}><a href={`#${heading.id}`} onClick={(event) => openReader(event, section, heading.id)}>{heading.text}</a></li>)}</ul>
+                              <ul>
+                                <li className="vlrc-read-full">
+                                  <a
+                                    href={`#${section.id}`}
+                                    onClick={(event) =>
+                                      openReader(event, section)
+                                    }
+                                  >
+                                    Read full section
+                                  </a>
+                                </li>
+                                {majorHeadings.map((heading) => (
+                                  <li key={heading.id}>
+                                    <a
+                                      href={`#${heading.id}`}
+                                      onClick={(event) =>
+                                        openReader(event, section, heading.id)
+                                      }
+                                    >
+                                      {heading.text}
+                                    </a>
+                                  </li>
+                                ))}
+                              </ul>
                             </div>
                           </details>
                         );
@@ -640,9 +765,18 @@ export function PreviewPage() {
                     </div>
                   </section>
 
-                  <section className="preview-citation-card" id="preview-citation" aria-labelledby="preview-citation-heading">
+                  <section
+                    className="preview-citation-card"
+                    id="preview-citation"
+                    aria-labelledby="preview-citation-heading"
+                  >
                     <Quote aria-hidden="true" />
-                    <div><span className="eyebrow">Source and citation</span><h2 id="preview-citation-heading">Cite this report</h2><blockquote>{previewReport.citation}</blockquote><p>Published by {previewReport.publisher}.</p></div>
+                    <div>
+                      <span className="eyebrow">Source and citation</span>
+                      <h2 id="preview-citation-heading">Cite this report</h2>
+                      <blockquote>{previewReport.citation}</blockquote>
+                      <p>Published by {previewReport.publisher}.</p>
+                    </div>
                   </section>
                 </div>
               </div>
@@ -742,10 +876,34 @@ export function PreviewPage() {
                 <span>Improving and modernising Victoria&apos;s laws</span>
               </div>
               <nav aria-label="VLRC footer links">
-                <a href="https://www.lawreform.vic.gov.au/about-us/" target="_blank" rel="noreferrer">About Us</a>
-                <a href="https://www.lawreform.vic.gov.au/all-projects/" target="_blank" rel="noreferrer">All Projects</a>
-                <a href="https://www.lawreform.vic.gov.au/publications-and-media/publications/" target="_blank" rel="noreferrer">Publications</a>
-                <a href="https://www.lawreform.vic.gov.au/contact-us/" target="_blank" rel="noreferrer">Contact</a>
+                <a
+                  href="https://www.lawreform.vic.gov.au/about-us/"
+                  target="_blank"
+                  rel="noreferrer"
+                >
+                  About Us
+                </a>
+                <a
+                  href="https://www.lawreform.vic.gov.au/all-projects/"
+                  target="_blank"
+                  rel="noreferrer"
+                >
+                  All Projects
+                </a>
+                <a
+                  href="https://www.lawreform.vic.gov.au/publications-and-media/publications/"
+                  target="_blank"
+                  rel="noreferrer"
+                >
+                  Publications
+                </a>
+                <a
+                  href="https://www.lawreform.vic.gov.au/contact-us/"
+                  target="_blank"
+                  rel="noreferrer"
+                >
+                  Contact
+                </a>
               </nav>
             </footer>
           </article>
@@ -766,8 +924,8 @@ export function PreviewPage() {
                   <Circle aria-hidden="true" />
                 )}
                 <div className="valrow-text">
-                  {check.label}
-                  <span className="valrow-detail">{check.detail}</span>
+                  {check.label}:
+                  <span className="valrow-detail"> {check.detail}</span>
                 </div>
               </div>
             ))}

@@ -6938,7 +6938,7 @@
 
 .converter-app .contents-heading-row > div:last-child {
   display: flex;
-  gap: 7px;
+  flex-direction: column;
 }
 
 .converter-app .contents-heading-row button,
