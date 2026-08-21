@@ -1,12 +1,13 @@
 import { useQuery } from '@tanstack/react-query'
-import { ArrowLeft, Check, FileText, Minus } from 'lucide-react'
+import { ArrowLeft, Check, FileText, FolderOpen, Minus } from 'lucide-react'
 import { useEffect, useMemo, useState } from 'react'
-import { Link } from 'react-router-dom'
+import { Link, useNavigate } from 'react-router-dom'
 import { AdminModeSwitcher } from '../components/AdminModeSwitcher'
 import { ActorChip, PageCountBadge, TimeStack } from '../components/AuditActionDetail'
 import { converterStagePath } from '../lib/converterRoutes'
 import { auditService, documentService } from '../services'
-import type { ProcessingState } from '../types/konverter'
+import { useKonverter } from '../state/KonverterContext'
+import type { DocumentSummary, ProcessingState } from '../types/konverter'
 
 const statusLabels: Record<ProcessingState, string> = {
   idle: 'Queued',
@@ -33,6 +34,8 @@ function ApprovedBadge({ approvedAt }: { approvedAt?: string | null }) {
 }
 
 export function DocumentListPage() {
+  const navigate = useNavigate()
+  const { reopenDocument } = useKonverter()
   const [search, setSearch] = useState('')
   const [statusFilter, setStatusFilter] = useState<'all' | ProcessingState>('all')
   const [selectedId, setSelectedId] = useState<string | null>(null)
@@ -40,6 +43,13 @@ export function DocumentListPage() {
     queryKey: ['documents', 'all'],
     queryFn: () => documentService.listAllDocuments(),
   })
+
+  // Reopens a processed document at wherever it left off (review, or
+  // preview if already approved) without re-uploading or re-processing it.
+  const openDocument = (document: DocumentSummary) => {
+    const stage = reopenDocument(document)
+    navigate(converterStagePath(stage))
+  }
   const { data: auditEntries = [] } = useQuery({
     queryKey: ['audit-log'],
     queryFn: () => auditService.list(),
@@ -136,6 +146,7 @@ export function DocumentListPage() {
                         <th scope="col">Uploaded by</th>
                         <th scope="col">Status</th>
                         <th scope="col">Approved</th>
+                        <th scope="col"><span className="sr-only">Open</span></th>
                       </tr>
                     </thead>
                     <tbody>
@@ -161,6 +172,19 @@ export function DocumentListPage() {
                           <td><ActorChip email={document.uploadedByEmail} /></td>
                           <td><StatusPill state={document.processingState} /></td>
                           <td><ApprovedBadge approvedAt={document.approvedAt} /></td>
+                          <td>
+                            <button
+                              className="btn btn-outline btn-sm"
+                              type="button"
+                              disabled={document.processingState !== 'complete'}
+                              onClick={(event) => {
+                                event.stopPropagation()
+                                openDocument(document)
+                              }}
+                            >
+                              Open
+                            </button>
+                          </td>
                         </tr>
                       ))}
                     </tbody>
@@ -175,6 +199,15 @@ export function DocumentListPage() {
                       <span className="audit-detail-kicker">Selected document</span>
                       <h3>{selectedDocument.title}</h3>
                     </div>
+                    <button
+                      className="btn btn-primary btn-sm"
+                      type="button"
+                      disabled={selectedDocument.processingState !== 'complete'}
+                      onClick={() => openDocument(selectedDocument)}
+                    >
+                      <FolderOpen aria-hidden="true" />
+                      Open
+                    </button>
                   </div>
                   <dl className="audit-detail-facts">
                     <div>

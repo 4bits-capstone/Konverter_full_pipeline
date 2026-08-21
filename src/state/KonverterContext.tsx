@@ -45,6 +45,7 @@ interface KonverterContextValue {
   addDocuments: (documents: DocumentSummary[]) => void;
   removeDocument: (id: string) => void;
   selectDocument: (id: string) => void;
+  reopenDocument: (document: DocumentSummary) => Stage;
   documentProcessing: Record<string, DocumentProcessingJob>;
   completedDocuments: DocumentSummary[];
   runningDocuments: DocumentSummary[];
@@ -101,6 +102,24 @@ const initialUnlocked: Record<Stage, boolean> = {
   approval: false,
   preview: false,
 };
+
+/** Maps a document's saved progress to which workflow stages it should reopen
+ * unlocked into — so resuming a processed document doesn't require redoing
+ * stages it already passed. */
+export function unlockedForDocument(
+  doc: DocumentSummary,
+): Record<Stage, boolean> {
+  const complete = doc.processingState === "complete";
+  const metaDone = Boolean(doc.metadataConfirmed);
+  const approved = Boolean(doc.approvedAt);
+  return {
+    upload: true,
+    review: complete,
+    metadata: complete,
+    approval: complete,
+    preview: complete && (metaDone || approved),
+  };
+}
 
 export function KonverterProvider({ children }: PropsWithChildren) {
   const queryClient = useQueryClient();
@@ -286,6 +305,23 @@ export function KonverterProvider({ children }: PropsWithChildren) {
   const selectDocument = useCallback((id: string) => {
     setActiveDocumentId(id);
   }, []);
+
+  // Reopens a previously processed document for review/edit/approve/export,
+  // without re-uploading or re-processing it. Unlike selectDocument, this
+  // also unlocks whichever stages the document already progressed through
+  // (selectDocument alone leaves later stages locked for a fresh session).
+  // Takes the full DocumentSummary (not just an id) so it works for
+  // documents the admin document list loaded but this session hasn't seen
+  // yet (addDocuments below is idempotent and seeds them on demand).
+  const reopenDocument = useCallback(
+    (document: DocumentSummary): Stage => {
+      addDocuments([document]);
+      setActiveDocumentId(document.id);
+      setUnlocked(unlockedForDocument(document));
+      return document.approvedAt ? "preview" : "review";
+    },
+    [addDocuments],
+  );
 
   const startDocumentProcessing = useCallback(
     (id: string) => {
@@ -637,6 +673,7 @@ export function KonverterProvider({ children }: PropsWithChildren) {
       addDocuments,
       removeDocument,
       selectDocument,
+      reopenDocument,
       documentProcessing,
       completedDocuments,
       runningDocuments,
@@ -683,6 +720,7 @@ export function KonverterProvider({ children }: PropsWithChildren) {
       addDocuments,
       removeDocument,
       selectDocument,
+      reopenDocument,
       documentProcessing,
       completedDocuments,
       runningDocuments,
