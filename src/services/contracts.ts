@@ -46,9 +46,14 @@ export interface ApprovalService {
   revoke(documentId: string): Promise<void>
 }
 
+export interface AuditListParams {
+  limit?: number
+  offset?: number
+}
+
 export interface AuditService {
-  list(): Promise<AuditLogEntry[]>
-  listMine(): Promise<AuditLogEntry[]>
+  list(params?: AuditListParams): Promise<AuditLogEntry[]>
+  listMine(params?: AuditListParams): Promise<AuditLogEntry[]>
 }
 
 export interface PublicationService {

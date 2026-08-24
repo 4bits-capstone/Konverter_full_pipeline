@@ -669,8 +669,25 @@
 
 .converter-app .admin-count {
   margin-left: auto;
+  flex-basis: 100%;
+  text-align: right;
   color: var(--muted);
   font-size: 12.5px;
+}
+
+.converter-app .admin-pager {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 12px;
+  margin-top: 12px;
+  color: var(--muted);
+  font-size: 12.5px;
+}
+
+.converter-app .admin-pager span {
+  min-width: 90px;
+  text-align: center;
 }
 
 .converter-app .admin-stat-grid {

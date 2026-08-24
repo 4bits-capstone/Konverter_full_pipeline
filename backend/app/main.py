@@ -11,7 +11,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Annotated, Any
 
-from fastapi import Depends, FastAPI, File, HTTPException, Request, Response, UploadFile
+from fastapi import Depends, FastAPI, File, HTTPException, Query, Request, Response, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, StreamingResponse
 
@@ -224,17 +224,26 @@ def list_all_documents(user: AdminUser) -> list[DocumentSummary]:
 
 
 @app.get("/api/audit-log")
-async def audit_log(user: AdminUser) -> list[dict[str, Any]]:
-    """Recent audit trail rows across all users, newest first. Admin only."""
-    return await audit.list_recent()
+async def audit_log(
+    user: AdminUser,
+    limit: Annotated[int, Query(ge=1, le=audit.MAX_PAGE_LIMIT)] = audit.DEFAULT_PAGE_LIMIT,
+    offset: Annotated[int, Query(ge=0)] = 0,
+) -> list[dict[str, Any]]:
+    """Audit trail rows across all users, newest first, one page at a time.
+    Admin only."""
+    return await audit.list_recent(limit=limit, offset=offset)
 
 
 @app.get("/api/audit-log/mine")
-async def my_audit_log(user: CurrentUser) -> list[dict[str, Any]]:
-    """The current user's own recent actions, newest first. Any authenticated
-    user; filtered server-side to their own actor_id so they can never see
-    anyone else's activity through this endpoint."""
-    return await audit.list_recent_for_actor(user.get("id"))
+async def my_audit_log(
+    user: CurrentUser,
+    limit: Annotated[int, Query(ge=1, le=audit.MAX_PAGE_LIMIT)] = audit.DEFAULT_PAGE_LIMIT,
+    offset: Annotated[int, Query(ge=0)] = 0,
+) -> list[dict[str, Any]]:
+    """The current user's own actions, newest first, one page at a time. Any
+    authenticated user; filtered server-side to their own actor_id so they
+    can never see anyone else's activity through this endpoint."""
+    return await audit.list_recent_for_actor(user.get("id"), limit=limit, offset=offset)
 
 
 @app.post("/api/documents", response_model=list[DocumentSummary], status_code=201)

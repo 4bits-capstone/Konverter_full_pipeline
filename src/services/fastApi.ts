@@ -1,6 +1,6 @@
 import { apiRequest } from './httpClient'
 import { runtimeConfig } from '../config/runtime'
-import type { ApprovalService, AuditService, DocumentService, MetadataService, PublicationService, ReviewService } from './contracts'
+import type { ApprovalService, AuditListParams, AuditService, DocumentService, MetadataService, PublicationService, ReviewService } from './contracts'
 import type {
   DocumentMetadata,
   ReviewUpdate,
@@ -124,12 +124,21 @@ export const fastApiApprovalService: ApprovalService = {
   },
 }
 
+function auditQuery(params?: AuditListParams): string {
+  if (!params) return ''
+  const search = new URLSearchParams()
+  if (params.limit != null) search.set('limit', String(params.limit))
+  if (params.offset != null) search.set('offset', String(params.offset))
+  const query = search.toString()
+  return query ? `?${query}` : ''
+}
+
 export const fastApiAuditService: AuditService = {
-  list() {
-    return apiRequest('/audit-log')
+  list(params) {
+    return apiRequest(`/audit-log${auditQuery(params)}`)
   },
-  listMine() {
-    return apiRequest('/audit-log/mine')
+  listMine(params) {
+    return apiRequest(`/audit-log/mine${auditQuery(params)}`)
   },
 }
 

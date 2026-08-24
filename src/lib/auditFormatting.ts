@@ -1,5 +1,12 @@
 import type { AuditLogEntry } from '../types/konverter'
 
+/** How many audit rows every page fetches in one request. Every caller of
+ * auditService.list()/listMine() should pass this explicitly — otherwise
+ * they fall back to the backend's own default limit, which can silently
+ * disagree with pages that do pass it (e.g. an "X events" count lower than
+ * the real total shown elsewhere). */
+export const AUDIT_LOG_FETCH_LIMIT = 1000
+
 export const auditActionLabels: Record<string, string> = {
   upload: 'Uploaded document',
   delete_document: 'Deleted document',
@@ -112,6 +119,18 @@ export function formatAuditDateParts(value: string): AuditDateParts {
     date: auditDateOnlyFormatter.format(date),
     time: auditTimeOnlyFormatter.format(date),
   }
+}
+
+/** Local-timezone "YYYY-MM-DD" key for a timestamp, matching the value an
+ * `<input type="date">` produces — lets an exact-date filter compare against
+ * it directly. */
+export function toLocalDateKey(value: string): string {
+  const date = new Date(value)
+  if (Number.isNaN(date.getTime())) return ''
+  const year = date.getFullYear()
+  const month = String(date.getMonth() + 1).padStart(2, '0')
+  const day = String(date.getDate()).padStart(2, '0')
+  return `${year}-${month}-${day}`
 }
 
 export type AuditChainStatus = 'linked' | 'unverifiable' | 'broken'

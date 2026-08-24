@@ -4,11 +4,13 @@ import { useEffect, useMemo, useState } from 'react'
 import { Link } from 'react-router-dom'
 import { AdminModeSwitcher } from '../components/AdminModeSwitcher'
 import { AuditActionDetailPanel, AuditLedgerTable } from '../components/AuditActionDetail'
-import { auditActionLabel, auditActionLabels, auditChainStatus, type AuditChainStatus } from '../lib/auditFormatting'
+import { AUDIT_LOG_FETCH_LIMIT, auditActionLabel, auditActionLabels, auditChainStatus, toLocalDateKey, type AuditChainStatus } from '../lib/auditFormatting'
 import { converterStagePath } from '../lib/converterRoutes'
 import { auditService, documentService } from '../services'
 
 const actionOptions = Object.keys(auditActionLabels)
+
+const PAGE_SIZE = 50
 
 type SortOrder = 'newest' | 'oldest'
 type ChainFilter = 'all' | AuditChainStatus
@@ -25,12 +27,15 @@ export function AuditLogPage() {
   const [actionFilter, setActionFilter] = useState('all')
   const [actorFilter, setActorFilter] = useState('all')
   const [chainFilter, setChainFilter] = useState<ChainFilter>('all')
+  const [dateFrom, setDateFrom] = useState('')
+  const [dateTo, setDateTo] = useState('')
   const [sortOrder, setSortOrder] = useState<SortOrder>('newest')
   const [selectedId, setSelectedId] = useState<number | null>(null)
+  const [page, setPage] = useState(0)
 
   const { data: entries = [], isLoading, isError } = useQuery({
-    queryKey: ['audit-log'],
-    queryFn: () => auditService.list(),
+    queryKey: ['audit-log', AUDIT_LOG_FETCH_LIMIT],
+    queryFn: () => auditService.list({ limit: AUDIT_LOG_FETCH_LIMIT }),
   })
   const { data: documents = [] } = useQuery({
     queryKey: ['documents', 'all'],
@@ -51,6 +56,8 @@ export function AuditLogPage() {
       (actionFilter === 'all' || entry.action === actionFilter)
       && (actorFilter === 'all' || entry.actor_email === actorFilter)
       && (chainFilter === 'all' || auditChainStatus(entries, index) === chainFilter)
+      && (!dateFrom || toLocalDateKey(entry.created_at) >= dateFrom)
+      && (!dateTo || toLocalDateKey(entry.created_at) <= dateTo)
       && (!query || [entry.actor_email, entry.document_id, auditActionLabel(entry.action)]
         .filter(Boolean)
         .join(' ')
@@ -58,16 +65,31 @@ export function AuditLogPage() {
         .includes(query))
     ))
     return sortOrder === 'oldest' ? [...filtered].reverse() : filtered
-  }, [entries, search, actionFilter, actorFilter, chainFilter, sortOrder])
+  }, [entries, search, actionFilter, actorFilter, chainFilter, dateFrom, dateTo, sortOrder])
+
+  const pageCount = Math.max(1, Math.ceil(visibleEntries.length / PAGE_SIZE))
 
   useEffect(() => {
-    if (selectedId && visibleEntries.some((entry) => entry.id === selectedId)) return
-    setSelectedId(visibleEntries[0]?.id ?? null)
-  }, [selectedId, visibleEntries])
+    setPage(0)
+  }, [search, actionFilter, actorFilter, chainFilter, dateFrom, dateTo, sortOrder])
 
-  const selectedEntry = visibleEntries.find((entry) => entry.id === selectedId) ?? null
+  useEffect(() => {
+    if (page > pageCount - 1) setPage(pageCount - 1)
+  }, [page, pageCount])
+
+  const pagedEntries = useMemo(
+    () => visibleEntries.slice(page * PAGE_SIZE, page * PAGE_SIZE + PAGE_SIZE),
+    [visibleEntries, page],
+  )
+
+  useEffect(() => {
+    if (selectedId && pagedEntries.some((entry) => entry.id === selectedId)) return
+    setSelectedId(pagedEntries[0]?.id ?? null)
+  }, [selectedId, pagedEntries])
+
+  const selectedEntry = pagedEntries.find((entry) => entry.id === selectedId) ?? null
   const selectedDocument = selectedEntry ? documents.find((document) => document.id === selectedEntry.document_id) : undefined
-  const hasFilters = Boolean(search) || actionFilter !== 'all' || actorFilter !== 'all' || chainFilter !== 'all'
+  const hasFilters = Boolean(search) || actionFilter !== 'all' || actorFilter !== 'all' || chainFilter !== 'all' || Boolean(dateFrom) || Boolean(dateTo)
 
   return (
     <section className="screen active" aria-labelledby="audit-log-heading">
@@ -138,6 +160,30 @@ export function AuditLogPage() {
             </label>
             <span className="admin-count">{visibleEntries.length} of {entries.length} events</span>
           </div>
+          <div className="admin-toolbar">
+            <div className="tb-control">
+              <label htmlFor="audit-log-date-from">From</label>
+              <input
+                id="audit-log-date-from"
+                className="input"
+                type="date"
+                value={dateFrom}
+                max={dateTo || undefined}
+                onChange={(event) => setDateFrom(event.target.value)}
+              />
+            </div>
+            <div className="tb-control">
+              <label htmlFor="audit-log-date-to">To</label>
+              <input
+                id="audit-log-date-to"
+                className="input"
+                type="date"
+                value={dateTo}
+                min={dateFrom || undefined}
+                onChange={(event) => setDateTo(event.target.value)}
+              />
+            </div>
+          </div>
 
           {entries.length === 0 ? (
             <div className="panel panel-pad">
@@ -148,26 +194,49 @@ export function AuditLogPage() {
               <p className="hint">No audit events match {hasFilters ? 'these filters' : 'this search'}.</p>
             </div>
           ) : (
-            <div className="audit-ledger-workspace">
-              <div className="audit-ledger-panel">
-                <AuditLedgerTable
-                  entries={visibleEntries}
-                  selectedId={selectedId}
-                  onSelect={setSelectedId}
-                  showActor
-                  getChainStatus={(entry) => auditChainStatus(entries, entries.indexOf(entry))}
-                  caption="Audit log entries"
-                />
+            <>
+              <div className="audit-ledger-workspace">
+                <div className="audit-ledger-panel">
+                  <AuditLedgerTable
+                    entries={pagedEntries}
+                    selectedId={selectedId}
+                    onSelect={setSelectedId}
+                    showActor
+                    getChainStatus={(entry) => auditChainStatus(entries, entries.indexOf(entry))}
+                    caption="Audit log entries"
+                  />
+                </div>
+                {selectedEntry ? (
+                  <AuditActionDetailPanel
+                    entry={selectedEntry}
+                    documentTitle={selectedDocument?.title ?? null}
+                    documentFileName={selectedDocument?.fileName ?? null}
+                    showActor
+                  />
+                ) : null}
               </div>
-              {selectedEntry ? (
-                <AuditActionDetailPanel
-                  entry={selectedEntry}
-                  documentTitle={selectedDocument?.title ?? null}
-                  documentFileName={selectedDocument?.fileName ?? null}
-                  showActor
-                />
+              {pageCount > 1 ? (
+                <div className="admin-pager">
+                  <button
+                    type="button"
+                    className="btn btn-outline btn-sm"
+                    onClick={() => setPage((current) => Math.max(0, current - 1))}
+                    disabled={page === 0}
+                  >
+                    Previous
+                  </button>
+                  <span>Page {page + 1} of {pageCount}</span>
+                  <button
+                    type="button"
+                    className="btn btn-outline btn-sm"
+                    onClick={() => setPage((current) => Math.min(pageCount - 1, current + 1))}
+                    disabled={page >= pageCount - 1}
+                  >
+                    Next
+                  </button>
+                </div>
               ) : null}
-            </div>
+            </>
           )}
         </>
       )}

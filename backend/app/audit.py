@@ -142,14 +142,26 @@ async def _get(params: dict[str, str]) -> list[dict[str, Any]]:
         return []
 
 
-async def list_recent(limit: int = 100) -> list[dict[str, Any]]:
-    """Fetch the most recent audit_log rows across all users, newest first.
-    Admin only — callers must gate this themselves (see require_admin)."""
-    return await _get({"order": "id.desc", "limit": str(limit)})
+DEFAULT_PAGE_LIMIT = 500
+MAX_PAGE_LIMIT = 2000
 
 
-async def list_recent_for_actor(actor_id: str, limit: int = 100) -> list[dict[str, Any]]:
-    """Fetch the most recent audit_log rows for one actor, newest first.
+async def list_recent(limit: int = DEFAULT_PAGE_LIMIT, offset: int = 0) -> list[dict[str, Any]]:
+    """Fetch audit_log rows across all users, newest first, one page at a
+    time. Admin only — callers must gate this themselves (see require_admin)."""
+    limit = min(max(limit, 1), MAX_PAGE_LIMIT)
+    offset = max(offset, 0)
+    return await _get({"order": "id.desc", "limit": str(limit), "offset": str(offset)})
+
+
+async def list_recent_for_actor(
+    actor_id: str, limit: int = DEFAULT_PAGE_LIMIT, offset: int = 0
+) -> list[dict[str, Any]]:
+    """Fetch audit_log rows for one actor, newest first, one page at a time.
     Filtered server-side so a caller can only ever see their own rows,
     regardless of what any client sends."""
-    return await _get({"actor_id": f"eq.{actor_id}", "order": "id.desc", "limit": str(limit)})
+    limit = min(max(limit, 1), MAX_PAGE_LIMIT)
+    offset = max(offset, 0)
+    return await _get(
+        {"actor_id": f"eq.{actor_id}", "order": "id.desc", "limit": str(limit), "offset": str(offset)}
+    )

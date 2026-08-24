@@ -13,7 +13,7 @@ import {
 import { Link } from 'react-router-dom'
 import { AdminModeSwitcher } from '../components/AdminModeSwitcher'
 import { ActionBadge, ActorChip, TimeStack } from '../components/AuditActionDetail'
-import { auditChainStatus, auditEntrySummary, type AuditActionTone } from '../lib/auditFormatting'
+import { AUDIT_LOG_FETCH_LIMIT, auditChainStatus, auditEntrySummary, type AuditActionTone } from '../lib/auditFormatting'
 import { converterAuditLogPath, converterStagePath } from '../lib/converterRoutes'
 import { auditService, documentService } from '../services'
 
@@ -42,8 +42,8 @@ export function AdminOverviewPage() {
     queryFn: () => documentService.listAllDocuments(),
   })
   const { data: entries = [], isLoading: entriesLoading, isError: entriesError } = useQuery({
-    queryKey: ['audit-log'],
-    queryFn: () => auditService.list(),
+    queryKey: ['audit-log', AUDIT_LOG_FETCH_LIMIT],
+    queryFn: () => auditService.list({ limit: AUDIT_LOG_FETCH_LIMIT }),
   })
 
   const isLoading = documentsLoading || entriesLoading

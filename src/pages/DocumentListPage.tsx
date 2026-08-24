@@ -5,9 +5,12 @@ import { Link, useNavigate } from 'react-router-dom'
 import { AdminModeSwitcher } from '../components/AdminModeSwitcher'
 import { ActorChip, PageCountBadge, TimeStack } from '../components/AuditActionDetail'
 import { converterStagePath } from '../lib/converterRoutes'
+import { AUDIT_LOG_FETCH_LIMIT, toLocalDateKey } from '../lib/auditFormatting'
 import { auditService, documentService } from '../services'
 import { useKonverter } from '../state/KonverterContext'
 import type { DocumentSummary, ProcessingState } from '../types/konverter'
+
+type SortOrder = 'newest' | 'oldest'
 
 const statusLabels: Record<ProcessingState, string> = {
   idle: 'Queued',
@@ -38,6 +41,9 @@ export function DocumentListPage() {
   const { reopenDocument } = useKonverter()
   const [search, setSearch] = useState('')
   const [statusFilter, setStatusFilter] = useState<'all' | ProcessingState>('all')
+  const [dateFrom, setDateFrom] = useState('')
+  const [dateTo, setDateTo] = useState('')
+  const [sortOrder, setSortOrder] = useState<SortOrder>('newest')
   const [selectedId, setSelectedId] = useState<string | null>(null)
   const { data: documents = [], isLoading, isError } = useQuery({
     queryKey: ['documents', 'all'],
@@ -51,21 +57,28 @@ export function DocumentListPage() {
     navigate(converterStagePath(stage))
   }
   const { data: auditEntries = [] } = useQuery({
-    queryKey: ['audit-log'],
-    queryFn: () => auditService.list(),
+    queryKey: ['audit-log', AUDIT_LOG_FETCH_LIMIT],
+    queryFn: () => auditService.list({ limit: AUDIT_LOG_FETCH_LIMIT }),
   })
 
   const visibleDocuments = useMemo(() => {
     const query = search.trim().toLocaleLowerCase('en-AU')
-    return documents.filter((document) => (
+    const filtered = documents.filter((document) => (
       (statusFilter === 'all' || (document.processingState ?? 'idle') === statusFilter)
+      && (!dateFrom || (document.uploadedAt && toLocalDateKey(document.uploadedAt) >= dateFrom))
+      && (!dateTo || (document.uploadedAt && toLocalDateKey(document.uploadedAt) <= dateTo))
       && (!query || [document.title, document.fileName, document.uploadedByEmail]
         .filter(Boolean)
         .join(' ')
         .toLocaleLowerCase('en-AU')
         .includes(query))
     ))
-  }, [documents, search, statusFilter])
+    return [...filtered].sort((a, b) => {
+      const aTime = a.uploadedAt ? new Date(a.uploadedAt).getTime() : 0
+      const bTime = b.uploadedAt ? new Date(b.uploadedAt).getTime() : 0
+      return sortOrder === 'newest' ? bTime - aTime : aTime - bTime
+    })
+  }, [documents, search, statusFilter, dateFrom, dateTo, sortOrder])
 
   useEffect(() => {
     if (selectedId && visibleDocuments.some((document) => document.id === selectedId)) return
@@ -73,7 +86,7 @@ export function DocumentListPage() {
   }, [selectedId, visibleDocuments])
 
   const selectedDocument = visibleDocuments.find((document) => document.id === selectedId) ?? null
-  const hasFilters = Boolean(search) || statusFilter !== 'all'
+  const hasFilters = Boolean(search) || statusFilter !== 'all' || Boolean(dateFrom) || Boolean(dateTo)
 
   return (
     <section className="screen active" aria-labelledby="doc-list-heading">
@@ -123,7 +136,38 @@ export function DocumentListPage() {
                 <option value="failed">Needs retry</option>
               </select>
             </label>
+            <label className="tb-control">
+              <span className="sr-only">Sort</span>
+              <select className="sel" value={sortOrder} onChange={(event) => setSortOrder(event.target.value as SortOrder)}>
+                <option value="newest">Newest first</option>
+                <option value="oldest">Oldest first</option>
+              </select>
+            </label>
             <span className="admin-count">{visibleDocuments.length} of {documents.length} documents</span>
+          </div>
+          <div className="admin-toolbar">
+            <div className="tb-control">
+              <label htmlFor="doc-list-date-from">From</label>
+              <input
+                id="doc-list-date-from"
+                className="input"
+                type="date"
+                value={dateFrom}
+                max={dateTo || undefined}
+                onChange={(event) => setDateFrom(event.target.value)}
+              />
+            </div>
+            <div className="tb-control">
+              <label htmlFor="doc-list-date-to">To</label>
+              <input
+                id="doc-list-date-to"
+                className="input"
+                type="date"
+                value={dateTo}
+                min={dateFrom || undefined}
+                onChange={(event) => setDateTo(event.target.value)}
+              />
+            </div>
           </div>
 
           {documents.length === 0 ? (

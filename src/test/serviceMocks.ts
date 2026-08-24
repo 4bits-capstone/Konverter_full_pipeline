@@ -178,10 +178,10 @@ export const approvalService: ApprovalService = {
 }
 
 export const auditService: AuditService = {
-  async list() {
+  async list(_params) {
     return []
   },
-  async listMine() {
+  async listMine(_params) {
     return []
   },
 }
