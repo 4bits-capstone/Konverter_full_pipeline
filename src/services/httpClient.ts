@@ -25,27 +25,43 @@ export async function apiRequest<T>(
     () => controller.abort(),
     init.timeoutMs ?? runtimeConfig.requestTimeoutMs,
   );
-  const headers = new Headers(init.headers);
 
-  if (
-    init.body &&
-    !(init.body instanceof FormData) &&
-    !headers.has("Content-Type")
-  ) {
-    headers.set("Content-Type", "application/json");
-  }
-
-  const { data } = await supabase.auth.getSession();
-  const token = data.session?.access_token;
-  if (token) headers.set("Authorization", `Bearer ${token}`);
+  const buildHeaders = async () => {
+    const headers = new Headers(init.headers);
+    if (
+      init.body &&
+      !(init.body instanceof FormData) &&
+      !headers.has("Content-Type")
+    ) {
+      headers.set("Content-Type", "application/json");
+    }
+    const { data } = await supabase.auth.getSession();
+    const token = data.session?.access_token;
+    if (token) headers.set("Authorization", `Bearer ${token}`);
+    return headers;
+  };
 
   try {
     const { timeoutMs: _timeoutMs, ...fetchInit } = init;
-    const response = await fetch(`${runtimeConfig.apiBaseUrl}${path}`, {
-      ...fetchInit,
-      headers,
-      signal: controller.signal,
-    });
+    const doFetch = async () =>
+      fetch(`${runtimeConfig.apiBaseUrl}${path}`, {
+        ...fetchInit,
+        headers: await buildHeaders(),
+        signal: controller.signal,
+      });
+
+    let response = await doFetch();
+
+    if (response.status === 401) {
+      // The backend re-validates the token against Supabase on every
+      // request, so a single 401 can be a transient validation hiccup
+      // rather than a genuinely expired session. Force a fresh access
+      // token and retry once before treating the user as signed out.
+      const { error: refreshError } = await supabase.auth.refreshSession();
+      if (!refreshError) {
+        response = await doFetch();
+      }
+    }
 
     if (!response.ok) {
       if (response.status === 401) {

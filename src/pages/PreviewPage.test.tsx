@@ -114,7 +114,7 @@ describe('PreviewPage', () => {
     renderPreview()
 
     expect(await screen.findByText('Export')).toBeInTheDocument()
-    expect(screen.getByText(/Reviewed Docling data is loaded: 12 pages/)).toBeInTheDocument()
+    expect(screen.getByText(/Reviewed data is loaded: 12 pages/)).toBeInTheDocument()
     expect(screen.getByRole('navigation', { name: 'Preview navigation' })).toBeInTheDocument()
     expect(screen.getByRole('button', { name: /Return to review/ })).toBeInTheDocument()
     expect(screen.queryByRole('button', { name: /Return to metadata/ })).not.toBeInTheDocument()

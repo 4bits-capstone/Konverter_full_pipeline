@@ -208,6 +208,25 @@ def _text_from_table(table: dict[str, Any] | None, target_type: str) -> str:
     return "\n".join(value for value in rendered_rows if value)
 
 
+# Pictures, tables, and headings are too important to withhold from the
+# approved output while a reviewer works through unrelated flagged items, so
+# a pending/needs_attention item of one of these types no longer blocks
+# approval. It still surfaces in the review list with its confidence badge.
+# Footnotes are included for the same reason: they're low-stakes reference
+# text, and the pipeline's own footnote/list classification (pipeline.py's
+# _relabel_footnote_lists) means most of the volume in a legal document's
+# review queue is citation apparatus rather than primary content.
+NON_BLOCKING_REVIEW_TYPES = frozenset(
+    {"picture", "table", "document_index", "footnote"}
+)
+
+
+def _is_blocking_review_item(item_type: str) -> bool:
+    return item_type not in NON_BLOCKING_REVIEW_TYPES and not item_type.startswith(
+        "section_header_"
+    )
+
+
 def _public_processing_error(error: Exception) -> str:
     """Map technical failures to stable, non-technical user guidance."""
     value = str(error).casefold()
@@ -682,7 +701,6 @@ class WorkflowService:
             block.pop("table_data", None)
             block.pop("list_items", None)
             block.pop("list_entries", None)
-            item["kind"] = "text"
             item["corrected_text"] = block["text"]
             item["corrected_table"] = None
         elif target_is_table:
@@ -695,7 +713,6 @@ class WorkflowService:
             block["text"] = _plain_text_from_table(table)
             block.pop("list_items", None)
             block.pop("list_entries", None)
-            item["kind"] = "table"
             item["corrected_table"] = table
             item["corrected_text"] = None
         elif target_type == "list":
@@ -718,7 +735,6 @@ class WorkflowService:
             block.pop("table_data", None)
             block["list_items"] = list_items
             block["list_entries"] = list_entries
-            item["kind"] = "text"
             item["corrected_text"] = text
             item["corrected_table"] = None
         else:
@@ -735,7 +751,6 @@ class WorkflowService:
             block.pop("table_data", None)
             block.pop("list_items", None)
             block.pop("list_entries", None)
-            item["kind"] = "text"
             item["corrected_text"] = text
             item["corrected_table"] = None
 
@@ -814,7 +829,10 @@ class WorkflowService:
     def approve(self, document_id: str) -> str:
         items = self.get_review_items(document_id)
         pending = [
-            item for item in items if item["status"] in {"pending", "needs_attention"}
+            item
+            for item in items
+            if item["status"] in {"pending", "needs_attention"}
+            and _is_blocking_review_item(str(item.get("type", "")))
         ]
         if pending:
             raise ValueError(f"{len(pending)} review item(s) are still unresolved")
@@ -974,6 +992,33 @@ class WorkflowService:
             else "low"
         )
         return {"score": round(score, 4), "band": band, "source": source}
+
+    def chat_context_source(self, document_id: str) -> tuple[dict[str, Any], dict[str, Any]]:
+        """(structured, json_ld) for the chat assistant's context.
+
+        Available as soon as processing completes, not just after approval —
+        reviewers working through a long queue are exactly who benefits most
+        from being able to ask about the document while still reviewing it.
+        Once the document is approved, prefers the finished
+        structured.json/schema.jsonld exports (the polished, final version);
+        before that, builds the same shape on the fly from the current
+        blocks.json, which review edits are written back into live as they
+        happen, so corrections are reflected immediately.
+        """
+        record = self.store.get_record(document_id)
+        if record.get("approved_at"):
+            structured = self.store.read_artifact(document_id, "structured.json", {})
+            json_ld = self.store.read_artifact(document_id, "schema.jsonld", {})
+            if structured:
+                return structured, json_ld
+        blocks = self.store.read_artifact(document_id, "blocks.json", [])
+        structured = {
+            "metadata": self.get_metadata(document_id)["metadata"],
+            "publication": build_publication(
+                blocks, record, summary_max_chars=self.settings.description_max_chars
+            ),
+        }
+        return structured, {}
 
     def publication_payload(self, document_id: str) -> dict[str, Any]:
         record = self.store.get_record(document_id)

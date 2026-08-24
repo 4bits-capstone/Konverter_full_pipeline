@@ -56,6 +56,56 @@ def _first_page(item: dict[str, Any]) -> int:
     return int(provenance[0].get("page_no", 1)) if provenance else 1
 
 
+_BARE_NUM_RE = re.compile(r"^\d{1,4}\s")
+_PERIOD_NUM_RE = re.compile(r"^\d{1,4}[.)]\s")
+_FOOTNOTE_CONTENT_RE = re.compile(
+    r"\bibid\b|above n\s*\d+|\bs\.?\s*\d+[a-z]?\(|\bss\.?\s*\d+|\(vic\)|\(nsw\)|\(cth\)|"
+    r"\(qld\)|\(sa\)|\(wa\)|\(tas\)|\(nt\)|\bv\s[A-Z]|\[\d{4}\]\s*[A-Z]{2,6}|"
+    r"\bsubmission[s]?\s*\d|\bconsultation[s]?\s*\d|\bact\s*\d{4}",
+    re.IGNORECASE,
+)
+
+
+def _is_footnote_list_block(block: dict[str, Any]) -> bool:
+    entries = block.get("list_entries") or []
+    if len(entries) < 2:
+        return False
+    texts = [str(entry.get("text", "")) for entry in entries]
+    if not all(_BARE_NUM_RE.match(text) and not _PERIOD_NUM_RE.match(text) for text in texts):
+        return False
+    matches = sum(1 for text in texts if _FOOTNOTE_CONTENT_RE.search(text))
+    return matches / len(texts) > 0.5
+
+
+def _relabel_footnote_lists(blocks: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Docling sometimes emits a numbered footnote apparatus as a single
+    ``list`` block rather than individual ``footnote`` blocks. Bare-numbered
+    entries (no ``.``/``)`` after the number) whose text is dominated by
+    legal-citation vocabulary (``ibid``, ``s 12(3)``, ``[2019] VSC``, etc.)
+    are footnotes misclassified as list items, not genuine numbered
+    recommendations or findings.
+    """
+    output: list[dict[str, Any]] = []
+    for block in blocks:
+        if block.get("label") != "list" or not _is_footnote_list_block(block):
+            output.append(block)
+            continue
+        entries = block["list_entries"]
+        base_id = str(block.get("id", ""))
+        for index, entry in enumerate(entries):
+            output.append(
+                {
+                    "id": f"{base_id}/footnote-{index}",
+                    "label": "footnote",
+                    "text": str(entry.get("text", "")).strip(),
+                    "page": block.get("page"),
+                    "confidence": block.get("confidence"),
+                    "source_bounds": block.get("source_bounds"),
+                }
+            )
+    return output
+
+
 def _plain_text_from_table(table: dict[str, Any] | None) -> str:
     if not table:
         return ""
@@ -143,6 +193,7 @@ class KonverterPipeline:
             pdf_path,
         )
         warnings.extend(hierarchy_warnings)
+        blocks = _relabel_footnote_lists(blocks)
         blocks = group_visual_callouts(blocks, callout_regions)
 
         confidence = getattr(result, "confidence", None)

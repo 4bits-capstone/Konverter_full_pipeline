@@ -44,7 +44,7 @@ Open `http://localhost:5173`. API documentation is at `http://localhost:8000/doc
 
 ```dotenv
 KONVERTER_HIGH_CONFIDENCE=0.75
-KONVERTER_MEDIUM_CONFIDENCE=0.55
+KONVERTER_MEDIUM_CONFIDENCE=0.60
 ```
 ## Other settings
 
@@ -73,6 +73,18 @@ SUPABASE_URL=                     # same as VITE_SUPABASE_URL
 SUPABASE_ANON_KEY=                # same as VITE_SUPABASE_ANON_KEY
 SUPABASE_SERVICE_ROLE_KEY=        # backend only, never exposed to the frontend
 ```
+
+## Document chat assistant
+
+The Preview page includes a chat/voice assistant that answers questions about
+the approved document using its `schema.jsonld` and `structured.json`
+exports as context.
+
+```dotenv
+OPENAI_API_KEY=                   # backend only, never exposed to the frontend
+```
+
+Without this key set, `/api/chat` and `/api/tts` return 503.
 
 ## Verify
 

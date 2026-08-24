@@ -235,7 +235,11 @@ def test_upload_review_correct_and_export(tmp_path):
             json={"type": "list", "label": "List"},
         )
         assert changed.status_code == 200
-        assert changed.json()["kind"] == "text"
+        # `kind` describes the original extraction shape (this item was
+        # extracted as a table) so the "Extracted result (reference only)"
+        # panel keeps showing the real evidence even after the structure
+        # label is corrected to "list".
+        assert changed.json()["kind"] == "table"
         assert changed.json()["correctedText"] == "Structure — Review"
         assert "|" not in changed.json()["correctedText"]
 
@@ -293,12 +297,14 @@ def test_upload_review_correct_and_export(tmp_path):
 
         accessible = client.get(f"/api/documents/{document_id}/exports/accessible.html")
         assert accessible.status_code == 200
-        assert b"Published on </span>June 18, 2026</li>" in accessible.content
-        assert b"data-open-section" in accessible.content
+        assert b"<dt>Published</dt><dd>June 18, 2026</dd>" in accessible.content
+        assert b'class="vlrc-reader-nav"' in accessible.content
         assert b'<script type="application/ld+json">' in accessible.content
-        assert b'class="btn-red" href="/project/accessibility-standards-report/"' in accessible.content
-        assert b"<span>Go to Project</span>" in accessible.content
-        assert b"--vlrc-content-gutter:clamp(" in accessible.content
+        assert (
+            b'<a class="button button-secondary" href="/project/accessibility-standards-report/">Go to Project</a>'
+            in accessible.content
+        )
+        assert b"padding:22px clamp(" in accessible.content
         schema_response = client.get(
             f"/api/documents/{document_id}/exports/schema.jsonld"
         )
@@ -329,6 +335,11 @@ def test_table_to_footnote_and_remove_from_output(tmp_path):
             json={"type": "footnote", "label": "Footnote"},
         )
         assert converted.status_code == 200
+        assert converted.json()["type"] == "footnote"
+        # `kind` describes the original extraction shape, so the "Extracted
+        # result (reference only)" panel keeps showing the real table
+        # evidence even after the structure label is corrected to footnote.
+        assert converted.json()["kind"] == "table"
         footnote_text = converted.json()["correctedText"]
         assert footnote_text == "Item: Structure; Status: Review."
 
@@ -345,6 +356,38 @@ def test_table_to_footnote_and_remove_from_output(tmp_path):
         assert client.post(f"/api/documents/{document_id}/approval").status_code == 200
         accessible = client.get(f"/api/documents/{document_id}/exports/accessible.html")
         assert footnote_text.encode() not in accessible.content
+
+
+def test_approval_is_not_blocked_by_pending_headings_and_tables(tmp_path):
+    # Pictures, tables, headings, and footnotes are too important to
+    # withhold from the approved output while a reviewer works through
+    # unrelated flagged items, so a pending item of one of these types must
+    # not block approval — it stays visible in the review list, just not
+    # required.
+    from app.service import _is_blocking_review_item
+
+    assert _is_blocking_review_item("text") is True
+    assert _is_blocking_review_item("footnote") is False
+    assert _is_blocking_review_item("picture") is False
+    assert _is_blocking_review_item("table") is False
+    assert _is_blocking_review_item("document_index") is False
+    assert _is_blocking_review_item("section_header_1") is False
+    assert _is_blocking_review_item("section_header_5") is False
+
+    with load_client(tmp_path) as client:
+        document_id = upload_and_process(client)
+        review = client.get(f"/api/documents/{document_id}/review-items").json()
+        # The test fixture's only flagged items are a heading and a table;
+        # both are non-blocking, so approval must succeed without resolving
+        # them.
+        assert {item["type"] for item in review} == {"section_header_2", "table"}
+        assert all(item["status"] == "pending" for item in review)
+
+        confirm_metadata(client, document_id)
+        assert client.post(f"/api/documents/{document_id}/approval").status_code == 200
+
+        still_pending = client.get(f"/api/documents/{document_id}/review-items").json()
+        assert all(item["status"] == "pending" for item in still_pending)
 
 
 def test_bulk_review_update_changes_every_selected_block(tmp_path):

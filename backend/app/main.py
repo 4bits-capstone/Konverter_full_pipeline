@@ -13,15 +13,26 @@ from typing import Annotated, Any
 
 from fastapi import Depends, FastAPI, File, HTTPException, Request, Response, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, StreamingResponse
+
+from .config import load_settings  # noqa: I001 (must import first: loads .env
+# before audit/auth capture SUPABASE_* into module-level constants at import
+# time, so a variable already exported blank in the shell doesn't shadow it)
 
 from . import audit
 from .auth import get_current_user, require_admin
-from .config import load_settings
-from .logging_utils import configure_logging
+from .chat import (
+    OpenAINotConfiguredError,
+    OpenAIRequestError,
+    build_chat_context,
+    stream_chat_completion,
+    synthesize_speech,
+)
+from .logging_utils import configure_logging, document_logger
 from .media import pdf_page_count, render_pdf_region
 from .models import (
     ApprovalResult,
+    ChatRequest,
     DocumentMetadata,
     DocumentProcessingJob,
     DocumentSummary,
@@ -31,6 +42,7 @@ from .models import (
     ReviewItem,
     ReviewBulkPatch,
     ReviewPatch,
+    TtsRequest,
 )
 from .service import ProcessingManager, WorkflowService
 from .storage import DocumentNotFoundError, LocalDocumentStore
@@ -799,3 +811,52 @@ def raw_docling_json(document_id: str) -> Response:
         store.read_artifact(document_id, "docling.json", {}),
         "docling.json",
     )
+
+
+@app.post("/api/documents/{document_id}/chat")
+async def chat_with_document(
+    document_id: str, payload: ChatRequest, user: CurrentUser
+) -> StreamingResponse:
+    """Answers questions about a single document. Available as soon as
+    processing completes, not just after approval, so reviewers working
+    through a long queue can ask about the document while still reviewing
+    it — context is built from the current review state (including any
+    edits already made) until the document is approved, after which the
+    finished export is used instead. Streamed as plain text so the frontend
+    can render the reply as it arrives."""
+    record = _require_complete(document_id)
+    _require_owner(record, user)
+    if not settings.openai_api_key:
+        raise HTTPException(status_code=503, detail="Chat is not configured")
+
+    structured, json_ld = workflow.chat_context_source(document_id)
+    context = build_chat_context(structured, json_ld, payload.message)
+    history = [{"role": item.role, "content": item.content} for item in payload.history]
+
+    async def stream() -> Any:
+        try:
+            async for chunk in stream_chat_completion(
+                settings, context, payload.message, history
+            ):
+                yield chunk
+        except (OpenAINotConfiguredError, OpenAIRequestError):
+            document_logger("app.chat", document_id).warning("chat request failed")
+
+    return StreamingResponse(stream(), media_type="text/plain; charset=utf-8")
+
+
+@app.post("/api/tts")
+async def text_to_speech(payload: TtsRequest, user: CurrentUser) -> StreamingResponse:
+    """Converts assistant replies to speech (OpenAI tts-1, nova voice) for
+    the document chat's voice-out and hands-free conversation mode."""
+    if not settings.openai_api_key:
+        raise HTTPException(status_code=503, detail="Text-to-speech is not configured")
+
+    async def stream() -> Any:
+        try:
+            async for chunk in synthesize_speech(settings, payload.text):
+                yield chunk
+        except (OpenAINotConfiguredError, OpenAIRequestError):
+            return
+
+    return StreamingResponse(stream(), media_type="audio/mpeg")

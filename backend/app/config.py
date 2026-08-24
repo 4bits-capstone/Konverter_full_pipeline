@@ -2,8 +2,26 @@ from __future__ import annotations
 
 import os
 import re
+import sys
 from dataclasses import dataclass
 from pathlib import Path
+
+from dotenv import load_dotenv
+
+# `uvicorn --env-file .env` loads with python-dotenv's default override=False,
+# so a variable already exported in the shell (even blank, e.g. from an
+# earlier `export SOMEVAR=` while debugging) silently wins over the .env
+# file's value with no warning. Reloading here with override=True makes the
+# .env file authoritative for local dev, matching what README.md documents.
+#
+# Skipped under pytest: tests build their own isolated env-var state (see
+# tests/test_api.py's load_client) and must never reach out to a developer's
+# real .env — doing so would leak real credentials into test runs (e.g.
+# audit.py would call the real Supabase project instead of staying
+# "unconfigured", which is exactly what test_security.py relies on).
+_ENV_PATH = Path(__file__).resolve().parents[2] / ".env"
+if "pytest" not in sys.modules and _ENV_PATH.is_file():
+    load_dotenv(_ENV_PATH, override=True)
 
 
 def _as_bool(name: str, default: bool) -> bool:
@@ -50,13 +68,14 @@ class Settings:
     default_copyright_holder: str
     description_max_chars: int
     log_level: str
+    openai_api_key: str
 
 
 def load_settings() -> Settings:
     default_data = Path(__file__).resolve().parents[1] / "runtime"
     origins = os.getenv("KONVERTER_CORS_ORIGINS", "http://localhost:5173")
     high_threshold = _as_threshold("KONVERTER_HIGH_CONFIDENCE", 0.75)
-    medium_threshold = _as_threshold("KONVERTER_MEDIUM_CONFIDENCE", 0.55)
+    medium_threshold = _as_threshold("KONVERTER_MEDIUM_CONFIDENCE", 0.60)
     if medium_threshold >= high_threshold:
         raise ValueError(
             "KONVERTER_MEDIUM_CONFIDENCE must be lower than KONVERTER_HIGH_CONFIDENCE"
@@ -93,4 +112,5 @@ def load_settings() -> Settings:
             160, int(os.getenv("KONVERTER_DESCRIPTION_MAX_CHARS", "600"))
         ),
         log_level=os.getenv("KONVERTER_LOG_LEVEL", "INFO").strip().upper(),
+        openai_api_key=os.getenv("OPENAI_API_KEY", "").strip(),
     )

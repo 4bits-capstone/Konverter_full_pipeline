@@ -32,21 +32,102 @@ def _project_slug(value: str) -> str:
     return _slug(project_title)
 
 
-def _format_published_date(value: Any) -> str:
+_MONTH_NAMES = (
+    "january",
+    "february",
+    "march",
+    "april",
+    "may",
+    "june",
+    "july",
+    "august",
+    "september",
+    "october",
+    "november",
+    "december",
+)
+
+
+def _month_index(name: str) -> int:
+    lowered = name.casefold()
+    for index, month_name in enumerate(_MONTH_NAMES, start=1):
+        if month_name.startswith(lowered):
+            return index
+    return 0
+
+
+def _valid_date_parts(year: int, month: int, day: int) -> bool:
+    try:
+        datetime(year, month, day)
+        return True
+    except ValueError:
+        return False
+
+
+def _normalize_published_date_input(value: Any) -> str:
     raw = str(value or "").strip().rstrip(".")
     if not raw:
-        return "date not specified"
-    normalized = re.sub(
+        return ""
+    return re.sub(
         r"^published\s+(?:on\s+)?",
         "",
         re.sub(r"(\d)(st|nd|rd|th)\b", r"\1", raw, flags=re.IGNORECASE),
         flags=re.IGNORECASE,
     ).strip()
+
+
+def _parse_published_date(value: Any) -> datetime | None:
+    """Parse a metadata date field into a datetime, matching the frontend's
+    formatPublicationDate (src/lib/publicationFormatting.ts) so both sides
+    agree on ISO, day-first numeric, and named-month date formats."""
+    normalized = _normalize_published_date_input(value)
+    if not normalized:
+        return None
     try:
-        parsed = datetime.fromisoformat(normalized.replace("Z", "+00:00"))
-        return f"{parsed.strftime('%B')} {parsed.day}, {parsed.year}"
+        return datetime.fromisoformat(normalized.replace("Z", "+00:00"))
     except ValueError:
-        return normalized
+        pass
+
+    day_first_numeric = re.match(
+        r"^(\d{1,2})[./-](\d{1,2})[./-](\d{4})(?:[T\s].*)?$", normalized
+    )
+    if day_first_numeric:
+        day, month, year = (int(part) for part in day_first_numeric.groups())
+        if _valid_date_parts(year, month, day):
+            return datetime(year, month, day)
+
+    day_month_name = re.match(r"^(\d{1,2})\s+([A-Za-z]+)\s+(\d{4})$", normalized)
+    if day_month_name:
+        day_value, month_name, year_value = day_month_name.groups()
+        month = _month_index(month_name)
+        if month and _valid_date_parts(int(year_value), month, int(day_value)):
+            return datetime(int(year_value), month, int(day_value))
+
+    month_name_day = re.match(r"^([A-Za-z]+)\s+(\d{1,2}),?\s+(\d{4})$", normalized)
+    if month_name_day:
+        month_name, day_value, year_value = month_name_day.groups()
+        month = _month_index(month_name)
+        if month and _valid_date_parts(int(year_value), month, int(day_value)):
+            return datetime(int(year_value), month, int(day_value))
+
+    return None
+
+
+def _format_published_date(value: Any) -> str:
+    parsed = _parse_published_date(value)
+    if parsed:
+        return f"{parsed.strftime('%B')} {parsed.day}, {parsed.year}"
+    return _normalize_published_date_input(value) or "date not specified"
+
+
+def _publication_year(value: Any) -> str:
+    """Best-effort publication year for a self-citation, independent of the
+    document's in-body legal citations (ISBNs, Acts, case names)."""
+    parsed = _parse_published_date(value)
+    if parsed:
+        return str(parsed.year)
+    match = re.search(r"\b(19|20)\d{2}\b", _normalize_published_date_input(value))
+    return match.group(0) if match else ""
 
 
 def _data_uri(path: Path) -> str:
@@ -60,13 +141,18 @@ def _data_uri(path: Path) -> str:
 def _recommendation_snippets(sections: list[dict[str, Any]]) -> list[str]:
     candidates: list[str] = []
     for section in sections:
-        if not re.search(r"recommend", str(section.get("displayTitle", "")), re.I):
-            continue
+        # A "Key recommendations" callout box commonly lives inside a chapter
+        # with an unrelated title (e.g. "Findings"), so box_section/callout
+        # blocks are matched on their own title/variant below regardless of
+        # whether the parent chapter's title also mentions "recommend".
+        section_matches = bool(
+            re.search(r"recommend", str(section.get("displayTitle", "")), re.I)
+        )
         for block in section.get("blocks", []):
             block_type = str(block.get("type", ""))
-            if block_type == "paragraph":
+            if section_matches and block_type == "paragraph":
                 candidates.append(str(block.get("text", "")))
-            elif block_type == "list":
+            elif section_matches and block_type == "list":
                 candidates.extend(
                     str(item.get("text", "")) for item in block.get("items", [])
                 )
@@ -624,24 +710,17 @@ def build_accessible_html(
         if summary_values
         else f"This publication presents the reviewed content of {raw_title}."
     )
-    raw_citations = metadata.get("citations") or ""
-    if isinstance(raw_citations, list):
-        citation_value = next(
-            (str(value).strip() for value in raw_citations if str(value).strip()),
-            "",
-        )
-    else:
-        citation_value = next(
-            (
-                value.strip()
-                for value in str(raw_citations).split(";")
-                if value.strip()
-            ),
-            "",
-        )
+    # `metadata.citations` holds legal citations found in the document body
+    # (ISBNs, Acts, case names) — not a citation for the report itself — so
+    # "Cite this report" is synthesized from the report's own metadata.
+    raw_publisher = str(metadata.get("publisher") or "Victorian Law Reform Commission")
+    publication_year = _publication_year(
+        metadata.get("published_date") or metadata.get("publishedDate")
+    )
     citation = html.escape(
-        citation_value
-        or f"{metadata.get('publisher') or 'Victorian Law Reform Commission'}, {raw_title}"
+        f"{raw_publisher}, {raw_title} (Report, {publication_year})"
+        if publication_year
+        else f"{raw_publisher}, {raw_title}"
     )
     configured_project_url = str(
         metadata.get("project_url") or metadata.get("projectUrl") or ""

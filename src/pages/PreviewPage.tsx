@@ -19,6 +19,7 @@ import { useQuery } from "@tanstack/react-query";
 import { useEffect, useMemo, useRef, useState, type MouseEvent } from "react";
 import { useNavigate } from "react-router-dom";
 import { ConfidenceBadge } from "../components/ConfidenceBadge";
+import { DocumentChat } from "../components/DocumentChat";
 import { DoclingContent } from "../components/DoclingContent";
 import {
   ReportSummaryCard,
@@ -27,7 +28,10 @@ import {
 import { emptyMetadata } from "../config/workflow";
 import { converterStagePath } from "../lib/converterRoutes";
 import type { DoclingSection } from "../lib/docling";
-import { formatPublicationDate } from "../lib/publicationFormatting";
+import {
+  formatPublicationDate,
+  publicationYear,
+} from "../lib/publicationFormatting";
 import { publicationService } from "../services";
 import { useKonverter } from "../state/KonverterContext";
 
@@ -186,13 +190,16 @@ function isChapterSection(section: DoclingSection): boolean {
 }
 
 function recommendationSnippets(sections: DoclingSection[]): string[] {
-  const recommendationSections = sections.filter((section) =>
-    /recommend/i.test(section.displayTitle),
-  );
-  const candidates = recommendationSections.flatMap((section) =>
-    section.blocks.flatMap((block) => {
-      if (block.type === "paragraph") return [block.text];
-      if (block.type === "list") return block.items.map((item) => item.text);
+  // A "Key recommendations" callout box commonly lives inside a chapter with
+  // an unrelated title (e.g. "Findings"), so box_section blocks are matched
+  // on their own title/variant below regardless of whether the parent
+  // chapter's title also mentions "recommend".
+  const candidates = sections.flatMap((section) => {
+    const sectionMatches = /recommend/i.test(section.displayTitle);
+    return section.blocks.flatMap((block) => {
+      if (sectionMatches && block.type === "paragraph") return [block.text];
+      if (sectionMatches && block.type === "list")
+        return block.items.map((item) => item.text);
       if (
         block.type === "box_section" &&
         /recommend/i.test(`${block.title} ${block.variant}`)
@@ -206,8 +213,8 @@ function recommendationSnippets(sections: DoclingSection[]): string[] {
         );
       }
       return [];
-    }),
-  );
+    });
+  });
   return candidates
     .map((value) => value.replace(/\s+/g, " ").trim())
     .filter((value) => value.length >= 24)
@@ -291,11 +298,13 @@ export function PreviewPage() {
     () => recommendationSnippets(publicationSections),
     [publicationSections],
   );
-  const citation =
-    pageMetadata.citations
-      .split(";")
-      .map((value) => value.trim())
-      .find(Boolean) ?? `${pageMetadata.publisher}, ${pageMetadata.title}`;
+  // pageMetadata.citations holds legal citations found in the document body
+  // (ISBNs, Acts, case names) — not a citation for the report itself — so
+  // "Cite this report" is synthesized from the report's own metadata.
+  const citationYear = publicationYear(pageMetadata.publishedDate);
+  const citation = citationYear
+    ? `${pageMetadata.publisher}, ${pageMetadata.title} (Report, ${citationYear})`
+    : `${pageMetadata.publisher}, ${pageMetadata.title}`;
   const reportNumber =
     citation.match(/(?:Report(?:\s+No)?\.?\s*)(\d+)/i)?.[1] ?? "—";
   const previewReport: ReportSummaryRecord = {
@@ -930,6 +939,7 @@ export function PreviewPage() {
               </div>
             ))}
           </div>
+          {activeDocumentId && <DocumentChat documentId={activeDocumentId} />}
         </aside>
       </div>
       <BackToTop />

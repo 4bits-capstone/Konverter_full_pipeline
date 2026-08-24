@@ -527,3 +527,86 @@ def test_project_button_accepts_a_safe_explicit_url_and_rejects_unsafe_urls(tmp_
     assert 'class="button button-secondary" href="https://example.test/project/custom/"' in configured
     assert 'class="button button-secondary" href="/project/named-project/"' in unsafe
     assert "javascript:alert" not in unsafe
+
+
+def test_recommendations_box_inside_unrelated_chapter_is_detected(tmp_path):
+    # A "Key recommendations" callout box commonly lives inside a chapter
+    # titled something else entirely (e.g. "Findings"), not its own chapter
+    # literally titled "Recommendations".
+    publication = build_publication(
+        [
+            {"id": "title", "label": "title", "text": "Example report", "order": 0},
+            {
+                "id": "chapter",
+                "label": "section_header_1",
+                "text": "1. Findings",
+                "order": 1,
+            },
+            {
+                "id": "box",
+                "label": "box_section",
+                "text": "Publish the accessible version as the primary format.",
+                "box_section_title": "Recommendations",
+                "box_section_kind": "recommendations",
+                "box_section_blocks": [
+                    {
+                        "label": "text",
+                        "text": "Publish the accessible version as the primary format.",
+                    }
+                ],
+                "order": 2,
+            },
+        ],
+        {"title": "Example report", "pages": 1, "file_name": "example.pdf"},
+    )
+
+    rendered = build_accessible_html(
+        "document-1",
+        publication,
+        {"title": "Example report"},
+        {"@context": "https://schema.org", "@type": "Report"},
+        tmp_path / "cover.png",
+        tmp_path / "logo.png",
+    )
+
+    assert 'class="key-recommendations"' in rendered
+    assert "Publish the accessible version as the primary format." in rendered
+
+
+def test_cite_this_report_ignores_in_document_legal_citations(tmp_path):
+    publication = build_publication(
+        [
+            {"id": "title", "label": "title", "text": "Example report", "order": 0},
+            {
+                "id": "chapter",
+                "label": "section_header_1",
+                "text": "1. Introduction",
+                "order": 1,
+            },
+        ],
+        {"title": "Example report", "pages": 1, "file_name": "example.pdf"},
+    )
+
+    rendered = build_accessible_html(
+        "document-1",
+        publication,
+        {
+            "title": "Example report",
+            "publisher": "Victorian Law Reform Commission",
+            "published_date": "18/06/2026",
+            # metadata.citations holds legal citations found in the document
+            # body (ISBNs, Acts, case names), not a citation for the report.
+            "citations": "ISBN 978-0-6484911-2-3; Smith v Jones [2020] VSC 1",
+        },
+        {"@context": "https://schema.org", "@type": "Report"},
+        tmp_path / "cover.png",
+        tmp_path / "logo.png",
+    )
+
+    citation_card = rendered.split('class="preview-citation-card"', 1)[1]
+    assert "ISBN" not in citation_card
+    assert "Smith v Jones" not in citation_card
+    assert (
+        "Victorian Law Reform Commission, Example report (Report, 2026)"
+        in citation_card
+    )

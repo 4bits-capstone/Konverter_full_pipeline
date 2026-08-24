@@ -44,7 +44,6 @@ describe('ReviewPage', () => {
     expect(screen.getByText('Processing details')).toBeInTheDocument()
     expect(screen.getByLabelText('Search queue')).toBeInTheDocument()
     expect(screen.getByLabelText('Status')).toHaveValue('all')
-    expect(screen.getByLabelText('Filter by structure label')).toHaveValue('all')
     expect(screen.getByLabelText('Sort')).toHaveValue('highest')
     expect(screen.queryByLabelText('Confidence')).not.toBeInTheDocument()
     expect(screen.queryByText(/items need review/)).not.toBeInTheDocument()
@@ -65,6 +64,29 @@ describe('ReviewPage', () => {
     expect(screen.getByRole('button', { name: /Remove from output/ })).toBeInTheDocument()
     expect(screen.queryByRole('button', { name: /Needs attention/ })).not.toBeInTheDocument()
     expect(screen.queryByRole('button', { name: /Accept all/ })).not.toBeInTheDocument()
+  })
+
+  it('lets a reviewer narrow the queue to only the structure labels they pick', async () => {
+    renderReview()
+    await screen.findAllByText('Section heading needs confirmation')
+    expect(screen.getByRole('button', { name: /Definitions table needs confirmation/ })).toBeInTheDocument()
+
+    fireEvent.click(screen.getByText('Filters').closest('summary')!)
+    const h2 = screen.getByLabelText('H2')
+    const table = screen.getByLabelText('Table')
+    expect(h2).toBeChecked()
+    expect(table).toBeChecked()
+
+    fireEvent.click(table)
+    expect(screen.queryByRole('button', { name: /Definitions table needs confirmation/ })).not.toBeInTheDocument()
+    expect(screen.getAllByRole('button', { name: /Section heading needs confirmation/ }).length).toBeGreaterThan(0)
+
+    fireEvent.click(screen.getByRole('button', { name: 'Clear all' }))
+    expect(screen.getByText('No items match these filters.')).toBeInTheDocument()
+
+    fireEvent.click(screen.getByRole('button', { name: 'Select all' }))
+    expect(screen.getByRole('button', { name: /Definitions table needs confirmation/ })).toBeInTheDocument()
+    expect(screen.getAllByRole('button', { name: /Section heading needs confirmation/ }).length).toBeGreaterThan(0)
   })
 
   it('locks text and structure controls until Edit is selected', async () => {
@@ -178,11 +200,12 @@ describe('ReviewPage', () => {
   it('selects all visible flags and confirms a bulk structure change', async () => {
     renderReview()
     await screen.findAllByText('Section heading needs confirmation')
+    const queue = screen.getByRole('list', { name: 'Flagged items' })
 
-    expect(screen.queryByRole('checkbox')).not.toBeInTheDocument()
+    expect(within(queue).queryByRole('checkbox')).not.toBeInTheDocument()
     fireEvent.click(screen.getByRole('button', { name: 'Select all visible' }))
     expect(screen.getByText('3 selected')).toBeInTheDocument()
-    expect(screen.getAllByRole('checkbox')).toHaveLength(3)
+    expect(within(queue).getAllByRole('checkbox')).toHaveLength(3)
     fireEvent.change(screen.getByLabelText('Bulk action'), { target: { value: 'label' } })
     fireEvent.click(screen.getByRole('button', { name: 'Bulk structure label: Text' }))
     fireEvent.click(within(screen.getByRole('listbox', { name: 'Bulk structure label' })).getByRole('option', { name: 'H1' }))
@@ -200,16 +223,17 @@ describe('ReviewPage', () => {
   it('supports Shift+click and Tab+click multi-selection without permanent checkboxes', async () => {
     renderReview()
     await screen.findAllByText('Section heading needs confirmation')
+    const queue = screen.getByRole('list', { name: 'Flagged items' })
     const flags = screen.getAllByRole('button', { name: /needs confirmation/ })
 
     fireEvent.click(flags[0])
-    expect(screen.queryByRole('checkbox')).not.toBeInTheDocument()
+    expect(within(queue).queryByRole('checkbox')).not.toBeInTheDocument()
     fireEvent.click(flags[2], { shiftKey: true })
     expect(screen.getByText('3 selected')).toBeInTheDocument()
-    expect(screen.getAllByRole('checkbox')).toHaveLength(3)
+    expect(within(queue).getAllByRole('checkbox')).toHaveLength(3)
 
     fireEvent.click(screen.getByRole('button', { name: 'Clear visible selection' }))
-    expect(screen.queryByRole('checkbox')).not.toBeInTheDocument()
+    expect(within(queue).queryByRole('checkbox')).not.toBeInTheDocument()
     fireEvent.keyDown(window, { key: 'Tab' })
     fireEvent.click(flags[0])
     fireEvent.click(flags[1])
@@ -233,13 +257,12 @@ describe('ReviewPage', () => {
     })
   })
 
-  it('keeps the filter and selects the next visible flag after a label change', async () => {
+  it('keeps an excluded label out of view but auto-shows a brand-new label introduced by an edit', async () => {
     renderReview()
     await screen.findAllByText('Section heading needs confirmation')
 
-    fireEvent.change(screen.getByLabelText('Filter by structure label'), {
-      target: { value: 'section_header_2' },
-    })
+    fireEvent.click(screen.getByText('Filters').closest('summary')!)
+    fireEvent.click(screen.getByLabelText('Table'))
     fireEvent.click(screen.getByRole('button', { name: /Section heading needs confirmation/ }))
     expect(screen.getByText(/Flag 1 of 2/)).toBeInTheDocument()
 
@@ -248,9 +271,13 @@ describe('ReviewPage', () => {
     fireEvent.click(within(screen.getByRole('listbox', { name: 'Structure label' })).getByRole('option', { name: 'H3' }))
     fireEvent.click(screen.getByRole('button', { name: 'Save changes' }))
 
-    expect(await screen.findByRole('heading', { name: 'Secondary heading needs confirmation' })).toBeInTheDocument()
-    expect(screen.getByLabelText('Filter by structure label')).toHaveValue('section_header_2')
-    expect(screen.getByLabelText('Sort')).toHaveValue('highest')
-    expect(screen.getByText(/Flag 1 of 1/)).toBeInTheDocument()
+    // The edited item's new type (H3) was never explicitly excluded, so it
+    // stays visible in the queue rather than vanishing on save.
+    await waitFor(() => expect(screen.getByLabelText('H3')).toBeInTheDocument())
+    expect(screen.getByLabelText('H3')).toBeChecked()
+    expect(screen.getByLabelText('H2')).toBeChecked()
+    expect(screen.getByLabelText('Table')).not.toBeChecked()
+    expect(screen.getByText(/Flag 1 of 2/)).toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: /Definitions table needs confirmation/ })).not.toBeInTheDocument()
   })
 })

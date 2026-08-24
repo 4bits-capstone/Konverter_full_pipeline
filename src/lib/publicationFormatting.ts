@@ -67,6 +67,19 @@ export function formatPublicationDate(value: string): string {
   return normalized
 }
 
+export function publicationYear(value: string): string {
+  const raw = value.trim().replace(/\.$/, '')
+  if (!raw) return ''
+  const normalized = raw
+    .replace(/^published\s+(?:on\s+)?/i, '')
+    .replace(/(\d)(?:st|nd|rd|th)\b/gi, '$1')
+    .trim()
+  const iso = normalized.match(/^(\d{4})[-/]/)
+  if (iso) return iso[1]
+  const yearMatch = normalized.match(/\b(19|20)\d{2}\b/)
+  return yearMatch ? yearMatch[0] : ''
+}
+
 export function publicationDateLine(value: string): string {
   return `Published on ${formatPublicationDate(value)}.`
 }

@@ -38,6 +38,27 @@ const emptyWorkflow = (): DocumentWorkflow => ({
   manualChecks: { content: false, tables: false, citations: false },
 });
 
+// Pictures, tables, and headings are too important to withhold from the
+// approved output while a reviewer works through unrelated flagged items, so
+// a pending/needs_attention item of one of these types no longer blocks
+// approval. It still surfaces in the review list with its confidence badge.
+// Footnotes are included for the same reason: they're low-stakes reference
+// text, and most of a legal document's review-queue volume is citation
+// apparatus rather than primary content.
+const NON_BLOCKING_REVIEW_TYPES = new Set<ReviewType>([
+  "picture",
+  "table",
+  "document_index",
+  "footnote",
+]);
+
+function isBlockingReviewItem(item: ReviewItem): boolean {
+  return (
+    !NON_BLOCKING_REVIEW_TYPES.has(item.type) &&
+    !item.type.startsWith("section_header_")
+  );
+}
+
 interface KonverterContextValue {
   documents: DocumentSummary[];
   activeDocument: DocumentSummary | null;
@@ -267,12 +288,14 @@ export function KonverterProvider({ children }: PropsWithChildren) {
     if (existing.length) addDocuments(existing);
   }, [addDocuments]);
 
-  useEffect(() => {
-    void refreshDocuments();
-    // Only run again if the underlying fetch changes; AuthGate also calls
-    // this directly on sign-in, since resetSession() clears `documents` on
-    // sign-out but nothing else would repopulate it for the next login.
-  }, [refreshDocuments]);
+  // KonverterProvider mounts above AuthGate, before it's known whether a
+  // session exists yet, so calling refreshDocuments() here would fire an
+  // unauthenticated request that 401s. httpClient signs the user out on any
+  // 401 — if that stale request resolves after a real login succeeds, it
+  // forces the user straight back out. AuthGate already calls
+  // refreshDocuments() itself once a session is confirmed (both for a fresh
+  // sign-in and for a session already persisted from a previous visit), so
+  // this provider doesn't need its own mount-time fetch.
 
   const removeDocument = useCallback(
     (id: string) => {
@@ -542,7 +565,8 @@ export function KonverterProvider({ children }: PropsWithChildren) {
     () =>
       reviewItems.filter(
         (item) =>
-          item.status === "pending" || item.status === "needs_attention",
+          (item.status === "pending" || item.status === "needs_attention") &&
+          isBlockingReviewItem(item),
       ).length,
     [reviewItems],
   );

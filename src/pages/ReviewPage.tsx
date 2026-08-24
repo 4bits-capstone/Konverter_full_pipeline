@@ -38,7 +38,6 @@ import type {
 } from "../types/konverter";
 
 type StatusFilter = "all" | ReviewStatus;
-type LabelFilter = "all" | ReviewType;
 type Sort = "highest" | "lowest" | "page";
 type BulkAction = "accept" | "remove" | "label";
 type PendingConfirmation =
@@ -907,10 +906,7 @@ function ListEditor({
   onChange: (text: string) => void;
 }) {
   const editableItems = text
-    ? text
-        .split(/\r?\n/)
-        .map((line) => line.trim())
-        .filter(Boolean)
+    ? text.split(/\r?\n/).map((line) => line.trim())
     : [""];
   const update = (next: string[]) => onChange(next.join("\n"));
 
@@ -994,7 +990,13 @@ export function ReviewPage() {
   });
   const processingSummary = processingSummaryQuery.data;
   const [statusFilter, setStatusFilter] = useState<StatusFilter>("all");
-  const [labelFilter, setLabelFilter] = useState<LabelFilter>("all");
+  // Tracked as exclusions rather than a positive selection so a label that
+  // wasn't there before (a new document, or an item just edited into a new
+  // type) is visible immediately, in the same render, with no effect
+  // needed to "catch up" and no risk of it briefly vanishing from view.
+  const [excludedLabels, setExcludedLabels] = useState<Set<ReviewType>>(
+    () => new Set(),
+  );
   const [sort, setSort] = useState<Sort>("highest");
   const [query, setQuery] = useState("");
   const [selectedId, setSelectedId] = useState("");
@@ -1038,12 +1040,43 @@ export function ReviewPage() {
     }
   }, [activeDocumentId, completedDocumentIds, selectDocument]);
 
+  const presentLabels = useMemo(() => {
+    const counts = new Map<ReviewType, number>();
+    for (const item of reviewItems)
+      counts.set(item.type, (counts.get(item.type) ?? 0) + 1);
+    return structureLabels
+      .filter((entry) => counts.has(entry.value))
+      .map((entry) => ({ ...entry, count: counts.get(entry.value)! }));
+  }, [reviewItems]);
+
+  const selectedLabels = useMemo(
+    () =>
+      new Set(
+        presentLabels
+          .filter((entry) => !excludedLabels.has(entry.value))
+          .map((entry) => entry.value),
+      ),
+    [presentLabels, excludedLabels],
+  );
+
+  const toggleLabel = (value: ReviewType) => {
+    setExcludedLabels((prev) => {
+      const next = new Set(prev);
+      if (next.has(value)) next.delete(value);
+      else next.add(value);
+      return next;
+    });
+    setShowDetailMobile(false);
+  };
+
   const filteredItems = useMemo(() => {
     let list = [...reviewItems];
     if (statusFilter !== "all")
       list = list.filter((item) => item.status === statusFilter);
-    if (labelFilter !== "all")
-      list = list.filter((item) => item.type === labelFilter);
+    list =
+      selectedLabels.size === 0
+        ? []
+        : list.filter((item) => selectedLabels.has(item.type));
     const normalisedQuery = query.trim().toLowerCase();
     if (normalisedQuery) {
       list = list.filter((item) =>
@@ -1075,7 +1108,7 @@ export function ReviewPage() {
           : (a, b) => a.page - b.page,
     );
     return list;
-  }, [labelFilter, query, reviewItems, sort, statusFilter]);
+  }, [query, reviewItems, selectedLabels, sort, statusFilter]);
 
   const selected = filteredItems.find((item) => item.id === selectedId);
   const selectedPosition = selected
@@ -1650,29 +1683,6 @@ export function ReviewPage() {
               </span>
             </div>
             <div className="tb-control">
-              <label htmlFor="label-filter">Filter by structure label</label>
-              <span className="review-filter-select">
-                <select
-                  id="label-filter"
-                  className="sel"
-                  aria-label="Filter by structure label"
-                  value={labelFilter}
-                  onChange={(event) => {
-                    setLabelFilter(event.target.value as LabelFilter);
-                    setShowDetailMobile(false);
-                  }}
-                >
-                  <option value="all">All labels</option>
-                  {structureLabels.map((item) => (
-                    <option key={item.value} value={item.value}>
-                      {item.label}
-                    </option>
-                  ))}
-                </select>
-                <ChevronDown aria-hidden="true" />
-              </span>
-            </div>
-            <div className="tb-control">
               <label htmlFor="sort-filter">Sort</label>
               <span className="review-filter-select">
                 <select
@@ -1687,6 +1697,56 @@ export function ReviewPage() {
                 </select>
                 <ChevronDown aria-hidden="true" />
               </span>
+            </div>
+            <div className="tb-control tb-control-labels">
+              <div className="label-filter-head">
+                <label id="structure-label-filter-heading">
+                  Structure labels
+                  <span className="label-filter-hint">
+                    Select one or more to show them in the queue.
+                  </span>
+                </label>
+                <div className="label-filter-actions">
+                  <button
+                    type="button"
+                    className="btn btn-outline btn-sm"
+                    onClick={() => setExcludedLabels(new Set())}
+                  >
+                    Select all
+                  </button>
+                  <button
+                    type="button"
+                    className="btn btn-outline btn-sm"
+                    onClick={() =>
+                      setExcludedLabels(
+                        new Set(presentLabels.map((entry) => entry.value)),
+                      )
+                    }
+                  >
+                    Clear all
+                  </button>
+                </div>
+              </div>
+              <div
+                className="label-filter-options"
+                role="group"
+                aria-labelledby="structure-label-filter-heading"
+              >
+                {presentLabels.map((entry) => (
+                  <label key={entry.value} className="label-filter-option">
+                    <input
+                      type="checkbox"
+                      aria-label={entry.label}
+                      checked={selectedLabels.has(entry.value)}
+                      onChange={() => toggleLabel(entry.value)}
+                    />
+                    <span aria-hidden="true">{entry.label}</span>
+                    <span className="label-filter-count" aria-hidden="true">
+                      {entry.count}
+                    </span>
+                  </label>
+                ))}
+              </div>
             </div>
           </div>
         </details>

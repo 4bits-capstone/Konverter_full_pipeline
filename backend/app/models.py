@@ -175,3 +175,17 @@ class PublicationPayload(ApiModel):
 
 class ApprovalResult(ApiModel):
     approved_at: str
+
+
+class ChatMessage(ApiModel):
+    role: Literal["user", "assistant"]
+    content: str = Field(max_length=8_000)
+
+
+class ChatRequest(ApiModel):
+    message: str = Field(max_length=4_000)
+    history: list[ChatMessage] = Field(default_factory=list, max_length=40)
+
+
+class TtsRequest(ApiModel):
+    text: str = Field(max_length=4_000)
