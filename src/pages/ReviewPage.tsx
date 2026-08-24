@@ -10,6 +10,7 @@ import {
   Plus,
   RotateCcw,
   Search,
+  SlidersHorizontal,
   Trash2,
   TriangleAlert,
 } from "lucide-react";
@@ -1069,6 +1070,24 @@ export function ReviewPage() {
     setShowDetailMobile(false);
   };
 
+  const selectAllLabels = () => {
+    setExcludedLabels(new Set());
+    setShowDetailMobile(false);
+  };
+
+  const clearAllLabels = () => {
+    setExcludedLabels(
+      new Set(presentLabels.map((entry) => entry.value)),
+    );
+    setShowDetailMobile(false);
+  };
+
+  const allLabelsSelected =
+    presentLabels.length > 0 && selectedLabels.size === presentLabels.length;
+  const filtersActive =
+    statusFilter !== "all" ||
+    (presentLabels.length > 0 && !allLabelsSelected);
+
   const filteredItems = useMemo(() => {
     let list = [...reviewItems];
     if (statusFilter !== "all")
@@ -1659,7 +1678,13 @@ export function ReviewPage() {
           </span>
         </div>
         <details className="review-filter-disclosure">
-          <summary className="btn btn-outline btn-sm">Filters</summary>
+          <summary className="btn btn-outline btn-sm">
+            <SlidersHorizontal aria-hidden="true" />
+            Filters
+            {filtersActive && (
+              <span className="review-filter-indicator" aria-hidden="true" />
+            )}
+          </summary>
           <div className="review-filter-controls">
             <div className="tb-control">
               <label htmlFor="show-filter">Status</label>
@@ -1700,28 +1725,35 @@ export function ReviewPage() {
             </div>
             <div className="tb-control tb-control-labels">
               <div className="label-filter-head">
-                <label id="structure-label-filter-heading">
-                  Structure labels
-                  <span className="label-filter-hint">
-                    Select one or more to show them in the queue.
+                <div className="label-filter-title">
+                  <label id="structure-label-filter-heading">
+                    Structure labels
+                    <span className="label-filter-hint">
+                      Select one or more to show them in the queue.
+                    </span>
+                  </label>
+                  <span
+                    className="label-filter-selection-count"
+                    role="status"
+                    aria-live="polite"
+                  >
+                    {selectedLabels.size} of {presentLabels.length} selected
                   </span>
-                </label>
+                </div>
                 <div className="label-filter-actions">
                   <button
                     type="button"
                     className="btn btn-outline btn-sm"
-                    onClick={() => setExcludedLabels(new Set())}
+                    disabled={allLabelsSelected || presentLabels.length === 0}
+                    onClick={selectAllLabels}
                   >
                     Select all
                   </button>
                   <button
                     type="button"
                     className="btn btn-outline btn-sm"
-                    onClick={() =>
-                      setExcludedLabels(
-                        new Set(presentLabels.map((entry) => entry.value)),
-                      )
-                    }
+                    disabled={selectedLabels.size === 0}
+                    onClick={clearAllLabels}
                   >
                     Clear all
                   </button>
@@ -1732,20 +1764,34 @@ export function ReviewPage() {
                 role="group"
                 aria-labelledby="structure-label-filter-heading"
               >
-                {presentLabels.map((entry) => (
-                  <label key={entry.value} className="label-filter-option">
-                    <input
-                      type="checkbox"
-                      aria-label={entry.label}
-                      checked={selectedLabels.has(entry.value)}
-                      onChange={() => toggleLabel(entry.value)}
-                    />
-                    <span aria-hidden="true">{entry.label}</span>
-                    <span className="label-filter-count" aria-hidden="true">
-                      {entry.count}
-                    </span>
-                  </label>
-                ))}
+                {presentLabels.map((entry) => {
+                  const checked = selectedLabels.has(entry.value);
+                  return (
+                    <label
+                      key={entry.value}
+                      className={`label-filter-option${checked ? " is-selected" : ""}`}
+                      data-label={entry.value}
+                    >
+                      <input
+                        type="checkbox"
+                        aria-label={entry.label}
+                        aria-describedby={`structure-label-count-${entry.value}`}
+                        checked={checked}
+                        onChange={() => toggleLabel(entry.value)}
+                      />
+                      <span className="label-filter-name" aria-hidden="true">
+                        {entry.label}
+                      </span>
+                      <span
+                        id={`structure-label-count-${entry.value}`}
+                        className="label-filter-count"
+                        aria-label={`${entry.count} flagged ${entry.count === 1 ? "item" : "items"}`}
+                      >
+                        {entry.count}
+                      </span>
+                    </label>
+                  );
+                })}
               </div>
             </div>
           </div>

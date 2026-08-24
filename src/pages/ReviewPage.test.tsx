@@ -76,17 +76,25 @@ describe('ReviewPage', () => {
     const table = screen.getByLabelText('Table')
     expect(h2).toBeChecked()
     expect(table).toBeChecked()
+    expect(h2.closest('label')).toHaveAttribute('data-label', 'section_header_2')
+    expect(table.closest('label')).toHaveAttribute('data-label', 'table')
+    expect(h2.closest('label')).toHaveTextContent('2')
+    expect(table.closest('label')).toHaveTextContent('1')
+    expect(screen.getByText('2 of 2 selected')).toBeInTheDocument()
 
     fireEvent.click(table)
     expect(screen.queryByRole('button', { name: /Definitions table needs confirmation/ })).not.toBeInTheDocument()
     expect(screen.getAllByRole('button', { name: /Section heading needs confirmation/ }).length).toBeGreaterThan(0)
+    expect(screen.getByText('1 of 2 selected')).toBeInTheDocument()
 
     fireEvent.click(screen.getByRole('button', { name: 'Clear all' }))
     expect(screen.getByText('No items match these filters.')).toBeInTheDocument()
+    expect(screen.getByText('0 of 2 selected')).toBeInTheDocument()
 
     fireEvent.click(screen.getByRole('button', { name: 'Select all' }))
     expect(screen.getByRole('button', { name: /Definitions table needs confirmation/ })).toBeInTheDocument()
     expect(screen.getAllByRole('button', { name: /Section heading needs confirmation/ }).length).toBeGreaterThan(0)
+    expect(screen.getByText('2 of 2 selected')).toBeInTheDocument()
   })
 
   it('locks text and structure controls until Edit is selected', async () => {
