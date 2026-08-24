@@ -1,6 +1,36 @@
 from __future__ import annotations
 
-from app.pipeline import _relabel_footnote_lists
+from pathlib import Path
+
+from app.config import Settings
+from app.pipeline import KonverterPipeline, _relabel_footnote_lists
+
+
+def _settings(**overrides) -> Settings:
+    values = dict(
+        data_dir=Path("/tmp/konverter-test"),
+        cors_origins=("http://localhost:5173",),
+        do_ocr=False,
+        do_table_structure=True,
+        docling_device="cpu",
+        worker_count=1,
+        max_pages=2000,
+        high_confidence_threshold=0.75,
+        medium_confidence_threshold=0.60,
+        baseline_seconds_per_page=2.8,
+        baseline_startup_seconds=30.0,
+        site_url="",
+        site_name="",
+        page_url_template="",
+        public_api_url="",
+        default_license_url="",
+        default_copyright_holder="",
+        description_max_chars=600,
+        log_level="INFO",
+        openai_api_key="",
+    )
+    values.update(overrides)
+    return Settings(**values)
 
 
 def _list_block(entries: list[dict[str, object]], **overrides) -> dict[str, object]:
@@ -92,3 +122,30 @@ def test_non_list_blocks_pass_through_unchanged():
     ]
 
     assert _relabel_footnote_lists(blocks) == blocks
+
+
+def test_footnote_review_items_are_pre_accepted_but_other_types_stay_pending():
+    blocks = [
+        {
+            "id": "#/texts/1",
+            "label": "footnote",
+            "text": "1 Ibid.",
+            "page": 41,
+            "confidence": 0.6,
+        },
+        {
+            "id": "#/texts/2",
+            "label": "text",
+            "text": "Ordinary paragraph flagged for the same reason.",
+            "page": 41,
+            "confidence": 0.6,
+        },
+    ]
+
+    pipeline = KonverterPipeline(_settings())
+    items = pipeline._build_review_items(blocks)
+
+    assert {item["type"]: item["status"] for item in items} == {
+        "footnote": "accepted",
+        "text": "pending",
+    }

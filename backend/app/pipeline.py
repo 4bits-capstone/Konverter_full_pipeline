@@ -901,7 +901,12 @@ class KonverterPipeline:
                     "band": band,
                     "title": f"{display} structure needs confirmation",
                     "kind": kind,
-                    "status": "pending",
+                    # Footnotes are already non-blocking (see
+                    # NON_BLOCKING_REVIEW_TYPES in service.py) and are
+                    # low-stakes reference text, so they start pre-accepted
+                    # rather than sitting in the queue as "pending" —
+                    # reviewers can still reopen and edit any of them.
+                    "status": "accepted" if label == "footnote" else "pending",
                     "extracted_text": None if kind == "table" else text,
                     "corrected_text": None,
                     "note": (

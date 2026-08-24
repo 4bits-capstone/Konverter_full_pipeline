@@ -57,7 +57,9 @@ KONVERTER_MAX_PAGES=2000          # reject larger uploads
 KONVERTER_SITE_URL=               # optional, hosting site, e.g. https://www.lawreform.vic.gov.au
 KONVERTER_SITE_NAME=              # optional, hosting site name
 KONVERTER_PAGE_URL_TEMPLATE=      # optional, e.g. https://…/publication/{slug}/
-KONVERTER_PUBLIC_API_URL=         # optional public origin for absolute cover/source/HTML URLs
+KONVERTER_PUBLIC_API_URL=         # optional public origin for absolute cover/source/HTML URLs;
+                                   # also the backend origin the embeddable chat widget baked
+                                   # into exported HTML (see "Embeddable chat widget" below) uses
 KONVERTER_DEFAULT_LICENSE_URL=    # explicit corpus default; clear when rights differ
 KONVERTER_DEFAULT_COPYRIGHT_HOLDER=
 KONVERTER_DESCRIPTION_MAX_CHARS=600
@@ -85,6 +87,40 @@ OPENAI_API_KEY=                   # backend only, never exposed to the frontend
 ```
 
 Without this key set, `/api/chat` and `/api/tts` return 503.
+
+## Embeddable chat widget
+
+Every approved document's exported `accessible.html` can carry its own
+floating chat widget, so the same Q&A works once the export is published on
+an external site (e.g. pasted into a WordPress page) — not just inside the
+Konverter reviewer app. It talks to `/api/public/documents/{id}/chat`, an
+unauthenticated counterpart to the in-app chat endpoint (no Supabase login
+available on an external page), gated so it only ever answers for approved
+documents and only reads their finished export.
+
+It's off by default: the widget is only baked into an export when
+`KONVERTER_PUBLIC_API_URL` is set to the backend's real, publicly-reachable
+origin (the same setting already used for absolute cover/source URLs — see
+above). Without it, there's no reliable absolute URL to point the widget at
+from a page hosted elsewhere, so it's omitted rather than baked in broken.
+
+The widget itself (`src/widget/embed.ts`) is a small, dependency-free
+standalone script — no React, so it doesn't inflate every exported HTML file
+with a full app bundle. Build it before deploying:
+
+```powershell
+npm run build:widget
+```
+
+This compiles to `backend/app/static/widget/konverter-chat-widget.js`, which
+the backend serves directly (`/static/widget/...`). Re-run it any time
+`src/widget/embed.ts` changes — it isn't part of the regular `npm run build`.
+
+Also add the site that will host the export to CORS:
+
+```dotenv
+KONVERTER_CORS_ORIGINS=http://localhost:5173,https://your-wordpress-site.example
+```
 
 ## Verify
 

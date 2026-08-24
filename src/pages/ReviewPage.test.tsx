@@ -195,6 +195,19 @@ describe('ReviewPage', () => {
     expect(screen.getByRole('button', { name: 'Structure label: Footnote' })).toBeDisabled()
   })
 
+  it('does not offer Unspecified as a structure label a reviewer can assign', async () => {
+    renderReview()
+    await screen.findAllByText('Definitions table needs confirmation')
+
+    fireEvent.click(screen.getByRole('button', { name: /Definitions table needs confirmation/ }))
+    fireEvent.click(screen.getByRole('button', { name: 'Edit flagged item' }))
+    fireEvent.click(screen.getByRole('button', { name: 'Structure label: Table' }))
+
+    const menu = screen.getByRole('listbox', { name: 'Structure label' })
+    expect(within(menu).queryByRole('option', { name: 'Unspecified' })).not.toBeInTheDocument()
+    expect(within(menu).getByRole('option', { name: 'Footnote' })).toBeInTheDocument()
+  })
+
   it('removes unnecessary content from output and allows it to be restored', async () => {
     renderReview()
     await screen.findAllByText('Section heading needs confirmation')

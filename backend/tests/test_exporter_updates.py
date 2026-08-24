@@ -491,6 +491,56 @@ def test_accessible_html_matches_restored_preview_without_site_shell(tmp_path):
     assert '<sup class="footnote-reference"><a href="#footnote-1"' in wordpress_sanitized
 
 
+def test_chat_widget_is_baked_in_only_when_a_public_api_url_is_configured(tmp_path):
+    publication = build_publication(
+        [
+            {"id": "title", "label": "title", "text": "Example report", "order": 0},
+            {
+                "id": "chapter",
+                "label": "section_header_1",
+                "text": "1. Introduction",
+                "order": 1,
+            },
+            {
+                "id": "body",
+                "label": "text",
+                "text": "This report explains the publication workflow.",
+                "order": 2,
+            },
+        ],
+        {"title": "Example report", "pages": 1, "file_name": "example.pdf"},
+    )
+    metadata = {"title": "Example report"}
+    json_ld = {"@context": "https://schema.org", "@type": "Report"}
+
+    without_widget = build_accessible_html(
+        "document-1",
+        publication,
+        metadata,
+        json_ld,
+        tmp_path / "cover.png",
+        tmp_path / "logo.png",
+    )
+    assert "__KONVERTER_CHAT__" not in without_widget
+    assert "konverter-chat-widget.js" not in without_widget
+
+    with_widget = build_accessible_html(
+        "document-1",
+        publication,
+        metadata,
+        json_ld,
+        tmp_path / "cover.png",
+        tmp_path / "logo.png",
+        chat_api_base="https://backend.example.com/",
+    )
+    assert '"documentId": "document-1"' in with_widget
+    assert '"apiBase": "https://backend.example.com/api"' in with_widget
+    assert (
+        '<script src="https://backend.example.com/static/widget/konverter-chat-widget.js" defer>'
+        in with_widget
+    )
+
+
 def test_project_button_accepts_a_safe_explicit_url_and_rejects_unsafe_urls(tmp_path):
     publication = build_publication(
         [

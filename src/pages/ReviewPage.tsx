@@ -188,6 +188,14 @@ const structureLabels: Array<{
   },
 ];
 
+// "Unspecified" is a fallback the pipeline uses when it genuinely can't
+// classify a block — it stays in structureLabels above so an existing item
+// with that type still displays and describes correctly, but it's excluded
+// here so a reviewer can never manually assign it going forward.
+const ASSIGNABLE_STRUCTURE_LABELS = structureLabels.filter(
+  (item) => item.value !== "unspecified",
+);
+
 function StructureChip({ item }: { item: Pick<ReviewItem, "type" | "label"> }) {
   const description = structureLabels.find(
     (label) => label.value === item.type,
@@ -331,16 +339,26 @@ function StructureLabelMenu({
   const [open, setOpen] = useState(false);
   const rootRef = useRef<HTMLDivElement | null>(null);
   const optionRefs = useRef<Array<HTMLButtonElement | null>>([]);
+  // The trigger button shows the item's actual current value (which, for an
+  // existing item, could still be "unspecified"), looked up against the
+  // full list so it always displays correctly.
   const selectedIndex = Math.max(
     0,
     structureLabels.findIndex((item) => item.value === value),
   );
   const selected = structureLabels[selectedIndex];
+  // The dropdown's options and keyboard navigation operate only over the
+  // assignable subset, so "Unspecified" can't be (re-)selected — index math
+  // below is kept relative to this list, separate from selectedIndex above.
+  const assignableSelectedIndex = Math.max(
+    0,
+    ASSIGNABLE_STRUCTURE_LABELS.findIndex((item) => item.value === value),
+  );
 
   useEffect(() => {
     if (!open) return;
     const focusFrame = window.requestAnimationFrame(() => {
-      optionRefs.current[selectedIndex]?.focus();
+      optionRefs.current[assignableSelectedIndex]?.focus();
     });
     const closeOnOutsidePress = (event: PointerEvent) => {
       if (!rootRef.current?.contains(event.target as Node)) setOpen(false);
@@ -350,11 +368,12 @@ function StructureLabelMenu({
       window.cancelAnimationFrame(focusFrame);
       document.removeEventListener("pointerdown", closeOnOutsidePress);
     };
-  }, [open, selectedIndex]);
+  }, [open, assignableSelectedIndex]);
 
   const moveFocus = (currentIndex: number, step: number) => {
     const next =
-      (currentIndex + step + structureLabels.length) % structureLabels.length;
+      (currentIndex + step + ASSIGNABLE_STRUCTURE_LABELS.length) %
+      ASSIGNABLE_STRUCTURE_LABELS.length;
     optionRefs.current[next]?.focus();
   };
 
@@ -399,7 +418,7 @@ function StructureLabelMenu({
           role="listbox"
           aria-label={ariaLabel}
         >
-          {structureLabels.map((item, index) => (
+          {ASSIGNABLE_STRUCTURE_LABELS.map((item, index) => (
             <button
               key={item.value}
               ref={(node) => {

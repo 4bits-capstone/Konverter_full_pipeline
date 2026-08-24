@@ -6,6 +6,7 @@
   "scripts": {
     "dev": "vite",
     "build": "tsc -b && vite build",
+    "build:widget": "esbuild src/widget/embed.ts --bundle --minify --format=iife --target=es2019 --outfile=backend/app/static/widget/konverter-chat-widget.js",
     "preview": "vite preview",
     "test": "vitest run",
     "test:watch": "vitest",

@@ -944,6 +944,7 @@ class WorkflowService:
             cover_path,
             project_root / "public" / "vlrc_logo.png",
             self.store.document_dir(document_id),
+            chat_api_base=self.settings.public_api_url,
         )
         self.store.write_artifacts(
             document_id,

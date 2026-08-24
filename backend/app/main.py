@@ -14,6 +14,7 @@ from typing import Annotated, Any
 from fastapi import Depends, FastAPI, File, HTTPException, Query, Request, Response, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, StreamingResponse
+from fastapi.staticfiles import StaticFiles
 
 from .config import load_settings  # noqa: I001 (must import first: loads .env
 # before audit/auth capture SUPABASE_* into module-level constants at import
@@ -79,6 +80,14 @@ app.add_middleware(
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
+)
+# Serves the embeddable chat widget (npm run build:widget) baked into every
+# exported HTML by exporter.py. check_dir=False so a fresh checkout that
+# hasn't built the widget yet doesn't fail to start.
+app.mount(
+    "/static",
+    StaticFiles(directory=Path(__file__).resolve().parent / "static", check_dir=False),
+    name="static",
 )
 
 
@@ -850,6 +859,40 @@ async def chat_with_document(
                 yield chunk
         except (OpenAINotConfiguredError, OpenAIRequestError):
             document_logger("app.chat", document_id).warning("chat request failed")
+
+    return StreamingResponse(stream(), media_type="text/plain; charset=utf-8")
+
+
+@app.post("/api/public/documents/{document_id}/chat")
+async def public_chat_with_document(
+    document_id: str, payload: ChatRequest
+) -> StreamingResponse:
+    """Unauthenticated counterpart to /chat, for the embeddable widget baked
+    into every exported HTML file (see exporter.py). There's no reviewer
+    identity to scope access by here, so this only works once a document is
+    approved and only ever reads the finished export — never draft/
+    in-review content."""
+    record = _record(document_id)
+    if not record.get("approved_at"):
+        raise HTTPException(status_code=409, detail="Document is not published")
+    if not settings.openai_api_key:
+        raise HTTPException(status_code=503, detail="Chat is not configured")
+
+    structured = store.read_artifact(document_id, "structured.json", {})
+    json_ld = store.read_artifact(document_id, "schema.jsonld", {})
+    context = build_chat_context(structured, json_ld, payload.message)
+    history = [{"role": item.role, "content": item.content} for item in payload.history]
+
+    async def stream() -> Any:
+        try:
+            async for chunk in stream_chat_completion(
+                settings, context, payload.message, history
+            ):
+                yield chunk
+        except (OpenAINotConfiguredError, OpenAIRequestError):
+            document_logger("app.chat", document_id).warning(
+                "public chat request failed"
+            )
 
     return StreamingResponse(stream(), media_type="text/plain; charset=utf-8")
 

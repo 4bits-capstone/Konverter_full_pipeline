@@ -235,6 +235,80 @@ def test_chat_streams_reply_using_document_context(tmp_path, monkeypatch):
         assert captured["history"] == [{"role": "user", "content": "Hi"}]
 
 
+def test_public_chat_requires_an_approved_document(tmp_path, monkeypatch):
+    # The embeddable widget has no reviewer identity to gate access by, so
+    # it must refuse to answer for anything still in review.
+    monkeypatch.setenv("OPENAI_API_KEY", "test-key")
+    with load_client(tmp_path) as client:
+        document_id = upload_and_process(client)
+
+        response = client.post(
+            f"/api/public/documents/{document_id}/chat",
+            json={"message": "What is this about?"},
+        )
+        assert response.status_code == 409
+
+
+def test_public_chat_returns_404_for_an_unknown_document(tmp_path, monkeypatch):
+    monkeypatch.setenv("OPENAI_API_KEY", "test-key")
+    with load_client(tmp_path) as client:
+        response = client.post(
+            "/api/public/documents/does-not-exist/chat",
+            json={"message": "What is this about?"},
+        )
+        assert response.status_code == 404
+
+
+def test_public_chat_returns_503_when_not_configured(tmp_path, monkeypatch):
+    monkeypatch.setenv("OPENAI_API_KEY", "")
+    with load_client(tmp_path) as client:
+        document_id = upload_and_process(client)
+        confirm_metadata(client, document_id)
+        client.post(f"/api/documents/{document_id}/review-items/resolve-all")
+        assert (
+            client.post(f"/api/documents/{document_id}/approval").status_code == 200
+        )
+
+        response = client.post(
+            f"/api/public/documents/{document_id}/chat",
+            json={"message": "What is this about?"},
+        )
+        assert response.status_code == 503
+
+
+def test_public_chat_streams_a_reply_with_no_authorization_header(tmp_path, monkeypatch):
+    monkeypatch.setenv("OPENAI_API_KEY", "test-key")
+    with load_client(tmp_path) as client:
+        document_id = upload_and_process(client)
+        confirm_metadata(client, document_id)
+        client.post(f"/api/documents/{document_id}/review-items/resolve-all")
+        assert (
+            client.post(f"/api/documents/{document_id}/approval").status_code == 200
+        )
+
+        import app.main as app_main
+
+        captured: dict[str, object] = {}
+
+        async def fake_stream_chat_completion(settings, context, message, history):
+            captured["context"] = context
+            for chunk in ["Hello", " there!"]:
+                yield chunk
+
+        monkeypatch.setattr(
+            app_main, "stream_chat_completion", fake_stream_chat_completion
+        )
+
+        response = client.post(
+            f"/api/public/documents/{document_id}/chat",
+            json={"message": "Summarize this."},
+            headers={},
+        )
+        assert response.status_code == 200
+        assert response.text == "Hello there!"
+        assert "Accessibility Standards Report" in captured["context"]
+
+
 def test_tts_returns_503_when_not_configured(tmp_path, monkeypatch):
     monkeypatch.setenv("OPENAI_API_KEY", "")
     with load_client(tmp_path) as client:

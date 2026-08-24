@@ -680,6 +680,7 @@ def build_accessible_html(
     cover_path: Path,
     logo_path: Path,
     figure_directory: Path | None = None,
+    chat_api_base: str = "",
 ) -> str:
     del logo_path  # The host website supplies the global masthead.
     sections = list(publication.get("sections", []))
@@ -890,6 +891,30 @@ def build_accessible_html(
         .replace("\u2028", "\\u2028")
         .replace("\u2029", "\\u2029")
     )
+    # The embeddable chat widget (see src/widget/embed.ts, built by
+    # `npm run build:widget`) is only wired in when KONVERTER_PUBLIC_API_URL
+    # is set \u2014 without an absolute backend origin, a page pasted into a
+    # site like WordPress would have no reachable URL to point the widget
+    # at, so it's silently omitted rather than baked in broken.
+    chat_widget_html = ""
+    if chat_api_base:
+        origin = chat_api_base.rstrip("/")
+        widget_config = (
+            json.dumps(
+                {"documentId": document_id, "apiBase": f"{origin}/api"},
+                ensure_ascii=False,
+            )
+            .replace("&", "\\u0026")
+            .replace("<", "\\u003c")
+            .replace(">", "\\u003e")
+        )
+        widget_src = html.escape(
+            f"{origin}/static/widget/konverter-chat-widget.js", quote=True
+        )
+        chat_widget_html = (
+            f"<script>window.__KONVERTER_CHAT__={widget_config};</script>"
+            f'<script src="{widget_src}" defer></script>'
+        )
 
     return f"""<!doctype html>
 <html lang="en-AU">
@@ -946,5 +971,6 @@ def build_accessible_html(
   <div class="vlrc-publication-readers" aria-label="Full publication content">{readers_html}</div>
   </div>
 </div>
+{chat_widget_html}
 </body>
 </html>"""
