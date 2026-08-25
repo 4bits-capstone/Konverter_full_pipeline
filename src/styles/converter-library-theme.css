@@ -287,8 +287,11 @@
 .converter-app .main {
   grid-column: 1;
   grid-row: 2;
+  width: 100%;
   height: auto;
   min-height: 0;
+  align-self: stretch;
+  overflow: hidden;
   background: var(--grey);
 }
 
@@ -296,7 +299,7 @@
   position: relative;
   top: auto;
   min-height: 62px;
-  padding: 11px max(20px, calc((100vw - 1160px) / 2));
+  padding: 11px max(20px, calc((100% - 1160px) / 2));
   border-bottom: 1px solid var(--line);
   background: #f7f7f7;
 }
@@ -318,10 +321,22 @@
 }
 
 .converter-app .content {
-  padding: clamp(30px, 4vw, 54px) max(20px, calc((100vw - 1160px) / 2)) 64px;
+  --workspace-inline-gutter: max(20px, calc((100% - 1160px) / 2));
+  flex: 1 1 auto;
+  width: 100%;
+  padding-top: clamp(30px, 4vw, 54px);
+  padding-right: max(
+    0px,
+    calc(
+      var(--workspace-inline-gutter) - var(--workspace-scrollbar-width, 0px)
+    )
+  );
+  padding-bottom: 64px;
+  padding-left: var(--workspace-inline-gutter);
   min-height: 0;
   overflow-x: hidden;
   overflow-y: auto;
+  overscroll-behavior: contain;
   background: var(--grey);
 }
 
@@ -386,6 +401,30 @@
   border-radius: var(--radius);
   background: #ffffff;
   box-shadow: none;
+}
+
+/* Keep the preview checks in a comfortable middle-height resting position. */
+.converter-app .pub-side {
+  top: clamp(32px, 8dvh, 72px);
+}
+
+/* The floating chat is bounded by the visible workspace below the document bar. */
+.converter-app .chat-widget {
+  top: var(--chat-safe-top, 16px);
+  display: flex;
+  align-items: flex-end;
+  flex-direction: column;
+  justify-content: flex-end;
+  pointer-events: none;
+}
+
+.converter-app .chat-widget > * {
+  pointer-events: auto;
+}
+
+.converter-app .chat-widget-panel {
+  height: min(560px, 100%);
+  max-height: 100%;
 }
 
 .converter-app .panel-pad {
@@ -1303,7 +1342,16 @@
   }
 
   .converter-app .content {
-    padding: 30px 14px 48px;
+    --workspace-inline-gutter: 14px;
+    padding-top: 30px;
+    padding-right: max(
+      0px,
+      calc(
+        var(--workspace-inline-gutter) - var(--workspace-scrollbar-width, 0px)
+      )
+    );
+    padding-bottom: 48px;
+    padding-left: var(--workspace-inline-gutter);
   }
 
   .converter-app .upload-title,
@@ -1693,8 +1741,10 @@
 }
 
 @media (prefers-reduced-motion: reduce) {
-  .converter-app .back-to-top {
+  .converter-app .back-to-top,
+  .converter-app .chat-widget-panel {
     transition: none;
+    animation: none;
   }
 }
 
@@ -2274,6 +2324,8 @@
   .converter-app .review-grid > .detail {
     position: sticky;
     top: 12px;
+    width: 100%;
+    align-self: start;
     max-height: calc(100dvh - 252px);
     min-height: 0;
     overflow: hidden;
@@ -2290,6 +2342,12 @@
     max-height: none;
     overflow-y: auto;
     overscroll-behavior: contain;
+  }
+}
+
+@media (max-width: 520px) {
+  .converter-app .chat-widget-panel {
+    height: min(520px, 100%);
   }
 }
 

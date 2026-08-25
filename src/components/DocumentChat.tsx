@@ -29,6 +29,7 @@ interface ChatMessage {
 const MAX_HISTORY_MESSAGES = 20;
 const MAX_MESSAGE_CHARS = 4000;
 const SPEECH_LANG = "en-AU";
+const CHAT_PANEL_EXIT_MS = 230;
 
 // Generic enough to make sense for any reviewed report, so they don't need
 // per-document topic extraction to be useful as a starting point.
@@ -175,6 +176,9 @@ async function readErrorDetail(response: Response, fallback: string): Promise<st
 
 export function DocumentChat({ documentId }: { documentId: string }) {
   const [isOpen, setIsOpen] = useState(false);
+  const [animationPhase, setAnimationPhase] = useState<
+    "idle" | "opening" | "closing"
+  >("idle");
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [input, setInput] = useState("");
   const [isStreaming, setIsStreaming] = useState(false);
@@ -199,14 +203,82 @@ export function DocumentChat({ documentId }: { documentId: string }) {
   const audioRef = useRef<HTMLAudioElement | null>(null);
   const abortRef = useRef<AbortController | null>(null);
   const messagesEndRef = useRef<HTMLDivElement | null>(null);
+  const widgetRef = useRef<HTMLDivElement | null>(null);
+  const fabRef = useRef<HTMLButtonElement | null>(null);
+  const closeTimerRef = useRef<number | null>(null);
   // speak()'s onended callback fires long after the render that created it,
   // so it reads the latest startListening through a ref (same reasoning as
   // convoModeRef) rather than closing over a possibly-stale callback.
   const startListeningRef = useRef<() => void>(() => {});
 
+  const completeClose = useCallback(() => {
+    if (closeTimerRef.current !== null) {
+      window.clearTimeout(closeTimerRef.current);
+      closeTimerRef.current = null;
+    }
+    setIsOpen(false);
+    setAnimationPhase("idle");
+    window.setTimeout(() => fabRef.current?.focus(), 0);
+  }, []);
+
+  const openChat = () => {
+    if (closeTimerRef.current !== null) {
+      window.clearTimeout(closeTimerRef.current);
+      closeTimerRef.current = null;
+    }
+    setAnimationPhase("opening");
+    setIsOpen(true);
+  };
+
+  const closeChat = () => {
+    if (animationPhase === "closing") return;
+    const reduceMotion = window.matchMedia?.(
+      "(prefers-reduced-motion: reduce)",
+    ).matches;
+    if (reduceMotion) {
+      completeClose();
+      return;
+    }
+    setAnimationPhase("closing");
+    closeTimerRef.current = window.setTimeout(
+      completeClose,
+      CHAT_PANEL_EXIT_MS,
+    );
+  };
+
   useEffect(() => {
     convoModeRef.current = convoMode;
   }, [convoMode]);
+
+  useEffect(() => {
+    const content = document.getElementById("main-content");
+    const header = document.querySelector<HTMLElement>(".converter-header");
+    const documentBar = document.querySelector<HTMLElement>(".docbar");
+
+    const updateSafeTop = () => {
+      const contentTop = content?.getBoundingClientRect().top ?? 0;
+      widgetRef.current?.style.setProperty(
+        "--chat-safe-top",
+        `${Math.max(16, Math.ceil(contentTop + 16))}px`,
+      );
+    };
+
+    updateSafeTop();
+    window.addEventListener("resize", updateSafeTop);
+
+    const resizeObserver =
+      typeof ResizeObserver === "undefined"
+        ? null
+        : new ResizeObserver(updateSafeTop);
+    if (content) resizeObserver?.observe(content);
+    if (header) resizeObserver?.observe(header);
+    if (documentBar) resizeObserver?.observe(documentBar);
+
+    return () => {
+      window.removeEventListener("resize", updateSafeTop);
+      resizeObserver?.disconnect();
+    };
+  }, [isOpen]);
 
   // A new document means a new conversation; also stop anything from the
   // previous document mid-flight (voice, audio, an in-progress reply).
@@ -230,6 +302,9 @@ export function DocumentChat({ documentId }: { documentId: string }) {
       recognitionRef.current?.stop();
       audioRef.current?.pause();
       abortRef.current?.abort();
+      if (closeTimerRef.current !== null) {
+        window.clearTimeout(closeTimerRef.current);
+      }
     },
     [],
   );
@@ -410,11 +485,12 @@ export function DocumentChat({ documentId }: { documentId: string }) {
 
   if (!isOpen) {
     return (
-      <div className="chat-widget">
+      <div className="chat-widget" ref={widgetRef}>
         <button
+          ref={fabRef}
           type="button"
           className="chat-widget-fab"
-          onClick={() => setIsOpen(true)}
+          onClick={openChat}
           aria-label="Ask about this document"
         >
           <MessageCircle aria-hidden="true" />
@@ -424,8 +500,15 @@ export function DocumentChat({ documentId }: { documentId: string }) {
   }
 
   return (
-    <div className="chat-widget">
-      <div className="chatcard chat-widget-panel">
+    <div className="chat-widget" ref={widgetRef}>
+      <div
+        className={`chatcard chat-widget-panel is-${animationPhase === "idle" ? "open" : animationPhase}`}
+        onAnimationEnd={(event) => {
+          if (event.currentTarget !== event.target) return;
+          if (animationPhase === "closing") completeClose();
+          else if (animationPhase === "opening") setAnimationPhase("idle");
+        }}
+      >
         <div className="chatcard-head">
           <div>
             <h4>Ask about this document</h4>
@@ -437,7 +520,7 @@ export function DocumentChat({ documentId }: { documentId: string }) {
           <button
             type="button"
             className="chat-widget-close"
-            onClick={() => setIsOpen(false)}
+            onClick={closeChat}
             aria-label="Close chat"
           >
             <X aria-hidden="true" />

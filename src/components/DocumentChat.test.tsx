@@ -63,6 +63,9 @@ describe('DocumentChat', () => {
     expect(screen.queryByRole('button', { name: 'Ask about this document' })).not.toBeInTheDocument()
 
     fireEvent.click(screen.getByRole('button', { name: 'Close chat' }))
+    const closingPanel = screen.getByRole('log').closest('.chat-widget-panel')
+    expect(closingPanel).toHaveClass('is-closing')
+    fireEvent.animationEnd(closingPanel!)
     expect(screen.queryByRole('log')).not.toBeInTheDocument()
     expect(screen.getByRole('button', { name: 'Ask about this document' })).toBeInTheDocument()
   })
