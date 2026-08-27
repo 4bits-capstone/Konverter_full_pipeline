@@ -201,6 +201,7 @@ export function DocumentChat({ documentId }: { documentId: string }) {
   const convoModeRef = useRef(convoMode);
   const recognitionRef = useRef<SpeechRecognition | null>(null);
   const audioRef = useRef<HTMLAudioElement | null>(null);
+  const audioUrlRef = useRef<string | null>(null);
   const abortRef = useRef<AbortController | null>(null);
   const messagesEndRef = useRef<HTMLDivElement | null>(null);
   const widgetRef = useRef<HTMLDivElement | null>(null);
@@ -246,6 +247,24 @@ export function DocumentChat({ documentId }: { documentId: string }) {
     );
   };
 
+  // The only way to cut off an in-progress voice reply: pause it directly
+  // rather than waiting for 'ended'. Clearing the handlers first stops a
+  // stray onended from re-triggering conversation mode's listen-again loop.
+  const stopSpeaking = useCallback(() => {
+    const audio = audioRef.current;
+    if (audio) {
+      audio.onended = null;
+      audio.onerror = null;
+      audio.pause();
+    }
+    if (audioUrlRef.current) {
+      URL.revokeObjectURL(audioUrlRef.current);
+      audioUrlRef.current = null;
+    }
+    audioRef.current = null;
+    setIsSpeaking(false);
+  }, []);
+
   useEffect(() => {
     convoModeRef.current = convoMode;
   }, [convoMode]);
@@ -289,9 +308,9 @@ export function DocumentChat({ documentId }: { documentId: string }) {
     setAnnouncement("");
     setConvoMode(false);
     recognitionRef.current?.stop();
-    audioRef.current?.pause();
+    stopSpeaking();
     abortRef.current?.abort();
-  }, [documentId]);
+  }, [documentId, stopSpeaking]);
 
   useEffect(() => {
     messagesEndRef.current?.scrollIntoView?.({ behavior: "smooth", block: "end" });
@@ -300,13 +319,13 @@ export function DocumentChat({ documentId }: { documentId: string }) {
   useEffect(
     () => () => {
       recognitionRef.current?.stop();
-      audioRef.current?.pause();
+      stopSpeaking();
       abortRef.current?.abort();
       if (closeTimerRef.current !== null) {
         window.clearTimeout(closeTimerRef.current);
       }
     },
-    [],
+    [stopSpeaking],
   );
 
   const speak = useCallback(async (text: string) => {
@@ -327,16 +346,19 @@ export function DocumentChat({ documentId }: { documentId: string }) {
       }
       const blob = await response.blob();
       const url = URL.createObjectURL(blob);
+      audioUrlRef.current = url;
       const audio = new Audio(url);
       audioRef.current = audio;
       audio.onended = () => {
         setIsSpeaking(false);
         URL.revokeObjectURL(url);
+        audioUrlRef.current = null;
         if (convoModeRef.current) startListeningRef.current();
       };
       audio.onerror = () => {
         setIsSpeaking(false);
         URL.revokeObjectURL(url);
+        audioUrlRef.current = null;
       };
       await audio.play();
     } catch {
@@ -468,11 +490,18 @@ export function DocumentChat({ documentId }: { documentId: string }) {
   const toggleConvoMode = useCallback(() => {
     setConvoMode((current) => {
       const next = !current;
-      if (next) startListening();
-      else stopListening();
+      if (next) {
+        startListening();
+      } else {
+        // Turning conversation mode off should stop it *now*, including a
+        // reply that's mid-playback — not just stop listening for the next
+        // turn and let the current one keep talking until it ends on its own.
+        stopListening();
+        stopSpeaking();
+      }
       return next;
     });
-  }, [startListening, stopListening]);
+  }, [startListening, stopListening, stopSpeaking]);
 
   const handleSubmit = (event: FormEvent) => {
     event.preventDefault();
@@ -481,6 +510,7 @@ export function DocumentChat({ documentId }: { documentId: string }) {
 
   const cancelStreaming = () => {
     abortRef.current?.abort();
+    stopSpeaking();
   };
 
   if (!isOpen) {
@@ -643,13 +673,13 @@ export function DocumentChat({ documentId }: { documentId: string }) {
               <Radio aria-hidden="true" />
             </button>
           )}
-          {isStreaming ? (
+          {isStreaming || isSpeaking ? (
             <button
               type="button"
               className="btn btn-outline btn-sm icon-button"
               onClick={cancelStreaming}
-              aria-label="Stop generating"
-              title="Stop generating"
+              aria-label="Stop response"
+              title="Stop response"
             >
               <Square aria-hidden="true" />
             </button>

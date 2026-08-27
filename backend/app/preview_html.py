@@ -7,10 +7,8 @@ report card, recommendations, accordion contents, citation and reader.
 
 from __future__ import annotations
 
-import base64
 import html
 import json
-import mimetypes
 import re
 from datetime import datetime
 from pathlib import Path
@@ -128,14 +126,6 @@ def _publication_year(value: Any) -> str:
         return str(parsed.year)
     match = re.search(r"\b(19|20)\d{2}\b", _normalize_published_date_input(value))
     return match.group(0) if match else ""
-
-
-def _data_uri(path: Path) -> str:
-    if not path.is_file():
-        return ""
-    mime_type = mimetypes.guess_type(path.name)[0] or "application/octet-stream"
-    encoded = base64.b64encode(path.read_bytes()).decode("ascii")
-    return f"data:{mime_type};base64,{encoded}"
 
 
 def _recommendation_snippets(sections: list[dict[str, Any]]) -> list[str]:
@@ -502,7 +492,12 @@ def _render_block(
             if figure_directory is not None and image_key
             else None
         )
-        image_uri = _data_uri(image_path) if image_path else ""
+        # A relative filename, not a data URI: figure PNGs are written as
+        # siblings of accessible.html in the document's export directory, and
+        # a linked file keeps the export small enough for AI browsing tools
+        # and crawlers to actually fetch, unlike inlining every image (a
+        # handful of figures easily pushes a single-file export past 4MB).
+        image_uri = f"figure-{image_key}.png" if image_path is not None and image_path.is_file() else ""
         visual = (
             f'<img class="docling-figure-image" src="{image_uri}" alt="{caption}">'
             if image_uri
@@ -735,7 +730,9 @@ def build_accessible_html(
         raw_project_url = f"/project/{_project_slug(raw_title)}/"
     project_url = html.escape(raw_project_url, quote=True)
     source_url = f"/api/documents/{html.escape(document_id, quote=True)}/source"
-    cover_uri = _data_uri(cover_path)
+    # Relative filename rather than a data URI, same reasoning as figures
+    # above: cover.png is written as a sibling of accessible.html.
+    cover_uri = cover_path.name if cover_path.is_file() else ""
     cover_html = (
         f'<img src="{cover_uri}" alt="Cover of {title}">'
         if cover_uri
