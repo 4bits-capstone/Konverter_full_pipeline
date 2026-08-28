@@ -16,6 +16,8 @@ from .visual_structure import (
     annotate_pdf_artifacts,
     detect_callout_regions,
     group_visual_callouts,
+    detect_quote_regions,
+    group_quote_blocks,
 )
 from docling.datamodel.settings import settings
 
@@ -35,6 +37,7 @@ LABEL_DISPLAY = {
     "header": "Header",
     "list": "List",
     "picture": "Picture",
+    "quote": "Quote",
     "section_header_1": "H1",
     "section_header_2": "H2",
     "section_header_3": "H3",
