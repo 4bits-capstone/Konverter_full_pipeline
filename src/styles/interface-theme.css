@@ -175,9 +175,33 @@ html:root {
   background: var(--surface-2);
 }
 .converter-app .approval-popup .check { padding: 14px 0; gap: 12px; }
-.converter-app .approval-popup .checkbox { width: 28px; height: 28px; border: 0; cursor: default; }
-.converter-app .approval-popup .check.ok .checkbox { background: var(--hi-soft); color: var(--hi); }
-.converter-app .approval-popup .check.blocked .checkbox { background: var(--lo-soft); color: var(--lo); }
+.converter-app .approval-popup .checkbox {
+  width: 42px;
+  height: 42px;
+  min-height: 42px;
+  border: 2px solid var(--komosion-slate);
+  background: #fff;
+  color: var(--komosion-indigo);
+  cursor: default;
+}
+/* Keep the completed tick dark against the pale green reference style. */
+.converter-app .approval-popup .checkbox svg {
+  width: 18px;
+  height: 18px;
+  color: inherit;
+  opacity: 1;
+  stroke-width: 2.5;
+}
+.converter-app .approval-popup .check.ok .checkbox {
+  border-color: transparent;
+  background: var(--hi-soft);
+  color: var(--komosion-green);
+}
+.converter-app .approval-popup .check.blocked .checkbox {
+  border-color: var(--komosion-slate);
+  background: #fff;
+  color: var(--komosion-indigo);
+}
 .converter-app .approval-popup .check-txt { color: var(--ink); font-size: 13px; }
 .converter-app .approval-popup .check-sub { color: var(--muted); font-size: 12px; }
 .converter-app .approval-popup .approval-popup-summary { grid-template-columns: 1.6fr 1fr 1fr; gap: 12px; }

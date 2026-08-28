@@ -756,7 +756,7 @@ export function MetadataPage() {
                     role="img"
                     aria-label={check.ok ? "Passed" : "Blocked"}
                   >
-                    {check.ok ? <Check aria-hidden="true" /> : <TriangleAlert aria-hidden="true" />}
+                    {check.ok ? <Check aria-hidden="true" /> : null}
                   </span>
                   <div>
                     <div className="check-txt">{check.label}</div>

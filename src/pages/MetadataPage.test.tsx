@@ -1,11 +1,11 @@
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
-import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
+import { act, cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import { useEffect } from 'react'
 import { MemoryRouter } from 'react-router-dom'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { DocumentBar } from '../components/DocumentBar'
 import { KonverterProvider, useKonverter } from '../state/KonverterContext'
-import { testDocument } from '../test/fixtures'
+import { testDocument, testReviewItems } from '../test/fixtures'
 import { resetTestServices } from '../test/serviceMocks'
 import { MetadataPage, normaliseMetadataFields } from './MetadataPage'
 
@@ -21,8 +21,7 @@ function SeedCompletedDocument() {
   return null
 }
 
-function renderMetadata() {
-  const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } })
+function renderMetadata(queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } })) {
   return render(
     <QueryClientProvider client={queryClient}>
       <MemoryRouter initialEntries={['/metadata']}>
@@ -103,6 +102,34 @@ describe('MetadataPage', () => {
     fireEvent.click(screen.getByRole('button', { name: /Add another/ }))
     expect(screen.getByRole('textbox', { name: 'Additional publisher 2' })).toBeInTheDocument()
     expect(screen.getByRole('button', { name: /Resolve 3 fields to continue/ })).toBeDisabled()
+  })
+
+  it('shows ticks for passed checks and empty boxes for incomplete checks', async () => {
+    const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } })
+    renderMetadata(queryClient)
+    await screen.findByRole('heading', { name: 'Document metadata' })
+    approveMetadataFields()
+    fireEvent.click(screen.getByRole('button', { name: /Run final system checks/ }))
+    const checks = within(await screen.findByRole('list', { name: 'Approval system checks' }))
+    expect(checks.getAllByRole('img', { name: 'Passed' })).toHaveLength(4)
+    for (const passed of checks.getAllByRole('img', { name: 'Passed' })) {
+      expect(passed.querySelector('svg.lucide-check')).not.toBeNull()
+    }
+
+    // A blocking quote flag becoming unresolved while the dialog is open must not
+    // display a warning icon or allow approval of incomplete work.
+    await act(async () => {
+      queryClient.setQueryData(['review-items', testDocument.id], testReviewItems.map((item, index) => ({
+        ...item,
+        type: index === 0 ? 'quote' : item.type,
+        status: index === 0 ? 'pending' : 'accepted',
+      })))
+    })
+    await waitFor(() => expect(checks.getAllByRole('img', { name: 'Blocked' })).toHaveLength(2))
+    for (const unchecked of checks.getAllByRole('img', { name: 'Blocked' })) {
+      expect(unchecked).toBeEmptyDOMElement()
+    }
+    expect(screen.getByRole('button', { name: 'Approve and open preview' })).toBeDisabled()
   })
 
   it('updates the top bar after revised metadata is saved', async () => {
