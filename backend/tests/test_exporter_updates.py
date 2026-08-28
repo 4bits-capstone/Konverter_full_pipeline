@@ -5,6 +5,22 @@ import re
 from app.exporter import _render_block, build_accessible_html, build_publication
 
 
+def test_quote_reaches_publication_and_accessible_html_semantically():
+    publication = build_publication(
+        [
+            {"id": "title", "label": "title", "text": "Report", "order": 0},
+            {"id": "section", "label": "section_header_1", "text": "Findings", "order": 1},
+            {"id": "quote", "label": "quote", "text": "Quoted statement.\n\nSpeaker", "order": 2},
+        ],
+        {"title": "Report", "pages": 1, "file_name": "report.pdf"},
+    )
+
+    quote = publication["sections"][0]["blocks"][0]
+    assert quote == {"type": "quote", "text": "Quoted statement.\n\nSpeaker", "page": 1}
+    rendered = _render_block(quote)
+    assert rendered == '<blockquote class="document-quote"><p>Quoted statement.</p><p>Speaker</p></blockquote>'
+
+
 def test_all_printed_contents_sections_are_kept_before_and_after_chapters():
     publication = build_publication(
         [
@@ -320,7 +336,7 @@ def test_box_section_uses_semantic_ordered_and_unordered_lists():
     assert '<ul class="source-list">' in rendered
 
 
-def test_accessible_html_matches_restored_preview_without_site_shell(tmp_path):
+def test_accessible_html_uses_new_report_layout_without_site_shell(tmp_path):
     publication = build_publication(
         [
             {"id": "title", "label": "title", "text": "Example report", "order": 0},
@@ -419,8 +435,8 @@ def test_accessible_html_matches_restored_preview_without_site_shell(tmp_path):
     assert "<header" not in rendered
     assert "<footer" not in rendered
     assert '<script type="application/ld+json">' in rendered
-    assert rendered.count("<script") == 1
-    assert "<script>" not in rendered
+    assert rendered.count("<script") == 2
+    assert "Optional enhancements" in rendered
     assert "onclick=" not in rendered
 
     # The downloadable page uses the restored reviewer-preview design.
@@ -429,13 +445,15 @@ def test_accessible_html_matches_restored_preview_without_site_shell(tmp_path):
     assert 'class="report-card-meta"' in rendered
     assert 'class="report-search"' not in rendered
     assert "Search this report" not in rendered
-    assert 'class="key-recommendations"' in rendered
-    assert 'class="preview-citation-card"' in rendered
+    assert 'class="key-recommendations"' not in rendered
+    assert 'class="preview-citation-card"' not in rendered
+    assert 'Cite this report' not in rendered
+    assert 'Source and citation' not in rendered
     assert 'class="vlrc-reader"' in rendered
     assert 'class="vlrc-reader-nav"' in rendered
     assert 'class="reader-pagination"' in rendered
-    assert 'class="button button-secondary" href="/project/example-report/"' in rendered
-    assert ">Go to Project</a>" in rendered
+    assert 'class="report-cover-action report-cover-action--project" href="/project/example-report/"' in rendered
+    assert ">Go to project page</span>" in rendered
 
     # The embed fills the width provided by the host template.
     assert "width:100%;max-width:none;background:#fff" in rendered
@@ -443,31 +461,31 @@ def test_accessible_html_matches_restored_preview_without_site_shell(tmp_path):
 
     # Chapters are collapsible, with H2 headings on the landing page. H3 remains
     # available in the full "In this section" list.
-    assert 'class="vlrc-contents"' in rendered
+    assert 'class="vlrc-contents vlrc-contents--grouped"' in rendered
     assert 'class="vlrc-accordion"' in rendered
     assert '<details class="vlrc-accordion-item">' in rendered
     assert '<details class="vlrc-accordion-item" open>' not in rendered
     assert '<summary aria-controls="1-introduction-subsections">' in rendered
     assert 'class="vlrc-accordion-panel"' in rendered
     assert '.vlrc-accordion-item[open]>.vlrc-accordion-panel{display:block;max-height:none;overflow:visible' in rendered
-    assert ">Read full section</label>" in rendered
+    assert ">Read full section</a>" in rendered
     assert 'href="#purpose"' in rendered
     landing_contents = rendered.split('id="report-contents"', 1)[1].split(
-        'class="preview-citation-card"', 1
+        'class="vlrc-publication-readers"', 1
     )[0]
     assert "Purpose" in landing_contents
     assert "Detailed scope" not in landing_contents
     assert 'class="heading-level-3"' in rendered
     assert ">Detailed scope</a>" in rendered
     assert 'class="vlrc-direct-item"' in rendered
-    assert 'for="vlrc-view-0-1-introduction"' in rendered
+    assert 'data-view-id="vlrc-view-0-1-introduction"' in rendered
     assert 'href="/api/documents/document-1/source"' in rendered
     assert "June 18, 2026" in rendered
     assert 'class="vlrc-publication-readers"' in rendered
     assert 'id="vlrc-view-landing" checked' in rendered
     assert '#vlrc-view-0-1-introduction:checked~.vlrc-publication-views #reader-1-introduction{display:block}' in rendered
     assert '.vlrc-publication-views .vlrc-reader{display:none}' in rendered
-    assert ":has(" not in rendered
+    assert ".vlrc-reader:has(:target)" in rendered
     assert '<sup class="footnote-reference"><a href="#footnote-1" role="doc-noteref" aria-label="Footnote 1">1</a></sup>' in rendered
     assert '<details class="reader-footnotes">' in rendered
     assert '<details class="reader-footnotes" open>' not in rendered
@@ -476,7 +494,7 @@ def test_accessible_html_matches_restored_preview_without_site_shell(tmp_path):
     assert "data-search-result" not in rendered
 
     # WordPress may remove every script element. The publication interactions
-    # remain available through native details, radio view controls and links.
+    # remain available through native details and CSS target-based links.
     wordpress_sanitized = re.sub(
         r"<script\b[^>]*>.*?</script>", "", rendered, flags=re.IGNORECASE | re.DOTALL
     )
@@ -485,7 +503,7 @@ def test_accessible_html_matches_restored_preview_without_site_shell(tmp_path):
     assert '<details class="vlrc-accordion-item" open>' not in wordpress_sanitized
     assert 'href="#purpose"' in wordpress_sanitized
     assert 'id="purpose"' in wordpress_sanitized
-    assert 'for="vlrc-view-0-1-introduction"' in wordpress_sanitized
+    assert 'data-view-id="vlrc-view-0-1-introduction"' in wordpress_sanitized
     assert 'type="radio" name="vlrc-publication-view"' in wordpress_sanitized
     assert 'href="#report-contents"' in wordpress_sanitized
     assert '<sup class="footnote-reference"><a href="#footnote-1"' in wordpress_sanitized
@@ -536,9 +554,35 @@ def test_chat_widget_is_baked_in_only_when_a_public_api_url_is_configured(tmp_pa
     assert '"documentId": "document-1"' in with_widget
     assert '"apiBase": "https://backend.example.com/api"' in with_widget
     assert (
-        '<script src="https://backend.example.com/static/widget/konverter-chat-widget.js" defer>'
+        '<script data-konverter-chat src="https://backend.example.com/static/widget/konverter-chat-widget.js" defer>'
         in with_widget
     )
+
+
+def test_published_images_use_api_links_with_portable_fallback(tmp_path):
+    publication = {
+        "stats": {"pages": 1},
+        "sections": [{"id": "chapter", "displayTitle": "1. Figures", "blocks": [
+            {"type": "box_section", "id": "box", "title": "Example", "blocks": [
+                {"type": "figure", "id": "figure-one", "imageKey": "one", "caption": "A figure"},
+                {"type": "quote", "text": "A human voice.", "attribution": "A contributor"},
+            ]},
+        ]}],
+    }
+    # The renderer only embeds/links existing image files; their contents are
+    # irrelevant to HTML generation and are not decoded here.
+    (tmp_path / "cover.png").write_bytes(b"cover-image")
+    (tmp_path / "figure-one.png").write_bytes(b"figure-image")
+    args = ("document-1", publication, {"title": "Example"}, {}, tmp_path / "cover.png", tmp_path / "logo.png")
+    linked = build_accessible_html(*args, figure_directory=tmp_path, chat_api_base="https://backend.example.com/")
+    assert 'src="https://backend.example.com/api/documents/document-1/cover"' in linked
+    assert 'src="https://backend.example.com/api/documents/document-1/figures/one.png"' in linked
+    assert 'data:image/' not in linked
+    assert '<blockquote class="docling-quote">' in linked
+    assert '<cite>A contributor</cite>' in linked
+    portable = build_accessible_html(*args, figure_directory=tmp_path)
+    assert portable.count('src="data:image/png;base64,') == 2
+    assert '<blockquote class="docling-quote">' in portable
 
 
 def test_project_button_accepts_a_safe_explicit_url_and_rejects_unsafe_urls(tmp_path):
@@ -574,8 +618,8 @@ def test_project_button_accepts_a_safe_explicit_url_and_rejects_unsafe_urls(tmp_
         arguments[4],
     )
 
-    assert 'class="button button-secondary" href="https://example.test/project/custom/"' in configured
-    assert 'class="button button-secondary" href="/project/named-project/"' in unsafe
+    assert 'class="report-cover-action report-cover-action--project" href="https://example.test/project/custom/"' in configured
+    assert 'class="report-cover-action report-cover-action--project" href="/project/named-project/"' in unsafe
     assert "javascript:alert" not in unsafe
 
 
@@ -619,11 +663,11 @@ def test_recommendations_box_inside_unrelated_chapter_is_detected(tmp_path):
         tmp_path / "logo.png",
     )
 
-    assert 'class="key-recommendations"' in rendered
+    assert 'class="key-recommendations"' not in rendered
     assert "Publish the accessible version as the primary format." in rendered
 
 
-def test_cite_this_report_ignores_in_document_legal_citations(tmp_path):
+def test_report_omits_citation_card_and_pdf_count_but_preserves_citation_utility(tmp_path):
     publication = build_publication(
         [
             {"id": "title", "label": "title", "text": "Example report", "order": 0},
@@ -653,10 +697,41 @@ def test_cite_this_report_ignores_in_document_legal_citations(tmp_path):
         tmp_path / "logo.png",
     )
 
-    citation_card = rendered.split('class="preview-citation-card"', 1)[1]
-    assert "ISBN" not in citation_card
-    assert "Smith v Jones" not in citation_card
-    assert (
-        "Victorian Law Reform Commission, Example report (Report, 2026)"
-        in citation_card
-    )
+    assert 'id="preview-citation"' not in rendered
+    citation = rendered.split('data-citation="', 1)[1].split('"', 1)[0]
+    assert citation == "Victorian Law Reform Commission, Example report (Report, 2026)"
+    download = rendered.split('report-cover-action--download"', 1)[1].split('</a>', 1)[0]
+    assert '<span>Download PDF</span>' in download
+    assert 'pages' not in download
+    assert 'report-action-detail' not in download
+    assert '<dt>Length</dt><dd>1 pages</dd>' in rendered
+
+
+def test_new_report_renders_quote_attribution_and_footnote_without_inventing_speaker(tmp_path):
+    from app.preview_html import _render_block as render_report_block
+    publication = build_publication([
+        {'id': 'h', 'label': 'section_header_1', 'text': 'Findings', 'order': 0},
+        {'id': 'q', 'label': 'quote', 'text': 'A voice that should be heard. 1 —Vision Australia',
+         'quote_attribution': 'Vision Australia', 'order': 1},
+    ], {'title': 'A new report', 'pages': 1, 'file_name': 'new.pdf'})
+    quote = publication['sections'][0]['blocks'][0]
+    assert quote['attribution'] == 'Vision Australia'
+    assert quote['text'] == 'A voice that should be heard. 1'
+    rendered = render_report_block(quote, None, {'1': 'footnote-1'})
+    assert 'class="report-quote report-quote--inline"' in rendered
+    assert '<blockquote class="docling-quote">' in rendered
+    assert '<figcaption><cite>Vision Australia</cite></figcaption>' in rendered
+    assert 'href="#footnote-1"' in rendered
+    plain = render_report_block({'type':'quote', 'text':'The reviewer supplied a quote.'}, None, {})
+    assert '<figcaption>' not in plain
+
+
+def test_reviewed_quote_does_not_restore_deleted_attribution():
+    publication = build_publication([
+        {'id':'h', 'label':'section_header_1', 'text':'Findings', 'order':0},
+        {'id':'q', 'label':'quote', 'text':'The reviewer changed this text.',
+         'quote_attribution':'Previous speaker', 'order':1},
+    ], {'title':'Report', 'pages':1, 'file_name':'report.pdf'})
+    quote = publication['sections'][0]['blocks'][0]
+    assert 'attribution' not in quote
+    assert quote['text'] == 'The reviewer changed this text.'

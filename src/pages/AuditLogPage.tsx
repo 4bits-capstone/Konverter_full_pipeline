@@ -92,7 +92,7 @@ export function AuditLogPage() {
   const hasFilters = Boolean(search) || actionFilter !== 'all' || actorFilter !== 'all' || chainFilter !== 'all' || Boolean(dateFrom) || Boolean(dateTo)
 
   return (
-    <section className="screen active" aria-labelledby="audit-log-heading">
+    <section className="screen active audit-log-page" aria-labelledby="audit-log-heading">
       <div className="admin-page-header">
         <Link className="btn btn-ghost btn-sm" to={converterStagePath('upload')} aria-label="Back to converter">
           <ArrowLeft aria-hidden="true" />

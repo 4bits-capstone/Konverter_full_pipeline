@@ -89,7 +89,7 @@ export function DocumentListPage() {
   const hasFilters = Boolean(search) || statusFilter !== 'all' || Boolean(dateFrom) || Boolean(dateTo)
 
   return (
-    <section className="screen active" aria-labelledby="doc-list-heading">
+    <section className="screen active audit-log-page" aria-labelledby="doc-list-heading">
       <div className="admin-page-header">
         <Link className="btn btn-ghost btn-sm" to={converterStagePath('upload')} aria-label="Back to converter">
           <ArrowLeft aria-hidden="true" />

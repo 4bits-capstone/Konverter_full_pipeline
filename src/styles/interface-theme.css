@@ -1,0 +1,201 @@
+/* Komosion interface palette from the supplied design. Does not enter report iframes. */
+html:root {
+  --navy-900: #292768;
+  --navy-800: #2b3f7f;
+  --blue-700: #2a6dac;
+  --blue-100: #d5e6f2;
+  --blue-050: #f8fafc;
+  --teal-700: #176a62;
+  --teal-100: #edf4e9;
+  --text: #292768;
+  --text-soft: #667388;
+  --muted: #667388;
+  --line: #d2d2cd;
+  --line-strong: #b8c0c9;
+  --surface: #fff;
+  --surface-soft: #f8fafc;
+  --focus: #e9c351;
+  --komosion-indigo: #292768;
+  --komosion-navy: #2b3f7f;
+  --komosion-ocean: #255c9b;
+  --komosion-steel: #2a6dac;
+  --komosion-azure: #2b82bf;
+  --komosion-ice: #f8fafc;
+  --komosion-slate: #667388;
+  --komosion-mist: #d2d2cd;
+  --komosion-red: #d22630;
+  --komosion-amber: #da954b;
+  --komosion-yellow: #e9c351;
+  --komosion-green: #176a62;
+  --komosion-signal: linear-gradient(
+    90deg,
+    #292768 0%,
+    #2b3f7f 26%,
+    #255c9b 50%,
+    #2a6dac 74%,
+    #2b82bf 100%
+  );
+  font-family: "Poppins", system-ui, sans-serif;
+}
+
+.converter-app {
+  --blue: var(--komosion-steel);
+  --blue-2: var(--komosion-ocean);
+  --blue-dark: var(--komosion-indigo);
+  --blue-soft: #d5e6f2;
+  --blue-tint: var(--komosion-ice);
+  --red: var(--komosion-red);
+  --red-2: #ad1f28;
+  --red-soft: #fbe9ea;
+  --ink: var(--komosion-indigo);
+  --ink-2: var(--komosion-slate);
+  --muted: var(--komosion-slate);
+  --grey: var(--komosion-ice);
+  --grey-2: var(--komosion-mist);
+  --line: var(--komosion-mist);
+  --line-2: #b8c0c9;
+  --paper: var(--komosion-ice);
+  --surface: #fff;
+  --surface-2: var(--komosion-ice);
+  --accent: var(--komosion-steel);
+  --accent-ink: var(--komosion-indigo);
+  --accent-soft: #d5e6f2;
+  --seal: var(--komosion-red);
+  --seal-soft: #fbe9ea;
+  --hi: #176a62;
+  --hi-soft: #edf4e9;
+  --hi-line: var(--komosion-green);
+  --md: #8a5700;
+  --md-soft: #fbf0e4;
+  --md-line: var(--komosion-amber);
+  --lo: var(--komosion-red);
+  --lo-soft: #fbe9ea;
+  --lo-line: #e7a8ad;
+  --brand-gradient: var(--komosion-signal);
+  --focus: 0 0 0 3px rgba(43, 130, 191, 0.35);
+  background: var(--komosion-ice);
+  color: var(--komosion-indigo);
+  font-family: "Poppins", system-ui, sans-serif;
+}
+
+.converter-app .converter-brand-band,
+.converter-app .login-screen {
+  background: var(--komosion-signal);
+}
+
+.converter-app > .skip-link,
+.converter-app .converter-header,
+.converter-app .converter-header *,
+.converter-app .docbar,
+.converter-app .docbar *,
+.converter-app .toast,
+.converter-app .toast *,
+.converter-app .screen,
+.converter-app .screen *,
+.converter-app .login-screen,
+.converter-app .login-screen * {
+  font-family: "Poppins", system-ui, sans-serif !important;
+}
+
+.converter-app .stage.done .num::after {
+  font-family: "Poppins", system-ui, sans-serif !important;
+}
+
+.converter-app .screen :is(h1, h2, h3, h4) {
+  color: var(--komosion-indigo);
+  font-weight: 700;
+}
+
+.converter-app .screen .eyebrow {
+  color: var(--komosion-steel);
+}
+
+.converter-app .screen .btn-primary {
+  border-color: var(--komosion-indigo);
+  background: var(--komosion-indigo);
+}
+
+.converter-app .screen .btn-primary:hover:not(:disabled) {
+  border-color: var(--komosion-navy);
+  background: var(--komosion-navy);
+}
+
+.converter-app .converter-brand img,
+.converter-app .login-brand img {
+  object-fit: contain;
+}
+
+
+.converter-app .login-title { color: var(--komosion-indigo); }
+.converter-app .login-screen .btn-primary { background: var(--komosion-indigo); border-color: var(--komosion-indigo); }
+.converter-app .login-brand img { width: 132px; height: auto; }
+.converter-app :focus-visible { outline: 3px solid var(--komosion-steel); outline-offset: 2px; box-shadow: none; }
+.converter-app .converter-header :focus-visible { outline-color: var(--komosion-yellow); }
+.converter-app .input:focus, .converter-app .sel:focus, .converter-app .extract-input:focus,
+.converter-app .reviewer-note textarea:focus { border-color: var(--komosion-steel); box-shadow: var(--focus); }
+
+.converter-app .login-panel .eyebrow { color: var(--komosion-steel); }
+.converter-app .login-screen .btn-primary:hover:not(:disabled) { background: var(--komosion-navy); border-color: var(--komosion-navy); }
+
+/* Approval uses the same palette and controls as the updated workspace. */
+.converter-app .modal.approval-popup {
+  width: min(680px, calc(100vw - 32px));
+  max-width: 680px;
+  max-height: calc(100dvh - 40px);
+  overflow-y: auto;
+  padding: 28px;
+  border: 1px solid var(--line);
+  border-top: 4px solid var(--komosion-steel);
+  border-radius: 12px;
+  box-shadow: 0 20px 70px rgb(41 39 104 / 18%);
+}
+.converter-app .approval-popup-header {
+  display: flex;
+  align-items: flex-start;
+  gap: 16px;
+  margin-bottom: 16px;
+}
+.converter-app .approval-popup-header .modal-ic {
+  width: 48px;
+  height: 48px;
+  flex: none;
+  margin: 0;
+  border-radius: 10px;
+  background: var(--blue-soft);
+  color: var(--komosion-steel);
+}
+.converter-app .approval-popup-header .eyebrow { font-size: 11px; letter-spacing: .1em; }
+.converter-app .approval-popup-header h3 { margin: 5px 0 0; font-size: 23px; line-height: 1.35; overflow-wrap: anywhere; }
+.converter-app .approval-popup .approval-popup-intro { margin-bottom: 20px; color: var(--muted); font-size: 13px; }
+.converter-app .approval-popup .checklist {
+  margin: 0 0 20px;
+  padding: 0 16px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--surface-2);
+}
+.converter-app .approval-popup .check { padding: 14px 0; gap: 12px; }
+.converter-app .approval-popup .checkbox { width: 28px; height: 28px; border: 0; cursor: default; }
+.converter-app .approval-popup .check.ok .checkbox { background: var(--hi-soft); color: var(--hi); }
+.converter-app .approval-popup .check.blocked .checkbox { background: var(--lo-soft); color: var(--lo); }
+.converter-app .approval-popup .check-txt { color: var(--ink); font-size: 13px; }
+.converter-app .approval-popup .check-sub { color: var(--muted); font-size: 12px; }
+.converter-app .approval-popup .approval-popup-summary { grid-template-columns: 1.6fr 1fr 1fr; gap: 12px; }
+.converter-app .approval-popup-summary span { padding: 12px; border-radius: 6px; background: #fff; }
+.converter-app .approval-popup .modal-actions { padding-top: 20px; border-top: 1px solid var(--line); }
+.converter-app .approval-popup .modal-actions .btn { min-height: 44px; border-radius: 6px; }
+.converter-app .approval-popup .modal-actions .btn-outline { border-color: var(--line-2); color: var(--ink); }
+
+/* The extracted text remains in one field before, during and after editing. */
+.converter-app .interpretation-panel > .review-extracted-field { margin: 0 13px 18px; }
+.converter-app .review-extracted-field .extract-box { margin-bottom: 8px; }
+.converter-app .review-extracted-text { display: block; min-height: 160px; background: #fff; }
+.converter-app .review-extracted-text[readonly] { border-color: var(--line); background: var(--surface-2); }
+.converter-app .review-extracted-text:not([readonly]) { border-color: var(--komosion-steel); }
+@media (max-width: 620px) {
+  .converter-app .modal.approval-popup { padding: 20px; }
+  .converter-app .approval-popup-header h3 { font-size: 20px; }
+  .converter-app .approval-popup .approval-popup-summary { grid-template-columns: 1fr; gap: 8px; }
+  .converter-app .approval-popup .modal-actions { flex-wrap: wrap; }
+  .converter-app .approval-popup .modal-actions .btn { flex: 1 1 auto; }
+}

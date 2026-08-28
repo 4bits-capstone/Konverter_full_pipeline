@@ -202,6 +202,7 @@ export function DocumentChat({ documentId }: { documentId: string }) {
   const recognitionRef = useRef<SpeechRecognition | null>(null);
   const audioRef = useRef<HTMLAudioElement | null>(null);
   const audioUrlRef = useRef<string | null>(null);
+  const speechAbortRef = useRef<AbortController | null>(null);
   const abortRef = useRef<AbortController | null>(null);
   const messagesEndRef = useRef<HTMLDivElement | null>(null);
   const widgetRef = useRef<HTMLDivElement | null>(null);
@@ -251,6 +252,8 @@ export function DocumentChat({ documentId }: { documentId: string }) {
   // rather than waiting for 'ended'. Clearing the handlers first stops a
   // stray onended from re-triggering conversation mode's listen-again loop.
   const stopSpeaking = useCallback(() => {
+    speechAbortRef.current?.abort();
+    speechAbortRef.current = null;
     const audio = audioRef.current;
     if (audio) {
       audio.onended = null;
@@ -331,20 +334,27 @@ export function DocumentChat({ documentId }: { documentId: string }) {
   const speak = useCallback(async (text: string) => {
     const spoken = stripMarkdown(text);
     if (!spoken) return;
+    stopSpeaking();
+    const controller = new AbortController();
+    speechAbortRef.current = controller;
     setIsSpeaking(true);
     try {
       const headers = await authHeaders();
+      if (controller.signal.aborted) return;
       const response = await fetch(`${runtimeConfig.apiBaseUrl}/tts`, {
         method: "POST",
         headers,
+        signal: controller.signal,
         body: JSON.stringify({ text: spoken }),
       });
+      if (controller.signal.aborted) return;
       if (!response.ok) {
         setError(await readErrorDetail(response, "Voice reply isn't available right now."));
         setIsSpeaking(false);
         return;
       }
       const blob = await response.blob();
+      if (controller.signal.aborted) return;
       const url = URL.createObjectURL(blob);
       audioUrlRef.current = url;
       const audio = new Audio(url);
@@ -362,10 +372,11 @@ export function DocumentChat({ documentId }: { documentId: string }) {
       };
       await audio.play();
     } catch {
-      setIsSpeaking(false);
+      if (controller.signal.aborted) return;
+      stopSpeaking();
       setError("Voice reply isn't available right now.");
     }
-  }, []);
+  }, [stopSpeaking]);
 
   const sendMessage = useCallback(
     async (text: string) => {

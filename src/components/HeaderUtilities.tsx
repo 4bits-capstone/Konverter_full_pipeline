@@ -13,7 +13,7 @@ function ReviewGuidanceContent() {
         <li><strong>Upload</strong> — add one or more PDFs and let them process.</li>
         <li><strong>Review</strong> — resolve any items flagged with low or medium confidence.</li>
         <li><strong>Metadata</strong> — confirm the source details Docling extracted.</li>
-        <li><strong>Preview</strong> — check the accessible result, then export or approve it.</li>
+        <li><strong>Preview</strong> — check the accessible result, then download the reviewed files.</li>
       </ol>
     </div>
   )
@@ -66,21 +66,11 @@ export function HeaderUtilities() {
   }
 
   return (
-    <div className="header-utilities" role="group" aria-label="Help, history and account">
+    <div className="header-utilities" role="group" aria-label="Help and account">
       <details className="header-utility header-help">
         <summary aria-label={guidanceLabel} title={guidanceLabel}><CircleHelp aria-hidden="true" /></summary>
         {onAdminPage ? <AdminGuidanceContent /> : onHistoryPage ? <HistoryGuidanceContent /> : <ReviewGuidanceContent />}
       </details>
-
-      <Link
-        className={`header-utility-link${onHistoryPage ? ' is-active' : ''}`}
-        to={converterHistoryPath()}
-        aria-label="History"
-        aria-current={onHistoryPage ? 'page' : undefined}
-        title="History"
-      >
-        <History aria-hidden="true" />
-      </Link>
 
       <details className="header-utility header-settings">
         <summary aria-label="Account settings" title="Account settings"><Settings aria-hidden="true" /></summary>

@@ -60,3 +60,11 @@ describe('apiRequest', () => {
     expect(signOut).not.toHaveBeenCalled()
   })
 })
+
+it('loads report HTML with the same authentication and retry policy as JSON requests', async () => {
+  const fetchMock = vi.fn().mockResolvedValue({ ok: true, status: 200, text: async () => '<html>Report</html>' })
+  vi.stubGlobal('fetch', fetchMock)
+  await expect(apiRequest('/documents/report/exports/accessible.html', { responseType: 'text' })).resolves.toBe('<html>Report</html>')
+  expect(fetchMock.mock.calls[0][1].headers.get('Authorization')).toBe('Bearer stale-token')
+  expect(fetchMock.mock.calls[0][1]).not.toHaveProperty('responseType')
+})

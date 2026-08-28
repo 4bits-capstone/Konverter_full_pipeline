@@ -5,6 +5,7 @@ import { supabase } from '../lib/supabaseClient'
 import { useKonverter } from '../state/KonverterContext'
 import '../styles/converter.css'
 import '../styles/converter-library-theme.css'
+import '../styles/interface-theme.css'
 
 function LoginForm() {
   const [email, setEmail] = useState('')
@@ -28,7 +29,7 @@ function LoginForm() {
     <div className="converter-app">
       <div className="login-screen">
         <div className="login-brand">
-          <img src="/vlrc_logo.png" alt="Victorian Law Reform Commission" />
+          <img src="/komosion-wordmark-reversed.png" alt="Komosion" />
           <span className="converter-product">
             <strong>Konverter</strong>
             <small>Accessible publishing workspace</small>

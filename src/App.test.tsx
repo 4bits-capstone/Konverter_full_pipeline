@@ -1,10 +1,12 @@
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
+import { useEffect } from 'react'
 import { MemoryRouter } from 'react-router-dom'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import App from './App'
-import { KonverterProvider } from './state/KonverterContext'
+import { KonverterProvider, useKonverter } from './state/KonverterContext'
 import { resetTestServices } from './test/serviceMocks'
+import { testDocument } from './test/fixtures'
 
 vi.mock('./services', () => import('./test/serviceMocks'))
 
@@ -20,12 +22,19 @@ vi.mock('./lib/supabaseClient', () => ({
   },
 }))
 
-function renderApp(initialPath = '/upload') {
+function SeedApprovedDocument() {
+  const { addDocuments } = useKonverter()
+  useEffect(() => addDocuments([{ ...testDocument, approvedAt: '2026-08-28T00:00:00Z' }]), [addDocuments])
+  return null
+}
+
+function renderApp(initialPath = '/upload', seedApproved = false) {
   const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } })
   return render(
     <QueryClientProvider client={queryClient}>
       <MemoryRouter initialEntries={[initialPath]}>
         <KonverterProvider>
+          {seedApproved && <SeedApprovedDocument />}
           <App />
         </KonverterProvider>
       </MemoryRouter>
@@ -41,9 +50,26 @@ beforeEach(resetTestServices)
 describe('Konverter frontend', () => {
   it('renders the upload stage and pipeline navigation', async () => {
     renderApp()
-    expect(await screen.findByRole('heading', { name: 'Upload documents' })).toBeInTheDocument()
+    expect(await screen.findByRole('heading', { name: 'Upload documents' }, { timeout: 3000 })).toBeInTheDocument()
     expect(screen.getByRole('navigation', { name: 'Review pipeline' })).toBeInTheDocument()
     expect(screen.getByRole('button', { name: /Step 2: Review/i })).toBeDisabled()
+  })
+
+  it('keeps History in settings without an extra header button', async () => {
+    renderApp()
+    await screen.findByRole('heading', { name: 'Upload documents' })
+    const utilities = screen.getByRole('group', { name: 'Help and account' })
+    expect(utilities.querySelectorAll(':scope > a')).toHaveLength(0)
+    fireEvent.click(utilities.querySelector('summary[aria-label="Account settings"]')!)
+    expect(screen.getByRole('link', { name: 'History' })).toHaveAttribute('href', '/history')
+  })
+
+  it('restores Preview and keeps the previous export URL working', async () => {
+    renderApp('/export', true)
+    expect(await screen.findByRole('heading', { name: 'Preview converted document' }, { timeout: 3000 })).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: /Step 4: Preview/ })).toHaveAttribute('aria-current', 'step')
+    expect(await screen.findByRole('link', { name: 'Open report' })).toHaveAttribute('href', '/report/test-document')
+    expect(screen.getByRole('img', { name: 'Komosion' })).toHaveAttribute('src', '/komosion-wordmark-reversed.png')
   })
 
   it('uses the reviewer console as the only application entry point', async () => {

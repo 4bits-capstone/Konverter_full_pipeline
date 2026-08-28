@@ -39,8 +39,8 @@ export function StageRail() {
     <header className="converter-header">
       <div className="converter-brand-band">
         <div className="converter-brand-inner">
-          <Link className="converter-brand" to={converterStagePath('upload')} aria-label="Victorian Law Reform Commission converter home">
-            <img src="/vlrc_logo.png" alt="Victorian Law Reform Commission" />
+          <Link className="converter-brand" to={converterStagePath('upload')} aria-label="Komosion Konverter home">
+            <img src="/komosion-wordmark-reversed.png" alt="Komosion" />
             <span className="converter-product"><strong>Konverter</strong><small>Accessible publishing workspace</small></span>
           </Link>
           <div className="converter-brand-right">

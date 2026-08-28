@@ -12,6 +12,7 @@ export type ReviewType =
   | 'header'
   | 'list'
   | 'picture'
+  | 'quote'
   | 'section_header_1'
   | 'section_header_2'
   | 'section_header_3'

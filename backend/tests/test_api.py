@@ -301,7 +301,7 @@ def test_upload_review_correct_and_export(tmp_path):
         assert b'class="vlrc-reader-nav"' in accessible.content
         assert b'<script type="application/ld+json">' in accessible.content
         assert (
-            b'<a class="button button-secondary" href="/project/accessibility-standards-report/">Go to Project</a>'
+            b'class="report-cover-action report-cover-action--project" href="/project/accessibility-standards-report/"'
             in accessible.content
         )
         assert b"padding:22px clamp(" in accessible.content

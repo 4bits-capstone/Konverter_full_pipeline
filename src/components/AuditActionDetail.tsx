@@ -10,6 +10,7 @@ import {
   Square,
   Trash2,
   TriangleAlert,
+  X,
   type LucideIcon,
 } from 'lucide-react'
 import { useState } from 'react'
@@ -73,7 +74,7 @@ export function TimeStack({ value }: { value: string }) {
   )
 }
 
-function ChainBadge({ status }: { status: AuditChainStatus }) {
+export function ChainBadge({ status }: { status: AuditChainStatus }) {
   if (status === 'linked') {
     return (
       <span className="conf conf--high" title="Hash chain intact">
@@ -236,11 +237,13 @@ export function AuditLedgerTable({ entries, selectedId, onSelect, showActor = fa
   )
 }
 
-export function AuditActionDetailPanel({ entry, documentTitle, documentFileName, showActor = false }: {
+export function AuditActionDetailPanel({ entry, documentTitle, documentFileName, showActor = false, inlineId, onClose }: {
   entry: AuditLogEntry
   documentTitle: string | null
   documentFileName: string | null
   showActor?: boolean
+  inlineId?: string
+  onClose?: () => void
 }) {
   const details = entry.detail
     ? Object.entries(entry.detail).filter(([key]) => !CHANGE_PREVIEW_KEYS.has(key))
@@ -250,13 +253,14 @@ export function AuditActionDetailPanel({ entry, documentTitle, documentFileName,
   const Icon = actionIcon(entry.action)
   const tone: AuditActionTone = auditActionTone(entry.action)
   return (
-    <aside className="audit-detail-panel" aria-label="Selected action details">
+    <aside className={`audit-detail-panel${inlineId ? ' is-inline' : ''}`} id={inlineId} aria-label="Selected action details">
       <div className="audit-detail-heading">
         <span className={`audit-detail-icon audit-detail-icon--${tone}`} aria-hidden="true"><Icon /></span>
         <div>
           <span className="audit-detail-kicker">Selected action</span>
           <h3>{auditActionLabel(entry.action)}</h3>
         </div>
+        {onClose && <button type="button" className="btn btn-ghost btn-sm audit-detail-close" onClick={onClose} aria-label="Close details"><X aria-hidden="true" /></button>}
       </div>
       <dl className="audit-detail-facts">
         <div>

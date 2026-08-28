@@ -1,182 +1,186 @@
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
-import { cleanup, fireEvent, render, screen } from '@testing-library/react'
+import { cleanup, fireEvent, render, screen, within } from '@testing-library/react'
 import { useEffect } from 'react'
-import { MemoryRouter } from 'react-router-dom'
+import { MemoryRouter, Route, Routes } from 'react-router-dom'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { KonverterProvider, useKonverter } from '../state/KonverterContext'
 import { testDocument } from '../test/fixtures'
-import { resetTestServices } from '../test/serviceMocks'
+import { publicationService, resetTestServices } from '../test/serviceMocks'
 import { PreviewPage } from './PreviewPage'
+import { ReportPage } from './ReportPage'
 
 vi.mock('../services', () => import('../test/serviceMocks'))
+vi.mock('../components/DocumentChat', () => ({ DocumentChat: () => <div>Report chatbot</div> }))
 
 function SeedCompletedDocument() {
   const { addDocuments } = useKonverter()
   useEffect(() => addDocuments([testDocument]), [addDocuments])
   return null
 }
-
-function renderPreview() {
+function renderPreview(path = '/preview') {
   const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } })
-
-  return render(
-    <QueryClientProvider client={queryClient}>
-      <MemoryRouter>
-        <KonverterProvider>
-          <SeedCompletedDocument />
-          <main id="main-content">
-            <PreviewPage />
-          </main>
-        </KonverterProvider>
-      </MemoryRouter>
-    </QueryClientProvider>,
-  )
+  return render(<QueryClientProvider client={queryClient}><MemoryRouter initialEntries={[path]}><KonverterProvider>
+    <SeedCompletedDocument />
+    <Routes><Route path="preview" element={<PreviewPage />} /><Route path="report/:documentId" element={<ReportPage />} /><Route path="upload" element={<h1>Upload</h1>} /></Routes>
+  </KonverterProvider></MemoryRouter></QueryClientProvider>)
 }
-
-afterEach(cleanup)
+afterEach(() => { cleanup(); vi.restoreAllMocks(); vi.unstubAllGlobals() })
 beforeEach(resetTestServices)
 
-describe('PreviewPage', () => {
-  it('expands and collapses publication chapters accessibly', async () => {
+describe('Preview and report pages', () => {
+  it('shows an embedded publication preview and the three existing downloads', async () => {
     renderPreview()
-
-    const firstChapterLabel = await screen.findByText('1. Introduction')
-    const secondChapterLabel = screen.getByText('2. Requirements')
-    const firstChapter = firstChapterLabel.closest('details')!
-    const secondChapter = secondChapterLabel.closest('details')!
-
-    expect(firstChapter).toHaveAttribute('open')
-    expect(screen.getByRole('link', { name: 'Purpose' })).toBeVisible()
-    expect(screen.queryByRole('link', { name: 'Background' })).not.toBeInTheDocument()
-    expect(secondChapter).not.toHaveAttribute('open')
-
-    fireEvent.click(secondChapter.querySelector('summary')!)
-    expect(secondChapter).toHaveAttribute('open')
-    expect(screen.getByRole('link', { name: 'Semantic output' })).toBeVisible()
-
-    fireEvent.click(firstChapter.querySelector('summary')!)
-    expect(firstChapter).not.toHaveAttribute('open')
-  })
-
-  it('opens front matter directly instead of rendering it as an accordion', async () => {
-    renderPreview()
-
-    const preface = await screen.findByRole('link', { name: 'Preface' })
-    expect(screen.queryByRole('button', { name: 'Preface' })).not.toBeInTheDocument()
-
-    fireEvent.click(preface)
-    expect(screen.getByRole('heading', { level: 1, name: 'Preface' })).toBeInTheDocument()
-    expect(screen.getByText('This preface introduces the publication.')).toBeInTheDocument()
-  })
-
-  it('opens Chapter 1 content and returns to the publication landing page', async () => {
-    renderPreview()
-    await screen.findByText('1. Introduction')
-
-    expect(screen.getAllByRole('heading', { level: 1 })).toHaveLength(1)
-    fireEvent.click(screen.getByRole('link', { name: 'Purpose' }))
-
-    expect(screen.getByRole('heading', { level: 1, name: '1. Introduction' })).toBeInTheDocument()
-    expect(screen.getByRole('heading', { level: 2, name: 'Purpose' })).toBeInTheDocument()
-    expect(screen.getByText(/defines a review workflow/)).toBeInTheDocument()
-    const paragraphNumber = screen.getByText('1.2')
-    expect(paragraphNumber).toHaveClass('reader-paragraph-number')
-    expect(paragraphNumber.nextElementSibling).toHaveTextContent(/Every flagged structure/)
-    expect(screen.getByRole('link', { name: 'Purpose' })).toHaveAttribute('aria-current', 'location')
-    expect(screen.getAllByRole('heading', { level: 1 })).toHaveLength(1)
-
-    fireEvent.click(screen.getByRole('button', { name: 'Accessibility Standards Report' }))
-
-    expect(screen.getByRole('heading', { level: 1, name: 'Accessibility Standards Report' })).toBeInTheDocument()
-    expect(screen.getByLabelText('Complete report chapters')).toBeInTheDocument()
-    expect(screen.getByRole('heading', { name: 'Table of contents' })).toBeInTheDocument()
-  })
-
-  it('opens the selected subsection in the reader navigation', async () => {
-    const scrollTo = vi.fn()
-    Object.defineProperty(HTMLElement.prototype, 'scrollTo', {
-      configurable: true,
-      value: scrollTo,
-    })
-    renderPreview()
-    await screen.findByText('1. Introduction')
-
-    fireEvent.click(screen.getByRole('link', { name: 'Purpose' }))
-
-    expect(screen.getByRole('link', { name: 'Purpose' })).toHaveAttribute('aria-current', 'location')
-    expect(screen.getByText(/defines a review workflow/)).toBeInTheDocument()
-    expect(scrollTo).toHaveBeenCalledWith({ top: 0, behavior: 'smooth' })
-
-    delete (HTMLElement.prototype as Partial<HTMLElement>).scrollTo
-  })
-
-  it('uses one export menu and exposes the generated report from the landing page', async () => {
-    renderPreview()
-
-    expect(await screen.findByText('Export')).toBeInTheDocument()
-    expect(screen.getByText(/Reviewed data is loaded: 12 pages/)).toBeInTheDocument()
-    expect(screen.getByRole('navigation', { name: 'Preview navigation' })).toBeInTheDocument()
-    expect(screen.getByRole('button', { name: /Return to review/ })).toBeInTheDocument()
-    expect(screen.queryByRole('button', { name: /Return to metadata/ })).not.toBeInTheDocument()
-    expect(screen.getByRole('button', { name: /Start new upload/ })).toBeInTheDocument()
-    expect(screen.queryByRole('button', { name: /Open public page/ })).not.toBeInTheDocument()
-
-    const contents = screen.getByLabelText('Complete report chapters')
-    expect(Array.from(contents.children).map((item) => item.querySelector('a, summary')?.textContent?.trim())).toEqual([
-      'Preface',
-      '1. Introduction',
-      '2. Requirements',
-      'Appendices',
-      'Bibliography',
+    expect(await screen.findByText('Conversion complete')).toBeInTheDocument()
+    expect(screen.getByRole('heading', { name: 'Preview converted document' })).toBeInTheDocument()
+    fireEvent.click(screen.getByRole('button', { name: 'Download files' }))
+    const links = within(screen.getByRole('group', { name: 'Export formats' })).getAllByRole('link')
+    expect(links).toHaveLength(3)
+    expect(links.map(link => link.getAttribute('href'))).toEqual([
+      '/api/documents/test-document/exports/html', '/api/documents/test-document/exports/jsonld', '/api/documents/test-document/exports/structured',
     ])
-
-    const backToTop = screen.getByRole('button', { name: 'Back to top of page' })
-    expect(backToTop).not.toHaveClass('is-visible')
-    const scrollContainer = document.getElementById('main-content')!
-    Object.defineProperty(scrollContainer, 'scrollTop', { configurable: true, value: 600 })
-    fireEvent.scroll(scrollContainer)
-    expect(backToTop).toHaveClass('is-visible')
-
-    fireEvent.click(screen.getByText('Export'))
-    expect(screen.getByRole('menuitem', { name: /Accessible HTML/ })).toBeInTheDocument()
-    expect(screen.getByRole('menuitem', { name: /JSON-LD/ })).toBeInTheDocument()
-    expect(screen.getByRole('menuitem', { name: /Structured JSON/ })).toBeInTheDocument()
-
-    expect(screen.getByRole('heading', { level: 1, name: 'Accessibility Standards Report' })).toBeInTheDocument()
+    expect(screen.queryByText('Cosmograph')).not.toBeInTheDocument()
+    expect(screen.queryByText('Original PDF')).not.toBeInTheDocument()
+    const preview = await screen.findByTitle('Accessible publication preview: Accessibility Standards Report')
+    expect(preview).toHaveAttribute('sandbox', 'allow-scripts allow-popups allow-popups-to-escape-sandbox allow-downloads')
+    expect(preview.getAttribute('srcdoc')).toContain('<blockquote>Reviewed quotation.</blockquote>')
     expect(screen.getByText('June 18, 2026')).toBeInTheDocument()
-    expect(screen.getByText(/practical requirements for producing accessible/)).toBeInTheDocument()
-    expect(screen.getByText('2. Requirements').closest('summary')).toBeInTheDocument()
-    expect(screen.getByRole('link', { name: 'Download PDF' })).toBeInTheDocument()
-    expect(screen.getByRole('link', { name: 'Go to Project' })).toBeInTheDocument()
-    expect(document.querySelector('.preview-report-card')).toBeInTheDocument()
-    expect(screen.queryByRole('heading', { name: 'Search this report' })).not.toBeInTheDocument()
-    expect(screen.queryByText(/Find a heading, topic, or keyword/)).not.toBeInTheDocument()
-    expect(screen.queryByRole('searchbox')).not.toBeInTheDocument()
-    expect(screen.getByRole('heading', { name: 'Table of contents' })).toBeInTheDocument()
-    expect(document.querySelector('.vlrc-masthead')).toBeInTheDocument()
-    expect(screen.getByRole('contentinfo')).toBeInTheDocument()
-    expect(screen.queryByRole('navigation', { name: 'VLRC website' })).not.toBeInTheDocument()
-    expect(screen.getByText('Every heading nests one level at a time')).toHaveClass('valrow-detail')
+    expect(screen.getByRole('link', { name: 'Return to review' })).toHaveAttribute('href', '/review')
   })
 
-  it('embeds the generated JSON-LD while the landing page preview is open', async () => {
+  it('opens the canonical HTML in a separate report route and retains JSON-LD and chat', async () => {
+    const getHtml = vi.spyOn(publicationService, 'getHtml')
     renderPreview()
-    await screen.findByText('1. Introduction')
-
-    const jsonLdScript = document.head.querySelector<HTMLScriptElement>('#konverter-publication-json-ld')
-    expect(jsonLdScript).not.toBeNull()
-    expect(jsonLdScript).toHaveAttribute('type', 'application/ld+json')
-    expect(JSON.parse(jsonLdScript?.textContent ?? '{}')).toMatchObject({
-      '@context': 'https://schema.org',
-      '@graph': expect.arrayContaining([
-        expect.objectContaining({
-          '@type': 'Report',
-          name: 'Accessibility Standards Report',
-        }),
-      ]),
-    })
-
-    fireEvent.click(screen.getByRole('link', { name: 'Purpose' }))
+    fireEvent.click(await screen.findByRole('link', { name: 'Open report' }))
+    const frame = await screen.findByTitle('Accessibility Standards Report')
+    expect(getHtml).toHaveBeenCalledWith('test-document')
+    expect(frame.tagName).toBe('IFRAME')
+    expect(frame.getAttribute('srcdoc')).toContain('<blockquote>Reviewed quotation.</blockquote>')
+    expect(frame.getAttribute('sandbox')).not.toContain('allow-same-origin')
+    expect(screen.getByText('Report chatbot')).toBeInTheDocument()
     expect(document.head.querySelector('#konverter-publication-json-ld')).not.toBeNull()
+    fireEvent.click(screen.getByRole('link', { name: 'Back to preview' }))
+    expect(await screen.findByText('Conversion complete')).toBeInTheDocument()
+    expect(document.head.querySelector('#konverter-publication-json-ld')).toBeNull()
   })
+
+  it('loads a report directly by its document ID and removes duplicate embedded chat', async () => {
+    vi.spyOn(publicationService, 'getHtml').mockResolvedValue('<html><head></head><body><h1>Report</h1><script data-konverter-chat>window.__KONVERTER_CHAT__={};</script><blockquote>Quote.</blockquote></body></html>')
+    renderPreview('/report/another-document')
+    const frame = await screen.findByTitle('Accessibility Standards Report')
+    expect(publicationService.getHtml).toHaveBeenCalledWith('another-document')
+    expect(frame.getAttribute('srcdoc')).not.toContain('__KONVERTER_CHAT__')
+    expect(frame.getAttribute('srcdoc')).toContain('<blockquote>Quote.</blockquote>')
+  })
+
+  it('allows retry when the approved report cannot be loaded', async () => {
+    vi.spyOn(publicationService, 'getHtml').mockRejectedValueOnce(new Error('Unavailable'))
+    renderPreview('/report/test-document')
+    expect(await screen.findByRole('alert')).toHaveTextContent('report could not be loaded')
+    fireEvent.click(screen.getByRole('button', { name: 'Try again' }))
+    expect(await screen.findByTitle('Accessibility Standards Report')).toBeInTheDocument()
+  })
+
+
+  it('closes the download dropdown on Escape, outside click, blur and selection', async () => {
+    renderPreview()
+    const trigger = await screen.findByRole('button', { name: 'Download files' })
+    expect(trigger).toHaveAttribute('aria-expanded', 'false')
+    fireEvent.click(trigger)
+    fireEvent.keyDown(document, { key: 'Escape' })
+    expect(trigger).toHaveFocus()
+    expect(trigger).toHaveAttribute('aria-expanded', 'false')
+    fireEvent.click(trigger)
+    fireEvent.pointerDown(document.body)
+    expect(screen.queryByRole('group', { name: 'Export formats' })).not.toBeInTheDocument()
+    fireEvent.click(trigger)
+    fireEvent.blur(trigger, { relatedTarget: screen.getByRole('link', { name: 'Open report' }) })
+    expect(trigger).toHaveAttribute('aria-expanded', 'false')
+    fireEvent.click(trigger)
+    const download = screen.getByRole('link', { name: /JSON-LD Structured metadata/ })
+    download.addEventListener('click', event => event.preventDefault(), { once: true })
+    fireEvent.click(download)
+    expect(trigger).toHaveAttribute('aria-expanded', 'false')
+  })
+
+  it('keeps Open report beside the dropdown and uses the same publication HTML in both views', async () => {
+    renderPreview()
+    const preview = await screen.findByTitle('Accessible publication preview: Accessibility Standards Report')
+    const source = preview.getAttribute('srcdoc')
+    const actions = screen.getByRole('group', { name: 'Downloads and report' })
+    expect(within(actions).getByRole('button', { name: 'Download files' })).toBeInTheDocument()
+    fireEvent.click(within(actions).getByRole('link', { name: 'Open report' }))
+    const report = await screen.findByTitle('Accessibility Standards Report')
+    expect(report.getAttribute('srcdoc')).toBe(source)
+  })
+
+  it('can retry the embedded preview without removing the download controls', async () => {
+    vi.spyOn(publicationService, 'getHtml').mockRejectedValueOnce(new Error('Unavailable'))
+    renderPreview()
+    expect(await screen.findByRole('alert')).toHaveTextContent('report could not be loaded')
+    expect(screen.getByRole('button', { name: 'Download files' })).toBeEnabled()
+    fireEvent.click(screen.getByRole('button', { name: 'Try again' }))
+    expect(await screen.findByTitle('Accessible publication preview: Accessibility Standards Report')).toBeInTheDocument()
+  })
+
+  it('starts a new upload from the preview page', async () => {
+    renderPreview()
+    await screen.findByText('Conversion complete')
+    fireEvent.click(screen.getByRole('button', { name: 'Start new upload' }))
+    expect(screen.getByRole('heading', { name: 'Upload' })).toBeInTheDocument()
+  })
+})
+
+// Exercise the actual optional report script independently of the React shell.
+import reportScript from '../../backend/app/static/report/report.js?raw'
+
+it('navigates generated report views, opens footnotes and copies the actual citation', async () => {
+  document.body.innerHTML = `<div data-konverter-publication>
+    <input class="vlrc-view-toggle" id="vlrc-view-landing" type="radio" name="view" checked />
+    <input class="vlrc-view-toggle" id="vlrc-view-first" data-reader="reader-first" type="radio" name="view" />
+    <div id="publication-landing"><h1 id="publication-title">Report</h1><h2 id="contents-heading">Contents</h2><a href="#purpose">Read purpose</a>
+      <button class="report-copy-citation" data-citation="Example Publisher, A Different Report (2025).">Copy citation</button><span class="citation-copy-status"></span>
+    </div>
+    <section class="vlrc-reader" id="reader-first"><div class="vlrc-reader-content"><h1 id="reader-title-first">First chapter</h1><h2 id="purpose">Purpose</h2>
+      <a href="#footnote-1">1</a><details><summary>Footnotes</summary><p id="footnote-1">Source</p></details><a class="breadcrumb-publication-link" href="#contents-heading">Back</a>
+    </div><nav class="vlrc-reader-nav"><h2>In this section</h2><ul id="first-links"><li><a href="#purpose">Purpose</a></li></ul></nav></section>
+  </div>`
+  vi.spyOn(window, 'requestAnimationFrame').mockImplementation(callback => { callback(0); return 0 })
+  const scroll = vi.fn()
+  Object.defineProperty(HTMLElement.prototype, 'scrollIntoView', { configurable: true, value: scroll })
+  const writeText = vi.fn().mockResolvedValue(undefined)
+  Object.defineProperty(navigator, 'clipboard', { configurable: true, value: { writeText } })
+  vi.stubGlobal('matchMedia', vi.fn().mockReturnValue({ matches: false }))
+  window.eval(reportScript)
+  fireEvent.click(screen.getByRole('link', { name: 'Read purpose' }))
+  expect((document.getElementById('vlrc-view-first') as HTMLInputElement).checked).toBe(true)
+  expect(screen.getByRole('link', { name: 'Purpose' })).toHaveAttribute('aria-current', 'location')
+  fireEvent.click(screen.getByRole('link', { name: '1' }))
+  expect(document.querySelector('details')).toHaveAttribute('open')
+  fireEvent.click(screen.getByRole('link', { name: 'Back' }))
+  expect((document.getElementById('vlrc-view-landing') as HTMLInputElement).checked).toBe(true)
+  fireEvent.click(screen.getByRole('button', { name: 'Copy citation' }))
+  expect(writeText).toHaveBeenCalledWith('Example Publisher, A Different Report (2025).')
+  expect(scroll).toHaveBeenCalled()
+  window.history.replaceState({}, '', '/')
+  document.body.innerHTML = ''
+  delete (HTMLElement.prototype as Partial<HTMLElement>).scrollIntoView
+})
+
+import reportTemplateSource from '../../backend/app/preview_html.py?raw'
+
+it('uses the selected reader only when scripts are stripped by the host', () => {
+  const fallback = reportTemplateSource.match(/SCRIPT_FREE_STYLE = r"""([\s\S]*?)"""/)![1]
+  // JSDOM does not evaluate media queries; apply the real screen rules directly.
+  const rules = fallback.replace('@media screen {', '').trim().replace(/\}$/, '')
+  const style = document.createElement('style')
+  style.textContent = '.vlrc-reader {display:none}' + rules
+  document.head.appendChild(style)
+  document.body.innerHTML = `<div class="vlrc-publication-embed"><section id="publication-landing">Overview</section><section class="vlrc-reader" id="reader-one"><h2 id="selected-heading">Selected heading</h2></section><section class="vlrc-reader" id="reader-two">Other section</section></div>`
+  window.history.replaceState({}, '', '/#selected-heading')
+  expect(getComputedStyle(document.getElementById('publication-landing')!).display).toBe('none')
+  expect(getComputedStyle(document.getElementById('reader-one')!).display).toBe('block')
+  expect(getComputedStyle(document.getElementById('reader-two')!).display).toBe('none')
+  style.remove()
+  window.history.replaceState({}, '', '/')
+  document.body.innerHTML = ''
 })

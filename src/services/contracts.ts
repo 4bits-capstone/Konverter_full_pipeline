@@ -57,6 +57,7 @@ export interface AuditService {
 }
 
 export interface PublicationService {
+  getHtml(documentId: string): Promise<string>
   get(documentId: string): Promise<PublicationPayload>
   sourceUrl(documentId: string, page?: number): string
   evidenceUrl(documentId: string, reviewItemId: string, version?: string): string

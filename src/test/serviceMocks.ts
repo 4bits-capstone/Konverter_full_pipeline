@@ -189,6 +189,7 @@ export const auditService: AuditService = {
 const documentUrl = (documentId: string, suffix: string) => `/api/documents/${documentId}${suffix}`
 
 export const publicationService: PublicationService = {
+  async getHtml() { return '<!doctype html><html><head></head><body><h1>Accessibility Standards Report</h1><blockquote>Reviewed quotation.</blockquote></body></html>' },
   async get() {
     return structuredClone(testPublicationPayload)
   },

@@ -181,20 +181,14 @@ const structureLabels: Array<{
     shortMeaning: "Paragraph or body-text content.",
   },
   {
-    value: "unspecified",
-    label: "Unspecified",
-    description: "Content whose structure cannot yet be determined.",
-    shortMeaning: "Structure not yet identified.",
+    value: "quote",
+    label: "Quote",
+    description: "A visually identified quotation or testimonial panel.",
+    shortMeaning: "Quoted content or testimonial.",
   },
 ];
 
-// "Unspecified" is a fallback the pipeline uses when it genuinely can't
-// classify a block — it stays in structureLabels above so an existing item
-// with that type still displays and describes correctly, but it's excluded
-// here so a reviewer can never manually assign it going forward.
-const ASSIGNABLE_STRUCTURE_LABELS = structureLabels.filter(
-  (item) => item.value !== "unspecified",
-);
+const ASSIGNABLE_STRUCTURE_LABELS = structureLabels;
 
 function StructureChip({ item }: { item: Pick<ReviewItem, "type" | "label"> }) {
   const description = structureLabels.find(
@@ -339,17 +333,13 @@ function StructureLabelMenu({
   const [open, setOpen] = useState(false);
   const rootRef = useRef<HTMLDivElement | null>(null);
   const optionRefs = useRef<Array<HTMLButtonElement | null>>([]);
-  // The trigger button shows the item's actual current value (which, for an
-  // existing item, could still be "unspecified"), looked up against the
-  // full list so it always displays correctly.
+  // The trigger button shows the item's actual current value.
   const selectedIndex = Math.max(
     0,
     structureLabels.findIndex((item) => item.value === value),
   );
   const selected = structureLabels[selectedIndex];
-  // The dropdown's options and keyboard navigation operate only over the
-  // assignable subset, so "Unspecified" can't be (re-)selected — index math
-  // below is kept relative to this list, separate from selectedIndex above.
+  // Keep dropdown and keyboard-navigation index math relative to this list.
   const assignableSelectedIndex = Math.max(
     0,
     ASSIGNABLE_STRUCTURE_LABELS.findIndex((item) => item.value === value),
@@ -2061,99 +2051,58 @@ export function ReviewPage() {
                   />
                 </div>
 
-                <div className="field-label">
-                  Extracted result (reference only)
-                </div>
-                {selected.kind === "kv" ? (
-                  <dl className="kv extract-box">
-                    {selected.keyValues?.map(([key, value]) => (
-                      <div key={key} style={{ display: "contents" }}>
-                        <dt>{key}</dt>
-                        <dd>{value}</dd>
-                      </div>
-                    ))}
-                  </dl>
-                ) : selected.kind === "table" ? (
-                  <TableExtract
-                    table={selected.tableData}
-                    caption={selected.tableData?.caption}
-                  />
-                ) : (
-                  <div className="extract-box pre-wrap">
-                    {selected.extractedText || (
-                      <span style={{ color: "var(--muted)" }}>
-                        No text or image was extracted.
-                      </span>
-                    )}
-                  </div>
-                )}
-
-                {selected.correctedTable && !editing && (
-                  <>
-                    <div className="field-label">Saved corrected table</div>
-                    <TableExtract
-                      table={selected.correctedTable}
-                      caption={selected.correctedTable.caption}
-                    />
-                  </>
-                )}
-
-                {selected.correctedText &&
-                  !editing &&
-                  selected.type !== "box_section" && (
-                    <>
-                      <div className="field-label">Saved correction</div>
-                      {selected.type === "list" ? (
-                        <ReviewListPreview text={selected.correctedText} />
-                      ) : (
-                        <div className="corrected-result pre-wrap">
-                          {selected.correctedText}
-                        </div>
-                      )}
-                    </>
-                  )}
-
-                {editing && (
-                  <div className="correction-editor">
-                    <div className="field-label">
-                      {usesTableEditor(editType)
-                        ? "Corrected table"
-                        : editType === "box_section"
-                          ? "Box Section structure"
-                          : "Corrected result"}
+                <div className="review-extracted-field">
+                  <div className="field-label">Extracted result</div>
+                  {editing && usesTableEditor(editType) ? (
+                    <TableEditor table={editTable} onChange={setEditTable} />
+                  ) : editing && editType === "list" ? (
+                    <ListEditor text={editText} onChange={setEditText} />
+                  ) : editing && editType === "box_section" ? (
+                    <div className="box-section-edit-note">
+                      Child paragraphs, lists, tables, figures and footnotes
+                      stay as separate semantic elements. Change the container
+                      label here; its child content is not flattened into one
+                      text field.
                     </div>
-                    {usesTableEditor(editType) ? (
-                      <TableEditor table={editTable} onChange={setEditTable} />
-                    ) : editType === "list" ? (
-                      <ListEditor text={editText} onChange={setEditText} />
-                    ) : editType === "box_section" ? (
-                      <div className="box-section-edit-note">
-                        Child paragraphs, lists, tables, figures and footnotes
-                        stay as separate semantic elements. Change the container
-                        label here; its child content is not flattened into one
-                        text field.
-                      </div>
-                    ) : (
-                      <textarea
-                        className="extract-input"
-                        aria-label="Corrected text"
-                        rows={4}
-                        value={editText}
-                        onChange={(event) => setEditText(event.target.value)}
-                        autoFocus
-                      />
-                    )}
-                    <div className="hint">
-                      {usesTableEditor(editType)
-                        ? "This structure is corrected as rows and columns."
+                  ) : !editing && selected.kind === "kv" ? (
+                    <dl className="kv extract-box">
+                      {selected.keyValues?.map(([key, value]) => (
+                        <div key={key} style={{ display: "contents" }}>
+                          <dt>{key}</dt><dd>{value}</dd>
+                        </div>
+                      ))}
+                    </dl>
+                  ) : !editing && usesTableEditor(selected.type) ? (
+                    <TableExtract
+                      table={selected.correctedTable ?? selected.tableData}
+                      caption={(selected.correctedTable ?? selected.tableData)?.caption}
+                    />
+                  ) : !editing && selected.type === "list" ? (
+                    <ReviewListPreview text={selected.correctedText ?? selected.extractedText ?? ""} />
+                  ) : (
+                    <textarea
+                      className="extract-box extract-input review-extracted-text"
+                      aria-label="Extracted text"
+                      aria-describedby="extracted-text-help"
+                      rows={6}
+                      readOnly={!editing}
+                      value={editing ? editText : selected.correctedText ?? selected.extractedText ?? ""}
+                      onChange={(event) => setEditText(event.target.value)}
+                      placeholder="No text or image was extracted."
+                    />
+                  )}
+                  <div className="hint" id="extracted-text-help">
+                    {editing
+                      ? usesTableEditor(editType)
+                        ? "Edit the extracted rows and columns above."
                         : editType === "list"
-                          ? "Enter one list item per line."
+                          ? "Edit each list item above."
                           : editType === "box_section"
                             ? "The Box Section remains a container in every generated output."
-                            : "This structure is corrected as text."}
-                    </div>
+                            : "Edit the extracted text above, then save your changes."
+                      : "Select Edit to change the extracted result."}
                   </div>
-                )}
+                </div>
 
                 {selected.type === "picture" && (
                   <div className="manual-picture-upload">

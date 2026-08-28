@@ -16,10 +16,9 @@ from .visual_structure import (
     annotate_pdf_artifacts,
     detect_callout_regions,
     group_visual_callouts,
+    detect_quote_regions,
+    group_quote_blocks,
 )
-from docling.datamodel.settings import settings
-
-settings.inference.compile_torch_models = False
 
 StageCallback = Callable[[int, str], None]
 
@@ -35,6 +34,7 @@ LABEL_DISPLAY = {
     "header": "Header",
     "list": "List",
     "picture": "Picture",
+    "quote": "Quote",
     "section_header_1": "H1",
     "section_header_2": "H2",
     "section_header_3": "H3",
@@ -183,6 +183,8 @@ class KonverterPipeline:
         warnings = annotate_pdf_artifacts(raw_document, pdf_path)
         callout_regions, callout_warnings = detect_callout_regions(pdf_path)
         warnings.extend(callout_warnings)
+        quote_regions, quote_warnings = detect_quote_regions(pdf_path)
+        warnings.extend(quote_warnings)
         cluster_confidences = self._cluster_confidences(result)
         confidence_by_ref = self._confidence_by_reference(
             raw_document, cluster_confidences
@@ -195,6 +197,7 @@ class KonverterPipeline:
         warnings.extend(hierarchy_warnings)
         blocks = _relabel_footnote_lists(blocks)
         blocks = group_visual_callouts(blocks, callout_regions)
+        blocks = group_quote_blocks(blocks, quote_regions)
 
         confidence = getattr(result, "confidence", None)
         doc_confidence = {
@@ -214,6 +217,8 @@ class KonverterPipeline:
             if self._docling_converter is not None:
                 return self._docling_converter
             try:
+                from docling.datamodel.settings import settings as docling_settings
+                docling_settings.inference.compile_torch_models = False
                 from docling.backend.pypdfium2_backend import PyPdfiumDocumentBackend
                 from docling.datamodel.accelerator_options import (
                     AcceleratorDevice,

@@ -380,3 +380,225 @@ def group_visual_callouts(
         elif block_id not in used:
             output.append(block)
     return [{**block, "order": index} for index, block in enumerate(output)]
+
+
+
+# Quote recognition uses PDF geometry plus typography/context, never paragraph
+# numbers or report-specific phrases. All bounds use top-left PDF coordinates.
+_SPEECH_CUE = re.compile(
+    r"\b(?:said|say|says|stated?|states|told|noted?|notes|observed?|observes|"
+    r"explained?|explains|reported?|reports|submitted?|submits|argued?|argues|"
+    r"commented?|comments|wrote|writes|recalled?|recalls|described?|describes|referred|"
+    r"emphasi[sz]ed?|according to|in (?:the )?words of)\b", re.I,
+)
+_NUMBER_OR_LIST = re.compile(r"^\s*(?:\d+(?:\.\d+)*[.)]?\s|[•●▪–-]\s|\([a-z0-9]+\)\s)")
+
+
+def _pdf_quote_lines(page: Any) -> list[dict[str, Any]]:
+    lines = []
+    for block in page.get_text("dict").get("blocks", []):
+        for line in block.get("lines", []):
+            spans = line.get("spans", [])
+            text = "".join(str(span.get("text", "")) for span in spans).strip()
+            if not text or tuple(line.get("dir", (1, 0))) != (1, 0):
+                continue
+            x0, y0, x1, y1 = map(float, line["bbox"])
+            weight = sum(len(span.get("text", "")) for span in spans) or 1
+            italic = sum(len(span.get("text", "")) for span in spans if int(span.get("flags", 0)) & 2) / weight
+            size = max((float(span.get("size", 0)) for span in spans), default=0)
+            lines.append(dict(left=x0, top=y0, right=x1, bottom=y1, text=text, italic=italic, size=size, superscript=any(int(span.get("flags", 0)) & 1 for span in spans)))
+    return sorted(lines, key=lambda line: (round(line["top"], 1), line["left"]))
+
+
+def _quote_region(page: Any, page_number: int, lines: list[dict[str, Any]], kind: str, **bounds: float) -> dict[str, Any]:
+    content = " ".join(line["text"] for line in lines)
+    attribution = re.search(r"[—–]\s*([A-Z][\w .,’'&()-]{2,100})$", content)
+    return {
+        "attribution": attribution[1].strip() if attribution else "",
+        "page": page_number, "page_width": float(page.rect.width),
+        "page_height": float(page.rect.height), "kind": kind,
+        "text": " ".join(line["text"] for line in lines),
+        "left": min(line["left"] for line in lines),
+        "top": min(line["top"] for line in lines),
+        "right": max(line["right"] for line in lines),
+        "bottom": max(line["bottom"] for line in lines), **bounds,
+    }
+
+
+def _quote_strokes(page: Any) -> tuple[list[dict[str, float]], list[dict[str, float]]]:
+    flat, tailed = [], []
+    for drawing in page.get_drawings():
+        rect = drawing.get("rect")
+        if rect is None:
+            continue
+        # Some PDFs encode a horizontal rule as a thin filled rectangle.
+        if rect.width >= page.rect.width * .45 and rect.height <= 3:
+            if drawing.get("color") is not None or drawing.get("fill") is not None:
+                flat.append(dict(left=float(rect.x0), right=float(rect.x1), top=float(rect.y0), bottom=float(rect.y1)))
+            continue
+        if drawing.get("type") not in {"s", "fs"} or drawing.get("color") is None:
+            continue
+        segments = []
+        for item in drawing.get("items", []):
+            if item[0] == "l":
+                a, b = item[1:3]
+                if abs(a.y-b.y) <= 3 and abs(a.x-b.x) >= page.rect.width*.2:
+                    segments.append(dict(left=min(a.x,b.x), right=max(a.x,b.x), top=min(a.y,b.y), bottom=max(a.y,b.y)))
+        # Restrict a pointer to a shallow, wide stroke, excluding table frames.
+        if rect.width >= page.rect.width*.45 and 8 <= rect.height <= 45 and segments:
+            tailed.append(dict(left=float(rect.x0), right=float(rect.x1), top=float(rect.y0), bottom=float(rect.y1)))
+        else:
+            flat.extend(segment for segment in segments if segment["right"]-segment["left"] >= page.rect.width*.45)
+    unique = {(round(r["left"], 1), round(r["top"], 1), round(r["right"], 1)): r for r in flat}
+    return sorted(unique.values(), key=lambda r:r["top"]), tailed
+
+
+def detect_quote_regions(pdf_path: Path) -> tuple[list[dict[str, Any]], list[str]]:
+    """Find ruled, speech-bubble and attributed indented quotations.
+
+    Rules alone are insufficient: straight panels must also contain mostly
+    italic text or an explicit attribution. Indented prose requires a speech
+    introduction (or an opening quote), so ordinary lists are left alone.
+    """
+    try:
+        import fitz
+    except ImportError:
+        return [], ["PyMuPDF unavailable; quote detection was skipped."]
+    regions: list[dict[str, Any]] = []
+    try:
+        with fitz.open(pdf_path) as pdf:
+            previous_page_tail: list[dict[str, Any]] = []
+            for page_index, page in enumerate(pdf):
+                lines = _pdf_quote_lines(page)
+                flat, tailed = _quote_strokes(page)
+                page_regions = []
+                for top in flat:
+                    candidates = [
+                        (bottom, is_tail) for bottom, is_tail in
+                        [(r, False) for r in flat] + [(r, True) for r in tailed]
+                        if 18 <= bottom["top"]-top["bottom"] <= min(320, page.rect.height*.4)
+                        and abs(bottom["left"]-top["left"]) <= 14
+                        and abs(bottom["right"]-top["right"]) <= 14
+                    ]
+                    # Only the nearest matching lower boundary may close a panel.
+                    if not candidates:
+                        continue
+                    bottom, is_tail = min(candidates, key=lambda pair: pair[0]["top"])
+                    contained = [line for line in lines
+                        if top["left"]-3 <= line["left"] and line["right"] <= top["right"]+3
+                        and top["bottom"]+1 <= line["top"] and line["bottom"] <= bottom["bottom"]+3]
+                    content = " ".join(line["text"] for line in contained)
+                    if len(content.split()) < 6 or any(_NUMBER_OR_LIST.match(line["text"]) for line in contained):
+                        continue
+                    italic = sum(len(line["text"])*line["italic"] for line in contained) / max(len(content), 1)
+                    attributed = bool(re.search(r"[—–]\s*[A-Z][\w .,’'&()-]{2,100}$", content))
+                    if not is_tail and italic < .6 and not attributed:
+                        continue
+                    attribution_line = ""
+                    if is_tail:
+                        # An attribution may sit just below the pointer, but never
+                        # include the next numbered paragraph or a long body line.
+                        for line in lines:
+                            if bottom["top"] <= line["top"] <= bottom["bottom"]+12 and line not in contained and line["left"] > page.rect.width*.45 and len(line["text"].split()) <= 14 and not _NUMBER_OR_LIST.match(line["text"]):
+                                contained.append(line)
+                                attribution_line = line["text"]
+                    region = _quote_region(page, page_index+1, contained, "speech-bubble" if is_tail else "ruled")
+                    if attribution_line:
+                        region["attribution"] = attribution_line
+                    page_regions.append(region)
+
+                def has_list_marker(line: dict[str, Any]) -> bool:
+                    return any(marker["left"] < line["left"] and abs(marker["top"]-line["top"]) <= 4
+                        and re.fullmatch(r"(?:[•●▪–-]|\d+(?:\.\d+)*[.)]?|\([a-z0-9]+\))", marker["text"])
+                        for marker in lines)
+
+                prose = [line for line in lines if not re.fullmatch(r"[\d.()•●▪–-]+", line["text"]) and line["size"] >= 8 and line["top"] > page.rect.height*.06 and line["bottom"] < page.rect.height*.92]
+                for index, line in enumerate(prose):
+                    if (not index and not previous_page_tail) or _NUMBER_OR_LIST.match(line["text"]) or has_list_marker(line):
+                        continue
+                    prior = prose[max(0,index-4):index] if index else previous_page_tail
+                    previous = prior[-1]
+                    context = " ".join(l["text"] for l in prior)
+                    introduction = previous["text"].rstrip().endswith(":")
+                    if not introduction:
+                        continue
+                    indent = line["left"]-previous["left"]
+                    if not (12 <= indent <= page.rect.width*.18 and (not index or 0 <= line["top"]-previous["bottom"] <= 32)):
+                        continue
+                    quoted = []
+                    for following in prose[index:]:
+                        if has_list_marker(following) or abs(following["left"]-line["left"]) > 5 or _NUMBER_OR_LIST.match(following["text"]) or following["size"] > previous["size"]*1.1:
+                            break
+                        if quoted and following["top"]-quoted[-1]["bottom"] > 20:
+                            break
+                        quoted.append(following)
+                    typographic_quote = bool(quoted and len(quoted) >= 2 and quoted[0]["size"] < previous["size"]-.2 and quoted[-1]["superscript"])
+                    if (_SPEECH_CUE.search(context) or typographic_quote) and len(" ".join(l["text"] for l in quoted).split()) >= 6:
+                        region = _quote_region(page, page_index+1, quoted, "indented")
+                        if not any(_block_in_region({"page": page_index+1,"source_bounds":region}, r) for r in page_regions):
+                            page_regions.append(region)
+                previous_page_tail = [line for line in prose if line["size"] >= 9][-4:]
+                regions.extend(sorted(page_regions, key=lambda r:(r["top"],r["left"])))
+    except Exception as exc:
+        return [], [f"Quote detection failed ({exc})."]
+    return regions, []
+
+
+def group_quote_blocks(blocks: list[dict[str, Any]], regions: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Group only text contained by a quote, preserving source order/evidence."""
+    output = list(blocks)
+    excluded = {"title", "chapter_title", "box_section", "header", "footer", "document_index", "footnote", "table", "picture", "quote", "list", "list_item"}
+    for region in regions:
+        # Docling can merge the introduction, quote and next paragraph. Split
+        # only an exact whitespace-normalized match; never replace its text with
+        # a second OCR reading. Keep every surrounding character and its order.
+        region_text = re.sub(r"\s+", "", str(region.get("text", ""))).casefold()
+        split_output = []
+        for block in output:
+            raw = str(block.get("text", ""))
+            bounds = block.get("source_bounds")
+            if region_text and bounds and block.get("label") in {"text", "paragraph", "unspecified"} and int(block.get("page", 1)) == int(region["page"]) and bounds["top"] < region["bottom"] and bounds["bottom"] > region["top"]:
+                folded = [(i, char) for i, original in enumerate(raw) if not original.isspace() for char in original.casefold()]
+                positions = [i for i, _ in folded]
+                compact = "".join(char for _, char in folded)
+                start = compact.find(region_text)
+                if start >= 0 and len(compact) > len(region_text):
+                    begin, end = positions[start], positions[start+len(region_text)-1]+1
+                    if raw[:begin].strip():
+                        split_output.append({**block, "text": raw[:begin].strip(), "source_bounds": {**bounds, "bottom": min(bounds["bottom"],region["top"])}})
+                    split_output.append({**block, "id": f"{block['id']}:quote", "text": raw[begin:end].strip(), "source_bounds": {key:region[key] for key in ("left","top","right","bottom","page_width","page_height")}})
+                    if raw[end:].strip():
+                        split_output.append({**block, "id": f"{block['id']}:after-quote", "text": raw[end:].strip(), "source_bounds": {**bounds, "top": max(bounds["top"],region["bottom"])}})
+                    continue
+            split_output.append(block)
+        output = split_output
+        selected = []
+        for index, block in enumerate(output):
+            label = str(block.get("label", ""))
+            if label in excluded or label.startswith("section_header") or block.get("toc_derived") or not _block_in_region(block, region):
+                continue
+            bounds = block["source_bounds"]
+            intersection = max(0, min(bounds["bottom"],region["bottom"])-max(bounds["top"],region["top"]))
+            # PDF and Docling glyph bounds differ slightly. Reject combined
+            # body/quote blocks rather than silently swallowing surrounding prose.
+            if intersection / max(bounds["bottom"]-bounds["top"], 1) < .7:
+                continue
+            selected.append(index)
+        if not selected:
+            continue
+        contained = [output[i] for i in selected]
+        text = "\n\n".join(str(b.get("text", "")).strip() for b in contained if str(b.get("text", "")).strip())
+        if not text:
+            continue
+        scores = [float(b["confidence"]) for b in contained if b.get("confidence") is not None]
+        quote = {
+            "id": f"quote:{contained[0]['id']}", "label": "quote", "text": text,
+            "quote_detected": True, "quote_blocks": contained,
+            "quote_kind": region.get("kind", "ruled"), "quote_attribution": region.get("attribution", ""), "page": int(region["page"]),
+            "confidence": min(scores) if scores else None,
+            "source_bounds": {key:region[key] for key in ("left","top","right","bottom","page_width","page_height")},
+            "order": contained[0].get("order", 0),
+        }
+        selected_set = set(selected)
+        output = [quote if i == selected[0] else b for i,b in enumerate(output) if i == selected[0] or i not in selected_set]
+    return [{**block, "order": index} for index, block in enumerate(output)]

@@ -281,6 +281,9 @@ export function MetadataPage() {
       await queryClient.invalidateQueries({
         queryKey: ["publication", activeDocumentId],
       });
+      await queryClient.invalidateQueries({
+        queryKey: ["report-html", activeDocumentId],
+      });
       unlock("preview");
       markDone("approval");
       setApprovalModalOpen(false);
@@ -727,17 +730,20 @@ export function MetadataPage() {
             role="dialog"
             aria-modal="true"
             aria-labelledby="confirm-approval-heading"
+            aria-describedby="approval-popup-description"
           >
-            <div className="modal-ic">
-              <CircleCheck aria-hidden="true" />
+            <div className="approval-popup-header">
+              <div className="modal-ic"><CircleCheck aria-hidden="true" /></div>
+              <div>
+                <span className="eyebrow">Final system checks</span>
+                <h3 id="confirm-approval-heading">
+                  Approve {approvalMetadata.title || "this document"}?
+                </h3>
+              </div>
             </div>
-            <span className="eyebrow">Final system checks</span>
-            <h3 id="confirm-approval-heading">
-              Approve {approvalMetadata.title || "this document"}?
-            </h3>
-            <p>
-              Konverter checked the document state automatically. No separate
-              reviewer checklist or approval page is required.
+            <p className="approval-popup-intro" id="approval-popup-description">
+              Review the completed checks, then approve this document to generate
+              its accessible outputs.
             </p>
             <ul className="checklist" aria-label="Approval system checks">
               {approvalChecks.map((check) => (
@@ -750,7 +756,7 @@ export function MetadataPage() {
                     role="img"
                     aria-label={check.ok ? "Passed" : "Blocked"}
                   >
-                    <Check aria-hidden="true" />
+                    {check.ok ? <Check aria-hidden="true" /> : <TriangleAlert aria-hidden="true" />}
                   </span>
                   <div>
                     <div className="check-txt">{check.label}</div>
@@ -788,7 +794,7 @@ export function MetadataPage() {
               </button>
               <button
                 ref={approvalButtonRef}
-                className="btn btn-seal"
+                className="btn btn-primary"
                 type="button"
                 disabled={!approvalReady || approving}
                 onClick={approveAndOpenPreview}

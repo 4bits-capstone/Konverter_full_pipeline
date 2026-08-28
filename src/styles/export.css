@@ -1,0 +1,476 @@
+/* Preview summary and downloads. Report document styles remain in the generated HTML. */
+.converter-app .converter-output-card {
+  min-width: 0;
+  overflow: hidden;
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  background: var(--surface);
+}
+.converter-app .converter-output-summary {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  padding: 24px;
+  border-bottom: 1px solid var(--line);
+}
+.converter-app .converter-output-icon {
+  display: grid;
+  width: 52px;
+  height: 52px;
+  flex: none;
+  place-items: center;
+  border-radius: 50%;
+  background: var(--hi-soft);
+  color: var(--hi);
+}
+.converter-app .converter-output-icon svg {
+  width: 26px;
+  height: 26px;
+}
+.converter-app .converter-output-summary h3 {
+  margin: 4px 0 3px;
+  color: var(--blue-dark);
+  font-size: 21px;
+  line-height: 1.3;
+}
+.converter-app .converter-output-summary p {
+  margin: 0;
+  color: var(--muted);
+  font-size: 13px;
+}
+.converter-app .converter-output-meta {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  margin: 0;
+  border-bottom: 1px solid var(--line);
+}
+.converter-app .converter-output-meta > div {
+  min-width: 0;
+  padding: 16px 20px;
+}
+.converter-app .converter-output-meta > div + div {
+  border-left: 1px solid var(--line);
+}
+.converter-app .converter-output-meta dt {
+  margin-bottom: 4px;
+  color: var(--muted);
+  font-size: 10px;
+  font-weight: 800;
+  letter-spacing: .08em;
+  text-transform: uppercase;
+}
+.converter-app .converter-output-meta dd {
+  overflow-wrap: anywhere;
+  margin: 0;
+  color: var(--ink);
+  font-size: 13px;
+  font-weight: 700;
+}
+
+.converter-app .preview-grid.preview-grid-single {
+  grid-template-columns: minmax(0, 1fr);
+  gap: 24px;
+}
+.converter-app .publication-preview-section,
+.converter-app .publication-preview-shell {
+  min-width: 0;
+}
+.converter-app .publication-preview-shell {
+  box-shadow: none;
+}
+.converter-app .publication-preview-shell .pub-browser {
+  min-height: 48px;
+  padding: 9px 14px;
+}
+.converter-app .publication-preview-shell .pub-browser-menu {
+  width: 24px;
+  height: 24px;
+  flex: none;
+  color: var(--line-2);
+  stroke-width: 3;
+}
+.converter-app .publication-preview-shell .pub-url {
+  display: flex;
+  min-width: 0;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  color: var(--muted);
+  font-size: 13px;
+  text-decoration: none;
+}
+.converter-app .publication-preview-shell .pub-url > span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.converter-app .publication-preview-shell .pub-url:hover,
+.converter-app .publication-preview-shell .pub-url:focus-visible {
+  border-color: var(--blue-2);
+  color: var(--blue-dark);
+}
+@media (max-width: 680px) {
+  .converter-app .preview-grid.preview-grid-single {
+    gap: 18px;
+  }
+  .converter-app .publication-preview-shell .pub-browser {
+    padding-inline: 10px;
+  }
+}
+.converter-app .preview-grid-single .converter-output-card {
+  overflow: visible;
+}
+.converter-app .converter-output-download-bar {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  padding: 14px 20px;
+  border-radius: 0 0 var(--radius) var(--radius);
+  background: #fff;
+}
+.converter-app .converter-download-menu {
+  position: relative;
+  z-index: 30;
+  flex: none;
+  margin-left: auto;
+}
+.converter-app .converter-download-trigger {
+  min-width: 164px;
+}
+.converter-app .converter-download-trigger .converter-download-chevron {
+  width: 16px;
+  height: 16px;
+  margin-left: 2px;
+  transition: transform .15s ease;
+}
+.converter-app .converter-download-trigger[aria-expanded=true] .converter-download-chevron {
+  transform: rotate(180deg);
+}
+.converter-app .converter-download-popover {
+  position: absolute;
+  top: 100%;
+  right: 0;
+  z-index: 40;
+  width: min(360px, calc(100vw - 40px));
+  padding-top: 8px;
+}
+.converter-app .converter-download-popover-panel {
+  overflow: hidden;
+  padding: 6px;
+  border: 1px solid var(--line-2);
+  border-radius: 3px;
+  background: #fff;
+  box-shadow: var(--shadow-lg);
+}
+.converter-app .converter-download-popover a {
+  display: grid;
+  grid-template-columns: 24px minmax(0, 1fr);
+  width: 100%;
+  min-height: 68px;
+  align-items: center;
+  gap: 12px;
+  padding: 11px 12px;
+  border: 0;
+  border-radius: 2px;
+  background: transparent;
+  color: var(--blue-dark);
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+.converter-app .converter-download-popover a + button {
+  border-top: 1px solid var(--line);
+  border-radius: 0;
+}
+.converter-app .converter-download-popover a:hover,
+.converter-app .converter-download-popover a:focus-visible {
+  background: var(--blue-tint);
+}
+.converter-app .converter-download-popover a > svg {
+  width: 21px;
+  height: 21px;
+  color: var(--blue);
+}
+.converter-app .converter-download-popover span,
+.converter-app .converter-download-popover strong,
+.converter-app .converter-download-popover small {
+  display: block;
+  min-width: 0;
+}
+.converter-app .converter-download-popover strong {
+  font-size: 13.5px;
+  line-height: 1.35;
+}
+.converter-app .converter-download-popover small {
+  margin-top: 3px;
+  color: var(--muted);
+  font-size: 11.5px;
+  line-height: 1.4;
+}
+@media (max-width: 680px) {
+  .converter-app .converter-output-download-bar {
+    align-items: stretch;
+    padding: 12px 16px 16px;
+  }
+  .converter-app .converter-download-menu {
+    width: 100%;
+    margin-left: 0;
+  }
+  .converter-app .converter-download-trigger {
+    width: 100%;
+  }
+  .converter-app .converter-download-popover {
+    right: 0;
+    left: 0;
+    width: auto;
+  }
+}
+
+/* Preview export summary: compact document details with an integrated download action. */
+.converter-app .converter-output-card {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  grid-template-areas:
+    "summary download"
+    "metadata metadata";
+  overflow: visible;
+  border-color: #cbd5dc;
+  border-radius: 6px;
+  background: #fff;
+  box-shadow: 0 8px 24px rgba(12, 45, 72, 0.06);
+}
+
+.converter-app .converter-output-summary {
+  grid-area: summary;
+  min-width: 0;
+  gap: 16px;
+  padding: 26px 28px 24px;
+  border-bottom: 0;
+}
+
+.converter-app .converter-output-summary > div {
+  min-width: 0;
+}
+
+.converter-app .converter-output-icon {
+  width: 48px;
+  height: 48px;
+  background: #e8f4f1;
+}
+
+.converter-app .converter-output-icon svg {
+  width: 24px;
+  height: 24px;
+}
+
+.converter-app .converter-output-summary h3 {
+  margin: 3px 0 3px;
+  font-size: 22px;
+  line-height: 1.28;
+}
+
+.converter-app .converter-output-summary p {
+  color: var(--muted);
+  font-size: 14px;
+  line-height: 1.45;
+  overflow-wrap: anywhere;
+}
+
+.converter-app .converter-output-meta {
+  grid-area: metadata;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  border-top: 1px solid var(--line);
+  border-bottom: 0;
+  background: #fbfcfd;
+}
+
+.converter-app .converter-output-meta > div {
+  min-height: 76px;
+  padding: 16px 22px;
+}
+
+.converter-app .converter-output-meta > div + div {
+  border-top: 0;
+  border-left: 1px solid var(--line);
+}
+
+.converter-app .converter-output-meta dt {
+  margin-bottom: 4px;
+  font-size: 10.5px;
+  letter-spacing: 0.09em;
+}
+
+.converter-app .converter-output-meta dd {
+  font-size: 13.5px;
+  line-height: 1.4;
+}
+
+.converter-app .converter-output-download-bar {
+  grid-area: download;
+  min-width: 0;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 10px;
+  padding: 24px 28px 22px 16px;
+  border-left: 0;
+  border-radius: 0 6px 0 0;
+  background: #fff;
+}
+
+.converter-app .converter-download-menu {
+  width: auto;
+  margin-left: 0;
+}
+
+.converter-app .converter-download-trigger {
+  width: auto;
+  min-width: 190px;
+  min-height: 50px;
+  justify-content: center;
+  padding-inline: 16px;
+  white-space: nowrap;
+}
+
+.converter-app .converter-source-link {
+  display: grid;
+  width: 50px;
+  height: 50px;
+  flex: 0 0 50px;
+  place-items: center;
+  border: 1px solid var(--blue);
+  border-radius: 2px;
+  background: #fff;
+  color: var(--blue-dark);
+  text-decoration: none;
+}
+
+.converter-app .converter-source-link:hover {
+  background: var(--blue-tint);
+}
+
+.converter-app .converter-source-link:focus-visible {
+  outline: 3px solid var(--focus);
+  outline-offset: 3px;
+}
+
+.converter-app .converter-source-link svg {
+  width: 20px;
+  height: 20px;
+}
+
+.converter-app .converter-download-popover {
+  top: calc(100% + 2px);
+  right: 0;
+  width: min(360px, calc(100vw - 40px));
+  padding-top: 6px;
+}
+
+.converter-app .converter-download-popover-panel {
+  padding: 7px;
+  border-radius: 6px;
+}
+
+.converter-app .converter-download-popover a {
+  min-height: 64px;
+  padding: 10px 12px;
+}
+
+@media (max-width: 760px) {
+  .converter-app .converter-output-card {
+    grid-template-columns: minmax(0, 1fr);
+    grid-template-areas:
+      "summary"
+      "metadata"
+      "download";
+  }
+
+  .converter-app .converter-output-download-bar {
+    justify-content: flex-end;
+    padding: 16px 20px;
+    border-top: 1px solid var(--line);
+    border-left: 0;
+    border-radius: 0 0 6px 6px;
+  }
+
+  .converter-app .converter-download-menu {
+    width: auto;
+    min-width: 220px;
+  }
+}
+
+@media (max-width: 640px) {
+  .converter-app .converter-output-summary {
+    align-items: flex-start;
+    padding: 20px;
+  }
+
+  .converter-app .converter-output-icon {
+    width: 44px;
+    height: 44px;
+  }
+
+  .converter-app .converter-output-summary h3 {
+    font-size: 20px;
+  }
+
+  .converter-app .converter-output-meta {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .converter-app .converter-output-meta > div {
+    min-height: 0;
+    padding: 14px 20px;
+  }
+
+  .converter-app .converter-output-meta > div + div {
+    border-top: 1px solid var(--line);
+    border-left: 0;
+  }
+
+  .converter-app .converter-output-download-bar {
+    align-items: stretch;
+    padding: 14px 16px 16px;
+  }
+
+  .converter-app .converter-download-menu,
+  .converter-app .converter-download-trigger {
+    width: auto;
+    min-width: 0;
+  }
+
+  .converter-app .converter-download-menu {
+    flex: 1 1 auto;
+  }
+
+  .converter-app .converter-download-trigger {
+    width: 100%;
+  }
+
+  .converter-app .converter-download-popover {
+    right: 0;
+    left: 0;
+    width: auto;
+  }
+}
+
+
+.converter-app.report-page { display:flex; flex-direction:column; height:100dvh; background:white; }
+.converter-app .report-toolbar { display:flex; align-items:center; gap:24px; padding:12px 24px; border-bottom:1px solid #d5dce5; font:14px/1.4 Arial,sans-serif; }
+.converter-app .report-toolbar a { display:flex; align-items:center; gap:8px; color:#174978; white-space:nowrap; font-weight:700; }
+.converter-app .report-toolbar svg { width:18px; height:18px; }
+.converter-app .report-toolbar > span { overflow:hidden; text-overflow:ellipsis; white-space:nowrap; color:#576574; }
+.converter-app .report-frame { width:100%; flex:1; min-height:0; border:0; background:#fff; }
+.converter-app .report-message { padding:28px; }
+
+.converter-app .preview-screen .preview-titlebar { align-items: end; gap: 24px; margin-bottom: 28px; }
+.converter-app .preview-ready { display: inline-flex; align-items: center; flex-shrink: 0; gap: 8px; padding: 8px 13px; border: 1px solid var(--hi-line); border-radius: 999px; background: var(--hi-soft); color: var(--hi); font-size: 12px; font-weight: 600; white-space: nowrap; }
+.converter-app .preview-ready svg { width: 16px; height: 16px; }
+.converter-app .converter-output-summary h3 { overflow-wrap: anywhere; }
+.converter-app .converter-download-popover a { text-decoration: none; }
+.converter-app .converter-source-link:focus-visible { outline: 3px solid var(--blue); outline-offset: 3px; }
+.converter-app .publication-preview-frame { display: block; width: 100%; height: clamp(760px, 78vh, 1080px); border: 0; background: #fff; }
+.converter-app .preview-workflow-actions { display: flex; flex-wrap: wrap; gap: 12px; margin-top: 24px; }
+@media(max-width: 760px) {
+  .converter-app .preview-screen .preview-titlebar { align-items: start; flex-direction: column; gap: 16px; }
+  .converter-app .publication-preview-frame { height: 680px; }
+}

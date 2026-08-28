@@ -5,7 +5,7 @@ import { MemoryRouter } from 'react-router-dom'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { KonverterProvider, useKonverter } from '../state/KonverterContext'
 import { testDocument } from '../test/fixtures'
-import { resetTestServices } from '../test/serviceMocks'
+import { resetTestServices, reviewService } from '../test/serviceMocks'
 import { ReviewPage } from './ReviewPage'
 
 vi.mock('../services', () => import('../test/serviceMocks'))
@@ -102,17 +102,44 @@ describe('ReviewPage', () => {
     await screen.findAllByText('Section heading needs confirmation')
     fireEvent.click(screen.getByRole('button', { name: /Section heading needs confirmation/ }))
 
-    expect(screen.getByText('Extracted result (reference only)')).toBeInTheDocument()
+    expect(screen.getByText('Extracted result')).toBeInTheDocument()
     expect(screen.getByRole('button', { name: 'Structure label: H2' })).toBeDisabled()
-    expect(screen.queryByRole('textbox', { name: 'Corrected text' })).not.toBeInTheDocument()
+    expect(screen.getByRole('textbox', { name: 'Extracted text' })).toHaveAttribute('readonly')
 
+    const extracted = screen.getByRole('textbox', { name: 'Extracted text' })
     fireEvent.click(screen.getByRole('button', { name: 'Edit flagged item' }))
+    expect(screen.getByRole('textbox', { name: 'Extracted text' })).toBe(extracted)
+    expect(extracted).not.toHaveAttribute('readonly')
     expect(screen.getByRole('button', { name: 'Structure label: H2' })).toBeEnabled()
     expect(screen.getByText('Section within the current H1.')).toBeInTheDocument()
-    expect(screen.getByRole('textbox', { name: 'Corrected text' })).toHaveValue('Purpose')
+    expect(screen.getByRole('textbox', { name: 'Extracted text' })).toHaveValue('Purpose')
     expect(screen.getByRole('link', { name: /Open original page/ })).toHaveAttribute('target', '_blank')
     expect(screen.getByRole('button', { name: 'Save changes' })).toHaveClass('btn-primary')
     expect(screen.queryByRole('button', { name: 'Accept' })).not.toBeInTheDocument()
+  })
+
+  it('saves and cancels edits in the same extracted text field', async () => {
+    const save = vi.spyOn(reviewService, 'saveItem')
+    renderReview()
+    await screen.findAllByText('Section heading needs confirmation')
+    fireEvent.click(screen.getByRole('button', { name: /Section heading needs confirmation/ }))
+    const field = screen.getByRole('textbox', { name: 'Extracted text' })
+    fireEvent.click(screen.getByRole('button', { name: 'Edit flagged item' }))
+    fireEvent.change(field, { target: { value: 'Updated purpose' } })
+    fireEvent.click(screen.getByRole('button', { name: 'Save changes' }))
+    await waitFor(() => expect(field).toHaveAttribute('readonly'))
+    expect(field).toHaveValue('Updated purpose')
+    const stored = (await reviewService.getReviewItems(testDocument.id)).find(item => item.id === 'review-heading')!
+    expect(stored.correctedText).toBe('Updated purpose')
+    expect(stored.extractedText).toBe('Purpose')
+    save.mockClear()
+    fireEvent.click(screen.getByRole('button', { name: 'Edit flagged item' }))
+    expect(screen.getByRole('textbox', { name: 'Extracted text' })).toBe(field)
+    fireEvent.change(field, { target: { value: 'Discard this draft' } })
+    fireEvent.click(screen.getByRole('button', { name: 'Cancel' }))
+    expect(field).toHaveValue('Updated purpose')
+    expect(field).toHaveAttribute('readonly')
+    expect(save).not.toHaveBeenCalled()
   })
 
   it('loads a uniquely versioned original-PDF crop for each selected flag', async () => {
@@ -186,16 +213,16 @@ describe('ReviewPage', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Structure label: Table' }))
     fireEvent.click(within(screen.getByRole('listbox', { name: 'Structure label' })).getByRole('option', { name: 'Footnote' }))
 
-    const correction = screen.getByRole('textbox', { name: 'Corrected text' }) as HTMLTextAreaElement
+    const correction = screen.getByRole('textbox', { name: 'Extracted text' }) as HTMLTextAreaElement
     await waitFor(() => expect(correction.value).toContain('Term: Accessible format; Definition: Content that people can perceive'))
     expect(correction.value).not.toContain('|')
     fireEvent.click(screen.getByRole('button', { name: 'Save changes' }))
 
-    await waitFor(() => expect(screen.queryByRole('textbox', { name: 'Corrected text' })).not.toBeInTheDocument())
+    await waitFor(() => expect(screen.getByRole('textbox', { name: 'Extracted text' })).toHaveAttribute('readonly'))
     expect(screen.getByRole('button', { name: 'Structure label: Footnote' })).toBeDisabled()
   })
 
-  it('does not offer Unspecified as a structure label a reviewer can assign', async () => {
+  it('offers Quote instead of Unspecified as a structure label', async () => {
     renderReview()
     await screen.findAllByText('Definitions table needs confirmation')
 
@@ -205,6 +232,7 @@ describe('ReviewPage', () => {
 
     const menu = screen.getByRole('listbox', { name: 'Structure label' })
     expect(within(menu).queryByRole('option', { name: 'Unspecified' })).not.toBeInTheDocument()
+    expect(within(menu).getByRole('option', { name: 'Quote' })).toBeInTheDocument()
     expect(within(menu).getByRole('option', { name: 'Footnote' })).toBeInTheDocument()
   })
 

@@ -480,3 +480,9 @@
     grid-template-columns: 1fr;
   }
 }
+
+/* Semantic quotations use the report template's rules and attribution. */
+.converter-app .report-quote { margin:28px 0 38px; }
+.converter-app .report-quote .docling-quote { padding:20px 0; border:0; border-block:2px solid #005493; background:#fff; color:#003f73; font-style:italic; }
+.converter-app .report-quote figcaption { margin-top:10px; text-align:right; color:#31526a; }
+.converter-app .report-quote cite { font-style:normal; }

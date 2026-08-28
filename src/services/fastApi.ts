@@ -147,6 +147,9 @@ const documentUrl = (documentId: string, suffix: string) => (
 )
 
 export const fastApiPublicationService: PublicationService = {
+  getHtml(documentId) {
+    return apiRequest(`/documents/${encodeURIComponent(documentId)}/exports/accessible.html`, { responseType: 'text' })
+  },
   get(documentId) {
     return apiRequest(`/documents/${encodeURIComponent(documentId)}/publication`)
   },

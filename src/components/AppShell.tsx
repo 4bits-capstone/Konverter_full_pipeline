@@ -3,6 +3,7 @@ import { Outlet, useLocation } from 'react-router-dom'
 import { DocumentBar } from './DocumentBar'
 import { StageRail } from './StageRail'
 import { Toast } from './Toast'
+import { isAdminPath } from '../lib/converterRoutes'
 
 export function AppShell() {
   const location = useLocation()
@@ -46,7 +47,7 @@ export function AppShell() {
         <StageRail />
         <div className="main">
           <DocumentBar />
-          <main ref={contentRef} className="content" id="main-content"><Outlet /></main>
+          <main ref={contentRef} className={`content${isAdminPath(location.pathname) ? ' audit-log-content' : ''}`} id="main-content"><Outlet /></main>
         </div>
         <Toast />
       </div>

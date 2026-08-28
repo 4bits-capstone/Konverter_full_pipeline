@@ -720,6 +720,16 @@ def build_publication(
             current["blocks"].append({"type": "caption", "text": text, "page": page})
             continue
 
+        if label == "quote":
+            quote = {"type": "quote", "text": text, "page": page}
+            attribution = str(block.get("quote_attribution") or "").strip()
+            # Do not resurrect an attribution removed or changed by the reviewer.
+            if attribution and text.rstrip().endswith(attribution):
+                quote["text"] = text.rstrip()[:-len(attribution)].rstrip(" \n—–")
+                quote["attribution"] = attribution
+            current["blocks"].append(quote)
+            continue
+
         if label == "form":
             current["blocks"].append(
                 {
@@ -1296,6 +1306,14 @@ def _render_block(
                 f'<p><span class="sr-only">Paragraph {safe_number}. </span>{text}</p></div>'
             )
         return f"<p>{text}</p>"
+    if block_type == "quote":
+        paragraphs = re.split(r"\n\s*\n", str(block.get("text", "")))
+        content = "".join(
+            f"<p>{html.escape(paragraph.strip())}</p>"
+            for paragraph in paragraphs
+            if paragraph.strip()
+        )
+        return f'<blockquote class="document-quote">{content}</blockquote>'
     if block_type == "list":
         if block.get("style") == "numbered-paragraphs":
             return "".join(
@@ -1669,6 +1687,8 @@ def build_accessible_html(
 .vlrc-publication-embed .docling-content-blocks h3{{margin:1.9rem 0 .7rem;font-size:1.4rem;line-height:1.3}}
 .vlrc-publication-embed .docling-content-blocks h4{{margin:1.6rem 0 .6rem;font-size:1.18rem;line-height:1.35}}
 .vlrc-publication-embed .docling-content-blocks h5,.vlrc-publication-embed .docling-content-blocks h6{{margin:1.4rem 0 .5rem;font-size:1rem;line-height:1.4}}
+.vlrc-publication-embed .document-quote{{margin:1.75rem 0;padding:1.25rem 1.5rem;border-left:5px solid #064d82;background:#eef4f8;color:#252b33;font-size:1.08rem;line-height:1.65}}
+.vlrc-publication-embed .document-quote p{{margin:0 0 .75rem}}.vlrc-publication-embed .document-quote p:last-child{{margin-bottom:0}}
 .vlrc-publication-embed .document-box-section{{margin:1.75rem 0;border:1px solid #c7c9cc;background:#efedef}}
 .vlrc-publication-embed .document-box-section>h3{{margin:0;padding:.7rem 1.1rem;background:#c8c8c8;color:#111;font-size:1.08rem}}
 .vlrc-publication-embed .document-box-section-content{{padding:1.1rem 1.35rem .5rem}}

@@ -9,7 +9,7 @@ export function converterStagePath(stage: Stage): string {
 export function converterStageFromPath(pathname: string): Stage {
   const segments = pathname.split('/').filter(Boolean)
   const candidate = segments[0] === 'converter' ? segments[1] : segments[0]
-  return converterStages.includes(candidate as Stage) ? candidate as Stage : 'upload'
+  return candidate === 'export' ? 'preview' : converterStages.includes(candidate as Stage) ? candidate as Stage : 'upload'
 }
 
 /** Whether pathname is one of the Upload/Review/Metadata/Preview workflow
@@ -18,7 +18,7 @@ export function converterStageFromPath(pathname: string): Stage {
 export function isConverterStagePath(pathname: string): boolean {
   const segments = pathname.split('/').filter(Boolean)
   const candidate = segments[0] === 'converter' ? segments[1] : segments[0]
-  return converterStages.includes(candidate as Stage)
+  return candidate === 'export' || converterStages.includes(candidate as Stage)
 }
 
 export function converterHistoryPath(): string {

@@ -59,7 +59,7 @@ export function AdminOverviewPage() {
   const recentEntries = entries.slice(0, RECENT_ACTIVITY_COUNT)
 
   return (
-    <section className="screen active" aria-labelledby="admin-overview-heading">
+    <section className="screen active audit-log-page" aria-labelledby="admin-overview-heading">
       <div className="admin-page-header">
         <Link className="btn btn-ghost btn-sm" to={converterStagePath('upload')} aria-label="Back to converter">
           <ArrowLeft aria-hidden="true" />

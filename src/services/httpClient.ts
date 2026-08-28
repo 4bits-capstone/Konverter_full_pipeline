@@ -14,6 +14,7 @@ export class ApiError extends Error {
 
 export interface ApiRequestInit extends RequestInit {
   timeoutMs?: number;
+  responseType?: 'json' | 'text';
 }
 
 export async function apiRequest<T>(
@@ -42,7 +43,7 @@ export async function apiRequest<T>(
   };
 
   try {
-    const { timeoutMs: _timeoutMs, ...fetchInit } = init;
+    const { timeoutMs: _timeoutMs, responseType, ...fetchInit } = init;
     const doFetch = async () =>
       fetch(`${runtimeConfig.apiBaseUrl}${path}`, {
         ...fetchInit,
@@ -89,7 +90,7 @@ export async function apiRequest<T>(
     }
 
     if (response.status === 204) return undefined as T;
-    return (await response.json()) as T;
+    return (await (responseType === 'text' ? response.text() : response.json())) as T;
   } catch (error) {
     if (error instanceof ApiError) throw error;
     if (error instanceof DOMException && error.name === "AbortError") {
