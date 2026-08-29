@@ -83,12 +83,10 @@ export function AuditLogPage() {
   )
 
   useEffect(() => {
-    if (selectedId && pagedEntries.some((entry) => entry.id === selectedId)) return
-    setSelectedId(pagedEntries[0]?.id ?? null)
+    if (!selectedId || pagedEntries.some((entry) => entry.id === selectedId)) return
+    setSelectedId(null)
   }, [selectedId, pagedEntries])
 
-  const selectedEntry = pagedEntries.find((entry) => entry.id === selectedId) ?? null
-  const selectedDocument = selectedEntry ? documents.find((document) => document.id === selectedEntry.document_id) : undefined
   const hasFilters = Boolean(search) || actionFilter !== 'all' || actorFilter !== 'all' || chainFilter !== 'all' || Boolean(dateFrom) || Boolean(dateTo)
 
   return (
@@ -204,16 +202,21 @@ export function AuditLogPage() {
                     showActor
                     getChainStatus={(entry) => auditChainStatus(entries, entries.indexOf(entry))}
                     caption="Audit log entries"
+                    renderInlineDetail={(entry, inlineId, onClose) => {
+                      const document = documents.find((item) => item.id === entry.document_id)
+                      return (
+                        <AuditActionDetailPanel
+                          entry={entry}
+                          documentTitle={document?.title ?? null}
+                          documentFileName={document?.fileName ?? null}
+                          showActor
+                          inlineId={inlineId}
+                          onClose={onClose}
+                        />
+                      )
+                    }}
                   />
                 </div>
-                {selectedEntry ? (
-                  <AuditActionDetailPanel
-                    entry={selectedEntry}
-                    documentTitle={selectedDocument?.title ?? null}
-                    documentFileName={selectedDocument?.fileName ?? null}
-                    showActor
-                  />
-                ) : null}
               </div>
               {pageCount > 1 ? (
                 <div className="admin-pager">

@@ -114,10 +114,16 @@
   font-size: 12px;
 }
 .converter-app .audit-log-page .audit-ledger-workspace {
-  grid-template-columns: minmax(0, 1fr) 340px;
-  height: min(620px, max(400px, calc(100dvh - 370px)));
+  display: block;
+  height: auto;
+  overflow: visible;
   border-radius: 0;
   box-shadow: none;
+}
+.converter-app .audit-log-page .audit-ledger-panel {
+  height: auto;
+  overflow: visible;
+  border-right: 0;
 }
 .converter-app .audit-log-page .admin-table,
 .converter-app .audit-log-page .audit-ledger-table { font-size: 13px; }
@@ -132,12 +138,118 @@
 .converter-app .audit-log-page .audit-ledger-table th { position: sticky; top: 0; z-index: 1; }
 .converter-app .audit-log-page .admin-table td,
 .converter-app .audit-log-page .audit-ledger-table td { padding: 14px; }
-.converter-app .audit-log-page .audit-ledger-record.is-selected {
+.converter-app .audit-log-page .audit-ledger-record { cursor: pointer; }
+.converter-app .audit-log-page .audit-ledger-record.is-selected,
+.converter-app .audit-log-page .audit-ledger-record.is-expanded {
   background: #eef5fb;
   box-shadow: inset 3px 0 0 var(--blue);
 }
-.converter-app .audit-log-page .audit-ledger-record:hover { background: var(--surface-2); }
+.converter-app .audit-log-page .audit-ledger-record.is-expanded:hover { background: #e7f1f9; }
+.converter-app .audit-log-page .audit-ledger-record:hover {
+  background: #f2f7fb;
+  box-shadow: inset 3px 0 0 var(--blue);
+}
+.converter-app .audit-log-page .audit-ledger-record:hover .audit-disclosure-button {
+  background: #dceaf5;
+  color: var(--blue);
+}
+.converter-app .audit-log-page .audit-ledger-action-cell {
+  width: 1%;
+  text-align: right;
+  white-space: nowrap;
+}
+.converter-app .audit-log-page .audit-row-end {
+  display: flex;
+  min-height: 38px;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 6px;
+}
+.converter-app .audit-log-page .audit-disclosure-button {
+  display: inline-flex;
+  width: 38px;
+  height: 38px;
+  min-height: 38px;
+  flex: 0 0 38px;
+  align-items: center;
+  justify-content: center;
+  padding: 0;
+  border: 0;
+  border-radius: 50%;
+  background: transparent;
+  color: var(--blue-dark);
+  cursor: pointer;
+}
+.converter-app .audit-log-page .audit-disclosure-button:hover,
+.converter-app .audit-log-page .audit-disclosure-button:focus-visible,
+.converter-app .audit-log-page .audit-disclosure-button[aria-expanded="true"] {
+  background: var(--surface-2);
+}
+.converter-app .audit-log-page .audit-disclosure-button:focus-visible {
+  outline: 2px solid var(--blue);
+  outline-offset: 2px;
+}
+.converter-app .audit-log-page .audit-disclosure-button svg {
+  width: 15px;
+  height: 15px;
+  transition: transform .15s ease;
+}
+.converter-app .audit-log-page .audit-disclosure-button[aria-expanded="true"] svg { transform: rotate(180deg); }
+.converter-app .audit-log-page .audit-inline-detail-row > td {
+  width: auto;
+  min-width: 0;
+  padding: 0;
+  border-bottom: 1px solid var(--line);
+  background: #fbfcfd;
+  text-align: left;
+}
+.converter-app .audit-log-page .audit-inline-detail-row:hover > td { background: #fbfcfd; }
 .converter-app .audit-log-page .audit-detail-panel { padding: 20px; }
+.converter-app .audit-log-page .audit-detail-panel.is-inline {
+  width: 100%;
+  height: auto;
+  max-height: none;
+  overflow: visible;
+  padding: 24px 28px 26px;
+  border-left: 4px solid var(--blue);
+  background: #fbfcfd;
+}
+.converter-app .audit-log-page .audit-detail-panel.is-inline .audit-detail-heading {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+}
+.converter-app .audit-log-page .audit-detail-panel.is-inline .audit-detail-facts {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+.converter-app .audit-log-page .audit-detail-panel.is-inline .audit-detail-facts > div {
+  grid-template-columns: 116px minmax(0, 1fr);
+  padding-right: 24px;
+}
+.converter-app .audit-log-page .audit-detail-heading-actions {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 8px;
+}
+.converter-app .audit-log-page .audit-detail-close {
+  display: grid;
+  width: 32px;
+  height: 32px;
+  place-items: center;
+  padding: 0;
+  border: 0;
+  border-radius: 50%;
+  background: transparent;
+  color: var(--blue-dark);
+  cursor: pointer;
+}
+.converter-app .audit-log-page .audit-detail-close:hover,
+.converter-app .audit-log-page .audit-detail-close:focus-visible { background: var(--surface-2); }
+.converter-app .audit-log-page .audit-detail-close:focus-visible {
+  outline: 2px solid var(--blue);
+  outline-offset: 2px;
+}
+.converter-app .audit-log-page .audit-detail-close svg { width: 15px; height: 15px; }
 .converter-app .audit-log-page .audit-detail-heading h3 { overflow-wrap: anywhere; }
 .converter-app .audit-log-page .audit-detail-facts dd { overflow-wrap: anywhere; }
 .converter-app .audit-log-page .audit-detail-icon { border-radius: 8px; }
@@ -152,8 +264,8 @@
 }
 @media (max-width: 900px) {
   .converter-app .audit-log-page .audit-ledger-workspace { grid-template-columns: minmax(0, 1fr); height: auto; overflow: visible; }
-  .converter-app .audit-log-page .audit-ledger-panel { max-height: 480px; border-right: 0; }
-  .converter-app .audit-log-page .audit-detail-panel { height: auto; border-top: 1px solid var(--line); }
+  .converter-app .audit-log-page .audit-ledger-panel { max-height: none; border-right: 0; }
+  .converter-app .audit-log-page .audit-detail-panel { height: auto; }
   .converter-app .audit-log-page .admin-toolbar .sel { max-width: 100%; }
 }
 @media (max-width: 640px) {
@@ -167,4 +279,14 @@
   .converter-app .audit-log-page .admin-stat-tile:nth-last-child(-n+2) { border-bottom: 0; }
   .converter-app .audit-log-page .admin-toolbar > .input { max-width: none; }
   .converter-app .audit-log-page .admin-count { flex-basis: 100%; }
+  .converter-app .audit-log-page .audit-detail-panel.is-inline { padding: 20px 16px 22px; }
+  .converter-app .audit-log-page .audit-detail-panel.is-inline .audit-detail-facts { grid-template-columns: minmax(0, 1fr); }
+  .converter-app .audit-log-page .audit-detail-panel.is-inline .audit-detail-facts > div {
+    grid-template-columns: minmax(0, 1fr);
+    padding-right: 0;
+  }
+  .converter-app .audit-log-page .audit-detail-heading-actions {
+    align-items: flex-end;
+    flex-direction: column-reverse;
+  }
 }
