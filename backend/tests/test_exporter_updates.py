@@ -478,6 +478,20 @@ def test_accessible_html_uses_new_report_layout_without_site_shell(tmp_path):
     assert 'class="heading-level-3"' in rendered
     assert ">Detailed scope</a>" in rendered
     assert 'class="vlrc-direct-item"' in rendered
+    introduction_reader = rendered.split('id="reader-1-introduction"', 1)[1].split(
+        'id="reader-glossary"', 1
+    )[0]
+    glossary_reader = rendered.split('id="reader-glossary"', 1)[1].split(
+        'id="reader-recommendations"', 1
+    )[0]
+    recommendations_reader = rendered.split('id="reader-recommendations"', 1)[1]
+    assert 'class="vlrc-reader-layout"' in introduction_reader
+    assert 'class="vlrc-reader-nav"' in introduction_reader
+    assert 'class="vlrc-reader-layout vlrc-reader-layout--no-nav"' in glossary_reader
+    assert 'class="vlrc-reader-nav"' not in glossary_reader
+    assert 'class="vlrc-reader-layout vlrc-reader-layout--no-nav"' in recommendations_reader
+    assert 'class="vlrc-reader-nav"' not in recommendations_reader
+    assert '.vlrc-reader-layout.vlrc-reader-layout--no-nav{grid-template-columns:minmax(0,1fr)}' in rendered
     assert 'data-view-id="vlrc-view-0-1-introduction"' in rendered
     assert 'href="/api/documents/document-1/source"' in rendered
     assert "June 18, 2026" in rendered

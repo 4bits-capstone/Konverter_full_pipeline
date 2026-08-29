@@ -631,6 +631,7 @@ PREVIEW_STYLE = r"""
 .vlrc-publication-embed .vlrc-reader-breadcrumb{display:flex;align-items:center;gap:8px;flex-wrap:wrap;margin-bottom:26px;padding-bottom:18px;border-bottom:1px solid var(--line);color:var(--muted);font-size:12px}
 .vlrc-publication-embed .vlrc-reader-breadcrumb a,.vlrc-publication-embed .vlrc-reader-breadcrumb label{color:var(--blue);font-weight:700;text-decoration:underline;text-underline-offset:3px}
 .vlrc-publication-embed .vlrc-reader-layout{display:grid;grid-template-columns:190px minmax(0,1fr);gap:34px;align-items:start}
+.vlrc-publication-embed .vlrc-reader-layout.vlrc-reader-layout--no-nav{grid-template-columns:minmax(0,1fr)}
 .vlrc-publication-embed .vlrc-reader-nav{position:sticky;top:22px;max-height:calc(100vh - 44px);overflow-y:auto;padding:17px 16px;border-top:4px solid var(--blue);background:#f4f6f8}
 .vlrc-publication-embed .vlrc-reader-nav h2{margin:0 0 12px;font-size:14px}
 .vlrc-publication-embed .vlrc-reader-nav ul{margin:0;padding:0;list-style:none}
@@ -791,6 +792,15 @@ def build_accessible_html(
     for index, section in enumerate(sections):
         sid, section_title = escape(section['id']), escape(section['displayTitle'])
         heading_links = ''.join(f'<li class="heading-level-{min(5,max(2,int(h.get("level",2))))}"><a href="#{escape(h["id"])}">{escape(h["text"])}</a></li>' for h in section.get('headings', []))
+        has_section_navigation = bool(heading_links)
+        reader_layout_class = 'vlrc-reader-layout' + ('' if has_section_navigation else ' vlrc-reader-layout--no-nav')
+        reader_navigation = (
+            f'<nav class="vlrc-reader-nav" aria-label="In this section"><h2>In this section</h2>'
+            f'<ul id="reader-{sid}-section-links">{heading_links}</ul>'
+            '<a class="reader-return breadcrumb-publication-link" href="#contents-heading">← Back to contents</a></nav>'
+            if has_section_navigation
+            else ''
+        )
         notes = section.get('footnotes', [])
         targets = _footnote_targets(list(notes))
         blocks = list(section.get('blocks', []))
@@ -801,8 +811,8 @@ def build_accessible_html(
         previous = view_link(index-1, '<span>Previous</span>' + escape(sections[index-1]['displayTitle'])) if index else '<span class="pagination-disabled"><span>Previous</span>Beginning of document</span>'
         following = view_link(index+1, '<span>Next</span>' + escape(sections[index+1]['displayTitle'])) if index+1<len(sections) else '<span class="pagination-disabled"><span>Next</span>End of document</span>'
         readers.append(f'''<section class="vlrc-reader" id="reader-{sid}" tabindex="-1" aria-labelledby="reader-title-{sid}">
-          <div class="vlrc-reader-layout">
-            <nav class="vlrc-reader-nav" aria-label="In this section"><h2>In this section</h2><ul id="reader-{sid}-section-links">{heading_links}</ul><a class="reader-return breadcrumb-publication-link" href="#contents-heading">← Back to contents</a></nav>
+          <div class="{reader_layout_class}">
+            {reader_navigation}
             <div class="vlrc-reader-content"><div class="chapter-label">{title}</div><h1 id="reader-title-{sid}" tabindex="-1">{section_title}</h1><div class="docling-content-blocks">{content}</div>{footnotes}<nav class="reader-pagination" aria-label="Document section pagination">{previous}{following}</nav><a class="reader-return breadcrumb-publication-link" href="#contents-heading">← Back to contents</a></div>
           </div></section>''')
     toggles = '<input class="vlrc-view-toggle" type="radio" name="vlrc-publication-view" id="vlrc-view-landing" checked aria-label="Show publication overview" tabindex="-1" aria-hidden="true">'
