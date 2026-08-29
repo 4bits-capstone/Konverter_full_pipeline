@@ -40,13 +40,17 @@ npm run dev
 
 Open `http://localhost:5173`. API documentation is at `http://localhost:8000/docs`.
 
-## Confidence settings
+## Environment (.env) Configurations:
+
+Konverter supports customisable options for uses in special cases.
+
+### Confidence settings
 
 ```dotenv
 KONVERTER_HIGH_CONFIDENCE=0.75
 KONVERTER_MEDIUM_CONFIDENCE=0.60
 ```
-## Other settings
+### Other settings
 
 ```dotenv
 KONVERTER_DO_OCR=false            # keep off for text-based PDFs
@@ -66,7 +70,7 @@ KONVERTER_DESCRIPTION_MAX_CHARS=600
 KONVERTER_LOG_LEVEL=INFO          # DEBUG | INFO | WARNING | ERROR
 ```
 
-## Auth settings
+### Auth settings
 
 ```dotenv
 VITE_SUPABASE_URL=                # Supabase project URL
