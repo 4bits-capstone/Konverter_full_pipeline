@@ -2,13 +2,13 @@ from __future__ import annotations
 
 import html
 import re
-import threading
 import time
 from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+from . import docling_runner
 from .config import Settings
 from .metadata_rules import empty_metadata_payload, extract_metadata_from_docling
 from .toc_hierarchy import TocHierarchyResolver
@@ -134,8 +134,6 @@ class PipelineOutput:
 class KonverterPipeline:
     def __init__(self, settings: Settings):
         self.settings = settings
-        self._docling_converter: Any = None
-        self._docling_lock = threading.Lock()
 
     def process(self, pdf_path: Path, stage: StageCallback) -> PipelineOutput:
         started = time.monotonic()
@@ -174,18 +172,24 @@ class KonverterPipeline:
         stage: StageCallback,
     ) -> tuple[dict[str, Any], list[dict[str, Any]], dict[str, Any], list[str]]:
         stage(2, "Extracting content")
-        converter = self._get_docling_converter()
-        with self._docling_lock:
-            result = converter.convert(pdf_path)
+        docling_result = docling_runner.run_docling(
+            pdf_path,
+            {
+                "do_ocr": self.settings.do_ocr,
+                "do_table_structure": self.settings.do_table_structure,
+                "device": self.settings.docling_device,
+            },
+        )
+        raw_document = docling_result["raw_docling"]
+        cluster_confidences = docling_result["cluster_confidences"]
+        doc_confidence = docling_result["doc_confidence"]
 
         stage(3, "Detecting document structure")
-        raw_document = result.document.export_to_dict()
         warnings = annotate_pdf_artifacts(raw_document, pdf_path)
         callout_regions, callout_warnings = detect_callout_regions(pdf_path)
         warnings.extend(callout_warnings)
         quote_regions, quote_warnings = detect_quote_regions(pdf_path)
         warnings.extend(quote_warnings)
-        cluster_confidences = self._cluster_confidences(result)
         confidence_by_ref = self._confidence_by_reference(
             raw_document, cluster_confidences
         )
@@ -199,107 +203,13 @@ class KonverterPipeline:
         blocks = group_visual_callouts(blocks, callout_regions)
         blocks = group_quote_blocks(blocks, quote_regions)
 
-        confidence = getattr(result, "confidence", None)
-        doc_confidence = {
-            "layout_score": getattr(confidence, "layout_score", None),
-            "mean_score": getattr(confidence, "mean_score", None),
-            "mean_grade": str(getattr(confidence, "mean_grade", "")) or None,
-            "ocr_score": getattr(confidence, "ocr_score", None),
-            "table_score": getattr(confidence, "table_score", None),
-            "parse_score": getattr(confidence, "parse_score", None),
-        }
         return raw_document, blocks, doc_confidence, warnings
-
-    def _get_docling_converter(self) -> Any:
-        if self._docling_converter is not None:
-            return self._docling_converter
-        with self._docling_lock:
-            if self._docling_converter is not None:
-                return self._docling_converter
-            try:
-                from docling.datamodel.settings import settings as docling_settings
-                docling_settings.inference.compile_torch_models = False
-                from docling.backend.pypdfium2_backend import PyPdfiumDocumentBackend
-                from docling.datamodel.accelerator_options import (
-                    AcceleratorDevice,
-                    AcceleratorOptions,
-                )
-                from docling.datamodel.base_models import InputFormat
-                from docling.datamodel.pipeline_options import (
-                    HeadingHierarchyOptions,
-                    PdfPipelineOptions,
-                    TableStructureOptions,
-                )
-                from docling.document_converter import (
-                    DocumentConverter,
-                    PdfFormatOption,
-                )
-            except ImportError as exc:
-                raise RuntimeError(
-                    'Docling dependencies are missing or outdated. Install with: pip install -e "./backend[docling]"'
-                ) from exc
-
-            options = PdfPipelineOptions()
-            options.do_ocr = self.settings.do_ocr
-            options.do_table_structure = self.settings.do_table_structure
-            options.table_structure_options = TableStructureOptions(
-                do_cell_matching=True
-            )
-            options.generate_parsed_pages = True
-            options.heading_hierarchy_options = HeadingHierarchyOptions(
-                enabled=True,
-                use_bookmarks=True,
-                use_numbering=True,
-                use_style=True,
-                max_level=5,
-                bookmark_match_threshold=0.76,
-            )
-            named_devices = {
-                name: getattr(AcceleratorDevice, name.upper(), name)
-                for name in ("auto", "cpu", "cuda", "mps", "xpu")
-            }
-            options.accelerator_options = AcceleratorOptions(
-                device=named_devices.get(
-                    self.settings.docling_device,
-                    self.settings.docling_device,
-                ),
-            )
-            self._docling_converter = DocumentConverter(
-                format_options={
-                    InputFormat.PDF: PdfFormatOption(
-                        pipeline_options=options,
-                        backend=PyPdfiumDocumentBackend,
-                    )
-                }
-            )
-            return self._docling_converter
-
-    @staticmethod
-    def _cluster_confidences(result: Any) -> list[tuple[int, dict[str, float], float]]:
-        clusters: list[tuple[int, dict[str, float], float]] = []
-        for page in result.pages:
-            layout = getattr(getattr(page, "predictions", None), "layout", None)
-            for cluster in getattr(layout, "clusters", []) if layout else []:
-                bbox = cluster.bbox
-                clusters.append(
-                    (
-                        int(page.page_no),
-                        {
-                            "l": float(bbox.l),
-                            "t": float(bbox.t),
-                            "r": float(bbox.r),
-                            "b": float(bbox.b),
-                        },
-                        float(cluster.confidence),
-                    )
-                )
-        return clusters
 
     @classmethod
     def _confidence_by_reference(
         cls,
         document: dict[str, Any],
-        clusters: list[tuple[int, dict[str, float], float]],
+        clusters: list[list[Any]],
     ) -> dict[str, float | None]:
         pages = document.get("pages", {})
         clusters_by_page: dict[int, list[tuple[dict[str, float], float]]] = {}
