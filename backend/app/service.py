@@ -395,6 +395,7 @@ class ProcessingManager:
             output = self.pipeline.process(
                 self.store.source_path(document_id),
                 lambda step, message: self._set_stage(document_id, step, message),
+                document_id,
             )
             if self._is_cancelled(document_id):
                 log.info("processing stopped by user")

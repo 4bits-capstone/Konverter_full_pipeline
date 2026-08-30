@@ -38,7 +38,7 @@ def load_client(tmp_path):
 
     module = importlib.reload(app.main)
 
-    def process_for_test(_pdf_path, stage):
+    def process_for_test(_pdf_path, stage, _document_id):
         stage(1, "Extracting test document")
         blocks = [
             {

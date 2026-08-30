@@ -8,7 +8,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-from . import docling_runner
+from . import docling_runner, runpod_client, storage_bucket
 from .config import Settings
 from .metadata_rules import empty_metadata_payload, extract_metadata_from_docling
 from .toc_hierarchy import TocHierarchyResolver
@@ -135,11 +135,13 @@ class KonverterPipeline:
     def __init__(self, settings: Settings):
         self.settings = settings
 
-    def process(self, pdf_path: Path, stage: StageCallback) -> PipelineOutput:
+    def process(
+        self, pdf_path: Path, stage: StageCallback, document_id: str
+    ) -> PipelineOutput:
         started = time.monotonic()
         stage(1, "Preparing document")
         raw_document, blocks, doc_confidence, warnings = self._run_docling(
-            pdf_path, stage
+            pdf_path, stage, document_id
         )
 
         stage(4, "Extracting metadata")
@@ -170,16 +172,20 @@ class KonverterPipeline:
         self,
         pdf_path: Path,
         stage: StageCallback,
+        document_id: str,
     ) -> tuple[dict[str, Any], list[dict[str, Any]], dict[str, Any], list[str]]:
         stage(2, "Extracting content")
-        docling_result = docling_runner.run_docling(
-            pdf_path,
-            {
-                "do_ocr": self.settings.do_ocr,
-                "do_table_structure": self.settings.do_table_structure,
-                "device": self.settings.docling_device,
-            },
-        )
+        if self.settings.docling_mode == "remote":
+            docling_result = self._run_docling_remote(pdf_path, stage, document_id)
+        else:
+            docling_result = docling_runner.run_docling(
+                pdf_path,
+                {
+                    "do_ocr": self.settings.do_ocr,
+                    "do_table_structure": self.settings.do_table_structure,
+                    "device": self.settings.docling_device,
+                },
+            )
         raw_document = docling_result["raw_docling"]
         cluster_confidences = docling_result["cluster_confidences"]
         doc_confidence = docling_result["doc_confidence"]
@@ -204,6 +210,42 @@ class KonverterPipeline:
         blocks = group_quote_blocks(blocks, quote_regions)
 
         return raw_document, blocks, doc_confidence, warnings
+
+    def _run_docling_remote(
+        self,
+        pdf_path: Path,
+        stage: StageCallback,
+        document_id: str,
+    ) -> dict[str, Any]:
+        ttl = self.settings.signed_url_ttl
+        source_key = storage_bucket.upload_pdf(self.settings, document_id, pdf_path)
+        download_url = storage_bucket.signed_download_url(
+            self.settings, source_key, ttl
+        )
+        result_key = f"{document_id}/docling.json"
+        upload_target = storage_bucket.signed_upload_target(
+            self.settings, result_key, ttl
+        )
+        job_id = runpod_client.submit(
+            self.settings.docling_endpoint_url,
+            self.settings.runpod_api_key,
+            {
+                "pdf_download_url": download_url,
+                "result_upload": upload_target,
+                "options": {
+                    "do_ocr": self.settings.do_ocr,
+                    "do_table_structure": self.settings.do_table_structure,
+                    "device": "cuda",
+                },
+            },
+        )
+        runpod_client.poll(
+            self.settings.docling_endpoint_url,
+            self.settings.runpod_api_key,
+            job_id,
+            on_progress=lambda: stage(2, "Waiting for remote GPU worker"),
+        )
+        return storage_bucket.download_json(self.settings, result_key)
 
     @classmethod
     def _confidence_by_reference(
