@@ -28,6 +28,13 @@ def _settings(**overrides) -> Settings:
         description_max_chars=600,
         log_level="INFO",
         openai_api_key="",
+        docling_mode="local",
+        docling_endpoint_url="",
+        runpod_api_key="",
+        storage_bucket="konverter-docs",
+        signed_url_ttl=3600,
+        supabase_url="",
+        supabase_service_key="",
     )
     values.update(overrides)
     return Settings(**values)

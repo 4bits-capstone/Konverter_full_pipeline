@@ -47,6 +47,13 @@ def _as_docling_device(name: str, default: str) -> str:
     raise ValueError(f"{name} must be auto, cpu, cuda, mps, xpu, cuda:N or xpu:N")
 
 
+def _as_docling_mode(name: str, default: str) -> str:
+    value = os.getenv(name, default).strip().lower()
+    if value not in {"local", "remote"}:
+        raise ValueError(f"{name} must be 'local' or 'remote'")
+    return value
+
+
 @dataclass(frozen=True)
 class Settings:
     data_dir: Path
@@ -69,6 +76,13 @@ class Settings:
     description_max_chars: int
     log_level: str
     openai_api_key: str
+    docling_mode: str
+    docling_endpoint_url: str
+    runpod_api_key: str
+    storage_bucket: str
+    signed_url_ttl: int
+    supabase_url: str
+    supabase_service_key: str
 
 
 def load_settings() -> Settings:
@@ -113,4 +127,11 @@ def load_settings() -> Settings:
         ),
         log_level=os.getenv("KONVERTER_LOG_LEVEL", "INFO").strip().upper(),
         openai_api_key=os.getenv("OPENAI_API_KEY", "").strip(),
+        docling_mode=_as_docling_mode("KONVERTER_DOCLING_MODE", "local"),
+        docling_endpoint_url=os.getenv("KONVERTER_DOCLING_ENDPOINT_URL", "").strip(),
+        runpod_api_key=os.getenv("KONVERTER_RUNPOD_API_KEY", "").strip(),
+        storage_bucket=os.getenv("KONVERTER_STORAGE_BUCKET", "konverter-docs").strip(),
+        signed_url_ttl=max(60, int(os.getenv("KONVERTER_SIGNED_URL_TTL", "3600"))),
+        supabase_url=os.getenv("SUPABASE_URL", "").strip().rstrip("/"),
+        supabase_service_key=os.getenv("SUPABASE_SERVICE_ROLE_KEY", "").strip(),
     )
