@@ -1258,6 +1258,12 @@ body:has(> .vlrc-publication-embed) {
   margin-top: 20px;
   color: var(--blue);
 }
+
+.vlrc-publication-embed .reader-return--top {
+  margin-top: 0;
+  margin-bottom: 20px;
+  font-weight: 700;
+}
 @media (max-width: 900px) {
   .vlrc-publication-embed .vlrc-reader-nav {
     max-height: none;

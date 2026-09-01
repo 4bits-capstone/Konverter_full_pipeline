@@ -40,7 +40,7 @@ const emptyWorkflow = (): DocumentWorkflow => ({
 
 // Pictures, tables, and headings are too important to withhold from the
 // approved output while a reviewer works through unrelated flagged items, so
-// a pending/needs_attention item of one of these types no longer blocks
+// a pending item of one of these types no longer blocks
 // approval. It still surfaces in the review list with its confidence badge.
 // Footnotes are included for the same reason: they're low-stakes reference
 // text, and most of a legal document's review-queue volume is citation
@@ -565,12 +565,21 @@ export function KonverterProvider({ children }: PropsWithChildren) {
     () =>
       reviewItems.filter(
         (item) =>
-          (item.status === "pending" || item.status === "needs_attention") &&
+          item.status === "pending" &&
           isBlockingReviewItem(item),
       ).length,
     [reviewItems],
   );
-  const resolvedCount = reviewItems.length - pendingCount;
+  const resolvedCount = useMemo(
+    () =>
+      reviewItems.filter(
+        (item) =>
+          item.status === "accepted" ||
+          item.status === "edited" ||
+          item.status === "removed",
+      ).length,
+    [reviewItems],
+  );
 
   const requiredManualChecks = useMemo<ManualCheckKey[]>(() => {
     const keys: ManualCheckKey[] = ["content"];

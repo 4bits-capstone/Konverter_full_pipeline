@@ -1,28 +1,34 @@
-import { useEffect, useRef, useState, type FormEvent, type ReactNode } from 'react'
-import type { Session } from '@supabase/supabase-js'
-import { useNavigate } from 'react-router-dom'
-import { supabase } from '../lib/supabaseClient'
-import { useKonverter } from '../state/KonverterContext'
-import '../styles/converter.css'
-import '../styles/converter-library-theme.css'
-import '../styles/interface-theme.css'
+import {
+  useEffect,
+  useRef,
+  useState,
+  type FormEvent,
+  type ReactNode,
+} from "react";
+import type { Session } from "@supabase/supabase-js";
+import { useNavigate } from "react-router-dom";
+import { supabase } from "../lib/supabaseClient";
+import { useKonverter } from "../state/KonverterContext";
+import "../styles/converter.css";
+import "../styles/converter-library-theme.css";
+import "../styles/interface-theme.css";
 
 function LoginForm() {
-  const [email, setEmail] = useState('')
-  const [password, setPassword] = useState('')
-  const [error, setError] = useState<string | null>(null)
-  const [submitting, setSubmitting] = useState(false)
+  const [email, setEmail] = useState("");
+  const [password, setPassword] = useState("");
+  const [error, setError] = useState<string | null>(null);
+  const [submitting, setSubmitting] = useState(false);
 
   async function handleSubmit(event: FormEvent) {
-    event.preventDefault()
-    setError(null)
-    setSubmitting(true)
+    event.preventDefault();
+    setError(null);
+    setSubmitting(true);
     const { error: signInError } = await supabase.auth.signInWithPassword({
       email,
       password,
-    })
-    setSubmitting(false)
-    if (signInError) setError(signInError.message)
+    });
+    setSubmitting(false);
+    if (signInError) setError(signInError.message);
   }
 
   return (
@@ -30,13 +36,19 @@ function LoginForm() {
       <div className="login-screen">
         <div className="login-brand">
           <img src="/komosion-wordmark-reversed.png" alt="Komosion" />
-          <span className="komosion-tagline">Helping businesses use AI to be more efficient and effective.</span>
+          <span className="komosion-tagline">
+            Helping businesses use AI<br></br>to be more efficient and
+            effective.
+          </span>
         </div>
         <div className="panel login-panel">
           <div className="panel-pad">
             <span className="eyebrow">Reviewer console</span>
             <h1 className="login-title">Sign in to continue</h1>
-            <p className="lead">Use your Konverter account to convert, review and export accessible reports.</p>
+            <p className="lead">
+              Use your Konverter account to convert, review and export
+              accessible reports.
+            </p>
             <form onSubmit={handleSubmit} className="login-form" noValidate>
               <label className="login-field">
                 <span className="login-field-label">Email</span>
@@ -65,61 +77,69 @@ function LoginForm() {
                   <span>{error}</span>
                 </div>
               ) : null}
-              <button type="submit" className="btn btn-primary btn-block btn-lg" disabled={submitting}>
-                {submitting ? 'Signing in…' : 'Sign in'}
+              <button
+                type="submit"
+                className="btn btn-primary btn-block btn-lg"
+                disabled={submitting}
+              >
+                {submitting ? "Signing in…" : "Sign in"}
               </button>
             </form>
           </div>
         </div>
       </div>
     </div>
-  )
+  );
 }
 
 export default function AuthGate({ children }: { children: ReactNode }) {
-  const [session, setSession] = useState<Session | null>(null)
-  const [loading, setLoading] = useState(true)
-  const navigate = useNavigate()
-  const { resetSession, refreshDocuments } = useKonverter()
-  const hadSessionRef = useRef(false)
+  const [session, setSession] = useState<Session | null>(null);
+  const [loading, setLoading] = useState(true);
+  const navigate = useNavigate();
+  const { resetSession, refreshDocuments } = useKonverter();
+  const hadSessionRef = useRef(false);
 
   useEffect(() => {
     supabase.auth.getSession().then(({ data }) => {
-      hadSessionRef.current = Boolean(data.session)
-      setSession(data.session)
-      setLoading(false)
-    })
-    const { data: subscription } = supabase.auth.onAuthStateChange((_event, nextSession) => {
-      // Only clear state on a real sign-out/expiry (had a session, now don't) —
-      // not on the initial unauthenticated load, so a deep link isn't clobbered
-      // before the user has even logged in.
-      if (hadSessionRef.current && !nextSession) {
-        resetSession()
-        navigate('/upload', { replace: true })
-      }
-      // Mirror that on the way in: a fresh sign-in (not a token refresh of an
-      // already-active session) re-fetches the document list, since a prior
-      // resetSession() would have cleared it with nothing to repopulate it.
-      if (!hadSessionRef.current && nextSession) {
-        void refreshDocuments()
-      }
-      hadSessionRef.current = Boolean(nextSession)
-      setSession(nextSession)
-    })
-    return () => subscription.subscription.unsubscribe()
-  }, [navigate, resetSession, refreshDocuments])
+      hadSessionRef.current = Boolean(data.session);
+      setSession(data.session);
+      setLoading(false);
+    });
+    const { data: subscription } = supabase.auth.onAuthStateChange(
+      (_event, nextSession) => {
+        // Only clear state on a real sign-out/expiry (had a session, now don't) —
+        // not on the initial unauthenticated load, so a deep link isn't clobbered
+        // before the user has even logged in.
+        if (hadSessionRef.current && !nextSession) {
+          resetSession();
+          navigate("/upload", { replace: true });
+        }
+        // Mirror that on the way in: a fresh sign-in (not a token refresh of an
+        // already-active session) re-fetches the document list, since a prior
+        // resetSession() would have cleared it with nothing to repopulate it.
+        if (!hadSessionRef.current && nextSession) {
+          void refreshDocuments();
+        }
+        hadSessionRef.current = Boolean(nextSession);
+        setSession(nextSession);
+      },
+    );
+    return () => subscription.subscription.unsubscribe();
+  }, [navigate, resetSession, refreshDocuments]);
 
   if (loading) {
     return (
       <div className="converter-app">
-        <div className="page-loading" role="status">Loading…</div>
+        <div className="page-loading" role="status">
+          Loading…
+        </div>
       </div>
-    )
+    );
   }
 
   if (!session) {
-    return <LoginForm />
+    return <LoginForm />;
   }
 
-  return <>{children}</>
+  return <>{children}</>;
 }

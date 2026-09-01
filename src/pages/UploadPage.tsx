@@ -136,9 +136,9 @@ export function UploadPage() {
           Upload documents
         </h2>
         <p className="lead">
-          Add one or more legal or policy PDFs. Documents process independently,
-          so you can review the first completed document while the remaining
-          jobs continue in the background.
+          Add one or more PDFs. Documents process independently, so you can
+          review the first completed document while the remaining jobs continue
+          in the background.
         </p>
 
         <input

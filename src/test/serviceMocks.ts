@@ -152,7 +152,7 @@ export const reviewService: ReviewService = {
   },
   async resolveAll() {
     reviewItems = reviewItems.map((item) => (
-      item.status === 'pending' || item.status === 'needs_attention'
+      item.status === 'pending'
         ? { ...item, status: 'accepted' as const }
         : item
     ))

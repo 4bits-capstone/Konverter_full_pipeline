@@ -58,7 +58,7 @@ class ProcessingSummary(ApiModel):
     tables: ProcessingElementCoverage
 
 
-ReviewStatus = Literal["pending", "accepted", "edited", "needs_attention", "removed"]
+ReviewStatus = Literal["pending", "accepted", "edited", "removed"]
 ConfidenceBand = Literal["high", "med", "low"]
 ReviewKind = Literal["kv", "text", "table"]
 
