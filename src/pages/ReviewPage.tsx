@@ -59,7 +59,7 @@ const itemTone = (item: ReviewItem) => {
     item.status === "removed"
   )
     return "ok";
-  if (item.status === "needs_attention" || item.band === "low") return "alert";
+  if (item.band === "low") return "alert";
   return "warn";
 };
 

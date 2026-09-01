@@ -210,7 +210,7 @@ def _text_from_table(table: dict[str, Any] | None, target_type: str) -> str:
 
 # Pictures, tables, and headings are too important to withhold from the
 # approved output while a reviewer works through unrelated flagged items, so
-# a pending/needs_attention item of one of these types no longer blocks
+# a pending item of one of these types no longer blocks
 # approval. It still surfaces in the review list with its confidence badge.
 # Footnotes are included for the same reason: they're low-stakes reference
 # text, and the pipeline's own footnote/list classification (pipeline.py's
@@ -577,7 +577,7 @@ class WorkflowService:
                 continue
             element_ids[category].add(block_id)
 
-        open_statuses = {"pending", "needs_attention"}
+        open_statuses = {"pending"}
         needs_review: dict[str, set[str]] = {
             key: set() for key in element_ids
         }
@@ -768,7 +768,7 @@ class WorkflowService:
         with self._review_update_lock:
             items = self.get_review_items(document_id)
             for item in items:
-                if item["status"] in {"pending", "needs_attention"}:
+                if item["status"] == "pending":
                     item["status"] = "accepted"
             self.store.write_artifact(document_id, "review_items.json", items)
             self._discard_generated(document_id)
@@ -832,7 +832,7 @@ class WorkflowService:
         pending = [
             item
             for item in items
-            if item["status"] in {"pending", "needs_attention"}
+            if item["status"] == "pending"
             and _is_blocking_review_item(str(item.get("type", "")))
         ]
         if pending:

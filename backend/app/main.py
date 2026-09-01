@@ -543,9 +543,7 @@ async def resolve_all(document_id: str, user: CurrentUser) -> list[ReviewItem]:
     record = _require_complete(document_id)
     _require_owner(record, user)
     before = workflow.get_review_items(document_id)
-    changed_ids = {
-        item["id"] for item in before if item["status"] in {"pending", "needs_attention"}
-    }
+    changed_ids = {item["id"] for item in before if item["status"] == "pending"}
     items = workflow.resolve_all(document_id)
     changed_items = [item for item in items if item["id"] in changed_ids]
     await audit.record_audit(

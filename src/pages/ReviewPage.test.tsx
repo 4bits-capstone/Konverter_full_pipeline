@@ -62,7 +62,6 @@ describe('ReviewPage', () => {
 
     await screen.findAllByText('Section heading needs confirmation')
     expect(screen.getByRole('button', { name: /Remove from output/ })).toBeInTheDocument()
-    expect(screen.queryByRole('button', { name: /Needs attention/ })).not.toBeInTheDocument()
     expect(screen.queryByRole('button', { name: /Accept all/ })).not.toBeInTheDocument()
   })
 

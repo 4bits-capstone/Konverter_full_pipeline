@@ -1,6 +1,6 @@
 export type Stage = 'upload' | 'review' | 'metadata' | 'approval' | 'preview'
 export type ConfidenceBand = 'high' | 'med' | 'low'
-export type ReviewStatus = 'pending' | 'accepted' | 'edited' | 'needs_attention' | 'removed'
+export type ReviewStatus = 'pending' | 'accepted' | 'edited' | 'removed'
 export type ReviewType =
   | 'box_section'
   | 'caption'
