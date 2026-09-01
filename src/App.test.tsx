@@ -5,6 +5,7 @@ import { MemoryRouter } from 'react-router-dom'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import App from './App'
 import { KonverterProvider, useKonverter } from './state/KonverterContext'
+import { supabase } from './lib/supabaseClient'
 import { resetTestServices } from './test/serviceMocks'
 import { testDocument } from './test/fixtures'
 
@@ -53,6 +54,24 @@ describe('Konverter frontend', () => {
     expect(await screen.findByRole('heading', { name: 'Upload documents' }, { timeout: 3000 })).toBeInTheDocument()
     expect(screen.getByRole('navigation', { name: 'Review pipeline' })).toBeInTheDocument()
     expect(screen.getByRole('button', { name: /Step 2: Review/i })).toBeDisabled()
+    expect(screen.getByText('Helping businesses use AI to be more efficient and effective.')).toBeInTheDocument()
+    expect(screen.getByText('Convert, review and export')).toBeInTheDocument()
+  })
+
+  it('shows the updated login copy without remember-me or password-recovery controls', async () => {
+    vi.mocked(supabase.auth.getSession).mockResolvedValueOnce({
+      data: { session: null },
+      error: null,
+    })
+
+    renderApp()
+
+    expect(await screen.findByRole('heading', { name: 'Sign in to continue' })).toBeInTheDocument()
+    expect(screen.getByText('Reviewer console')).toBeInTheDocument()
+    expect(screen.getByText('Use your Konverter account to convert, review and export accessible reports.')).toBeInTheDocument()
+    expect(screen.getByText('Helping businesses use AI to be more efficient and effective.')).toBeInTheDocument()
+    expect(screen.queryByText(/remember me/i)).not.toBeInTheDocument()
+    expect(screen.queryByText(/forgot password/i)).not.toBeInTheDocument()
   })
 
   it('keeps History in settings without an extra header button', async () => {

@@ -30,10 +30,7 @@ function LoginForm() {
       <div className="login-screen">
         <div className="login-brand">
           <img src="/komosion-wordmark-reversed.png" alt="Komosion" />
-          <span className="converter-product">
-            <strong>Konverter</strong>
-            <small>Accessible publishing workspace</small>
-          </span>
+          <span className="komosion-tagline">Helping businesses use AI to be more efficient and effective.</span>
         </div>
         <div className="panel login-panel">
           <div className="panel-pad">
