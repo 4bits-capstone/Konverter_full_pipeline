@@ -1,10 +1,8 @@
 import { Link, useLocation, useNavigate } from 'react-router-dom'
 import { HeaderUtilities } from './HeaderUtilities'
 import {
-  converterHistoryPath,
   converterStageFromPath,
   converterStagePath,
-  isAdminPath,
   isConverterStagePath,
 } from '../lib/converterRoutes'
 import { useKonverter } from '../state/KonverterContext'
@@ -17,34 +15,26 @@ const stages: Array<{ stage: Stage; label: string; description: string }> = [
   { stage: 'preview', label: 'Preview', description: 'Check and export' },
 ]
 
-function brandContext(pathname: string): { eyebrow: string; description: string } {
-  if (isAdminPath(pathname)) {
-    return { eyebrow: 'Admin console', description: 'Manage documents and the secure audit trail' }
-  }
-  if (pathname === converterHistoryPath()) {
-    return { eyebrow: 'Your history', description: 'Your own uploads and activity in this workspace' }
-  }
-  return { eyebrow: 'Reviewer console', description: 'Convert, review and export accessible reports' }
-}
-
 export function StageRail() {
   const { unlocked, doneStages } = useKonverter()
   const navigate = useNavigate()
   const location = useLocation()
   const active = converterStageFromPath(location.pathname)
   const onStagePath = isConverterStagePath(location.pathname)
-  const context = brandContext(location.pathname)
 
   return (
     <header className="converter-header">
       <div className="converter-brand-band">
         <div className="converter-brand-inner">
-          <Link className="converter-brand" to={converterStagePath('upload')} aria-label="Komosion Konverter home">
+          <Link className="converter-brand" to={converterStagePath('upload')} aria-label="Komosion Konverter AI home">
             <img src="/komosion-wordmark-reversed.png" alt="Komosion" />
-            <span className="converter-product"><strong>Konverter</strong><small>Accessible publishing workspace</small></span>
+            <span className="komosion-tagline">Helping businesses use AI to be more efficient and effective.</span>
           </Link>
           <div className="converter-brand-right">
-            <div className="converter-brand-context"><span>{context.eyebrow}</span><strong>{context.description}</strong></div>
+            <span className="converter-product">
+              <strong>Konverter <span className="converter-product-ai"><span className="converter-product-dot" aria-hidden="true">•</span> AI</span></strong>
+              <small>Convert, review and export</small>
+            </span>
             <HeaderUtilities />
           </div>
         </div>
