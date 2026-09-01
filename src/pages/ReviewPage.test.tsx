@@ -251,7 +251,8 @@ describe('ReviewPage', () => {
     await screen.findAllByText('Section heading needs confirmation')
     const queue = screen.getByRole('list', { name: 'Flagged items' })
 
-    expect(within(queue).queryByRole('checkbox')).not.toBeInTheDocument()
+    expect(within(queue).getAllByRole('checkbox')).toHaveLength(3)
+    expect(screen.queryByText('Shift+click or Tab+click')).not.toBeInTheDocument()
     fireEvent.click(screen.getByRole('button', { name: 'Select all visible' }))
     expect(screen.getByText('3 selected')).toBeInTheDocument()
     expect(within(queue).getAllByRole('checkbox')).toHaveLength(3)
@@ -269,20 +270,20 @@ describe('ReviewPage', () => {
     expect(screen.getByText('3 selected')).toBeInTheDocument()
   })
 
-  it('supports Shift+click and Tab+click multi-selection without permanent checkboxes', async () => {
+  it('keeps selection checkboxes visible while supporting Shift+click and Tab+click', async () => {
     renderReview()
     await screen.findAllByText('Section heading needs confirmation')
     const queue = screen.getByRole('list', { name: 'Flagged items' })
     const flags = screen.getAllByRole('button', { name: /needs confirmation/ })
 
     fireEvent.click(flags[0])
-    expect(within(queue).queryByRole('checkbox')).not.toBeInTheDocument()
+    expect(within(queue).getAllByRole('checkbox')).toHaveLength(3)
     fireEvent.click(flags[2], { shiftKey: true })
     expect(screen.getByText('3 selected')).toBeInTheDocument()
     expect(within(queue).getAllByRole('checkbox')).toHaveLength(3)
 
     fireEvent.click(screen.getByRole('button', { name: 'Clear visible selection' }))
-    expect(within(queue).queryByRole('checkbox')).not.toBeInTheDocument()
+    expect(within(queue).getAllByRole('checkbox')).toHaveLength(3)
     fireEvent.keyDown(window, { key: 'Tab' })
     fireEvent.click(flags[0])
     fireEvent.click(flags[1])

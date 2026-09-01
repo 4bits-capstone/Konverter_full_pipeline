@@ -1831,11 +1831,11 @@ export function ReviewPage() {
                 ? "Clear visible selection"
                 : "Select all visible"}
             </button>
-            <span className="queue-count" role="status" aria-live="polite">
-              {bulkSelectedIds.size
-                ? `${bulkSelectedIds.size} selected`
-                : "Shift+click or Tab+click"}
-            </span>
+            {bulkSelectedIds.size > 0 && (
+              <span className="queue-count" role="status" aria-live="polite">
+                {bulkSelectedIds.size} selected
+              </span>
+            )}
           </div>
           {bulkSelectedIds.size > 0 && (
             <div
@@ -1896,14 +1896,12 @@ export function ReviewPage() {
                 key={item.id}
               >
                 <label className="batch-select">
-                  {bulkSelectedIds.size > 0 && (
-                    <input
-                      type="checkbox"
-                      checked={bulkSelectedIds.has(item.id)}
-                      onChange={() => toggleBulkItem(item.id)}
-                      aria-label={`Select ${item.title} for a bulk action`}
-                    />
-                  )}
+                  <input
+                    type="checkbox"
+                    checked={bulkSelectedIds.has(item.id)}
+                    onChange={() => toggleBulkItem(item.id)}
+                    aria-label={`Select ${item.title} for a bulk action`}
+                  />
                 </label>
                 <button
                   className={`qitem tone-${itemTone(item)}`}
