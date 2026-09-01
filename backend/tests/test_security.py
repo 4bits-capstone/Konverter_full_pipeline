@@ -181,6 +181,25 @@ def test_audit_log_allows_admin(tmp_path):
         assert response.json() == []
 
 
+def test_audit_log_count_rejects_non_admin(tmp_path):
+    with load_client(tmp_path) as client:
+        response = client.get("/api/audit-log/count")
+        assert response.status_code == 403
+
+
+def test_audit_log_count_allows_admin(tmp_path):
+    with load_client(tmp_path) as client:
+        client.app.dependency_overrides[app_main.get_current_user] = lambda: {
+            "id": "admin-user",
+            "email": "admin@example.test",
+            "app_metadata": {"role": "admin"},
+        }
+        response = client.get("/api/audit-log/count")
+        assert response.status_code == 200
+        # Supabase isn't configured in tests, so count_all() short-circuits to 0.
+        assert response.json() == {"total": 0}
+
+
 def _override_user(client, user_id: str, email: str) -> None:
     client.app.dependency_overrides[app_main.get_current_user] = lambda: {
         "id": user_id,

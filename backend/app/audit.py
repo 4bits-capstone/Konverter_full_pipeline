@@ -154,6 +154,37 @@ async def list_recent(limit: int = DEFAULT_PAGE_LIMIT, offset: int = 0) -> list[
     return await _get({"order": "id.desc", "limit": str(limit), "offset": str(offset)})
 
 
+async def count_all() -> int:
+    """Exact total row count in audit_log, independent of any page/limit — so
+    a UI counter can show the true total even once the log outgrows
+    MAX_PAGE_LIMIT, without fetching every row to do it.
+
+    Uses PostgREST's `Prefer: count=exact`, which reports the total via the
+    `Content-Range` response header even when `limit=0` returns no rows."""
+    if not SUPABASE_URL or not SERVICE_KEY:
+        log.warning("audit: Supabase not configured; returning zero audit count")
+        return 0
+    try:
+        async with httpx.AsyncClient(timeout=10) as client:
+            response = await client.get(
+                f"{SUPABASE_URL}/rest/v1/audit_log",
+                headers={
+                    "apikey": SERVICE_KEY,
+                    "Authorization": f"Bearer {SERVICE_KEY}",
+                    "Prefer": "count=exact",
+                },
+                params={"select": "id", "limit": "0"},
+            )
+        if response.status_code >= 300:
+            log.warning("audit: count failed: %s %s", response.status_code, response.text)
+            return 0
+        total = response.headers.get("content-range", "").rsplit("/", 1)[-1]
+        return int(total) if total.isdigit() else 0
+    except Exception as exc:
+        log.warning("audit: count error: %s", exc)
+        return 0
+
+
 async def list_recent_for_actor(
     actor_id: str, limit: int = DEFAULT_PAGE_LIMIT, offset: int = 0
 ) -> list[dict[str, Any]]:

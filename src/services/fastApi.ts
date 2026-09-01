@@ -140,6 +140,9 @@ export const fastApiAuditService: AuditService = {
   listMine(params) {
     return apiRequest(`/audit-log/mine${auditQuery(params)}`)
   },
+  count() {
+    return apiRequest<{ total: number }>('/audit-log/count').then((result) => result.total)
+  },
 }
 
 const documentUrl = (documentId: string, suffix: string) => (

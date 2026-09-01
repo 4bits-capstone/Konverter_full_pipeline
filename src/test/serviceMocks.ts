@@ -184,6 +184,9 @@ export const auditService: AuditService = {
   async listMine(_params) {
     return []
   },
+  async count() {
+    return 0
+  },
 }
 
 const documentUrl = (documentId: string, suffix: string) => `/api/documents/${documentId}${suffix}`

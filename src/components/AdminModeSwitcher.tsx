@@ -24,7 +24,7 @@ export function AdminModeSwitcher({ documentCount, auditCount }: {
       >
         <Files aria-hidden="true" />
         <span><strong>Doc list</strong><small>All documents</small></span>
-        <b>{documentCount}</b>
+        <b>{documentCount.toLocaleString('en-AU')}</b>
       </NavLink>
       <NavLink
         className={({ isActive }) => `audit-mode-link${isActive ? ' is-active' : ''}`}
@@ -32,7 +32,7 @@ export function AdminModeSwitcher({ documentCount, auditCount }: {
       >
         <ScrollText aria-hidden="true" />
         <span><strong>Audit log</strong><small>Secure record</small></span>
-        <b>{auditCount}</b>
+        <b>{auditCount.toLocaleString('en-AU')}</b>
       </NavLink>
     </nav>
   )

@@ -243,6 +243,14 @@ async def audit_log(
     return await audit.list_recent(limit=limit, offset=offset)
 
 
+@app.get("/api/audit-log/count")
+async def audit_log_count(user: AdminUser) -> dict[str, int]:
+    """Exact total audit_log row count, uncapped by any page limit — backs
+    the audit event counters so they show the real total instead of freezing
+    at MAX_PAGE_LIMIT once the log outgrows one page. Admin only."""
+    return {"total": await audit.count_all()}
+
+
 @app.get("/api/audit-log/mine")
 async def my_audit_log(
     user: CurrentUser,

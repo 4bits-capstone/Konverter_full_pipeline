@@ -45,6 +45,13 @@ export function AdminOverviewPage() {
     queryKey: ['audit-log', AUDIT_LOG_FETCH_LIMIT],
     queryFn: () => auditService.list({ limit: AUDIT_LOG_FETCH_LIMIT }),
   })
+  const { data: totalCount } = useQuery({
+    queryKey: ['audit-log', 'count'],
+    queryFn: () => auditService.count(),
+  })
+  // The true total, uncapped by AUDIT_LOG_FETCH_LIMIT — falls back to what's
+  // loaded so the count never under-reports before the count query resolves.
+  const auditTotal = totalCount ?? entries.length
 
   const isLoading = documentsLoading || entriesLoading
   const isError = documentsError || entriesError
@@ -71,7 +78,7 @@ export function AdminOverviewPage() {
         </div>
       </div>
 
-      <AdminModeSwitcher documentCount={documents.length} auditCount={entries.length} />
+      <AdminModeSwitcher documentCount={documents.length} auditCount={auditTotal} />
 
       {isLoading ? (
         <div className="panel panel-pad">
@@ -98,7 +105,7 @@ export function AdminOverviewPage() {
               label="Processing failures"
             />
             <StatTile icon={UserRound} tone="info" value={contributors} label="Contributors" />
-            <StatTile icon={ScrollText} tone="neutral" value={entries.length} label="Audit events" />
+            <StatTile icon={ScrollText} tone="neutral" value={auditTotal} label="Audit events" />
             <StatTile
               icon={brokenChainCount > 0 ? ShieldAlert : ShieldCheck}
               tone={brokenChainCount > 0 ? 'low' : 'high'}

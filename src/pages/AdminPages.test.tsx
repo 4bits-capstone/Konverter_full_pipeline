@@ -36,6 +36,7 @@ beforeEach(() => {
   resetTestServices()
   vi.spyOn(documentService, 'listAllDocuments').mockResolvedValue(documents)
   vi.spyOn(auditService, 'list').mockResolvedValue(entries)
+  vi.spyOn(auditService, 'count').mockResolvedValue(entries.length)
 })
 afterEach(() => { cleanup(); vi.restoreAllMocks() })
 

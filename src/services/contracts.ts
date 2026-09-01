@@ -54,6 +54,7 @@ export interface AuditListParams {
 export interface AuditService {
   list(params?: AuditListParams): Promise<AuditLogEntry[]>
   listMine(params?: AuditListParams): Promise<AuditLogEntry[]>
+  count(): Promise<number>
 }
 
 export interface PublicationService {

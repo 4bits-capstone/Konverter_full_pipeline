@@ -37,10 +37,18 @@ export function AuditLogPage() {
     queryKey: ['audit-log', AUDIT_LOG_FETCH_LIMIT],
     queryFn: () => auditService.list({ limit: AUDIT_LOG_FETCH_LIMIT }),
   })
+  const { data: totalCount } = useQuery({
+    queryKey: ['audit-log', 'count'],
+    queryFn: () => auditService.count(),
+  })
   const { data: documents = [] } = useQuery({
     queryKey: ['documents', 'all'],
     queryFn: () => documentService.listAllDocuments(),
   })
+  // The true total, uncapped by AUDIT_LOG_FETCH_LIMIT — falls back to what's
+  // loaded so the badge never under-reports before the count query resolves.
+  const auditTotal = totalCount ?? entries.length
+  const isTruncated = auditTotal > entries.length
 
   const actorOptions = useMemo(() => {
     const emails = new Set<string>()
@@ -102,7 +110,7 @@ export function AuditLogPage() {
         </div>
       </div>
 
-      <AdminModeSwitcher documentCount={documents.length} auditCount={entries.length} />
+      <AdminModeSwitcher documentCount={documents.length} auditCount={auditTotal} />
 
       {isLoading ? (
         <div className="panel panel-pad">
@@ -182,6 +190,14 @@ export function AuditLogPage() {
               />
             </div>
           </div>
+
+          {isTruncated ? (
+            <p className="hint">
+              Showing the {entries.length.toLocaleString('en-AU')} most recent of{' '}
+              {auditTotal.toLocaleString('en-AU')} total events. Search and filters above only
+              apply to these loaded events.
+            </p>
+          ) : null}
 
           {entries.length === 0 ? (
             <div className="panel panel-pad">

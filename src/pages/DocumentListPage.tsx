@@ -5,7 +5,7 @@ import { Link, useNavigate } from 'react-router-dom'
 import { AdminModeSwitcher } from '../components/AdminModeSwitcher'
 import { ActorChip, PageCountBadge, TimeStack } from '../components/AuditActionDetail'
 import { converterStagePath } from '../lib/converterRoutes'
-import { AUDIT_LOG_FETCH_LIMIT, toLocalDateKey } from '../lib/auditFormatting'
+import { toLocalDateKey } from '../lib/auditFormatting'
 import { auditService, documentService } from '../services'
 import { useKonverter } from '../state/KonverterContext'
 import type { DocumentSummary, ProcessingState } from '../types/konverter'
@@ -56,9 +56,11 @@ export function DocumentListPage() {
     const stage = reopenDocument(document)
     navigate(converterStagePath(stage))
   }
-  const { data: auditEntries = [] } = useQuery({
-    queryKey: ['audit-log', AUDIT_LOG_FETCH_LIMIT],
-    queryFn: () => auditService.list({ limit: AUDIT_LOG_FETCH_LIMIT }),
+  // Just a badge count here, so ask for the true total directly rather than
+  // fetching (and capping at AUDIT_LOG_FETCH_LIMIT) the full entry list.
+  const { data: auditTotal = 0 } = useQuery({
+    queryKey: ['audit-log', 'count'],
+    queryFn: () => auditService.count(),
   })
 
   const visibleDocuments = useMemo(() => {
@@ -109,7 +111,7 @@ export function DocumentListPage() {
         </div>
       </div>
 
-      <AdminModeSwitcher documentCount={documents.length} auditCount={auditEntries.length} />
+      <AdminModeSwitcher documentCount={documents.length} auditCount={auditTotal} />
 
       {isLoading ? (
         <div className="panel panel-pad">
