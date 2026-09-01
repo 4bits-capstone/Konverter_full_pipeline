@@ -570,7 +570,10 @@ export function KonverterProvider({ children }: PropsWithChildren) {
       ).length,
     [reviewItems],
   );
-  const resolvedCount = reviewItems.length - pendingCount;
+  const resolvedCount = useMemo(
+    () => reviewItems.filter((item) => item.status === "accepted").length,
+    [reviewItems],
+  );
 
   const requiredManualChecks = useMemo<ManualCheckKey[]>(() => {
     const keys: ManualCheckKey[] = ["content"];
