@@ -813,7 +813,7 @@ def build_accessible_html(
         readers.append(f'''<section class="vlrc-reader" id="reader-{sid}" tabindex="-1" aria-labelledby="reader-title-{sid}">
           <div class="{reader_layout_class}">
             {reader_navigation}
-            <div class="vlrc-reader-content"><div class="chapter-label">{title}</div><h1 id="reader-title-{sid}" tabindex="-1">{section_title}</h1><div class="docling-content-blocks">{content}</div>{footnotes}<nav class="reader-pagination" aria-label="Document section pagination">{previous}{following}</nav><a class="reader-return breadcrumb-publication-link" href="#contents-heading">← Back to contents</a></div>
+            <div class="vlrc-reader-content"><a class="reader-return reader-return--top" href="#publication-title">← Back to report overview</a><div class="chapter-label">{title}</div><h1 id="reader-title-{sid}" tabindex="-1">{section_title}</h1><div class="docling-content-blocks">{content}</div>{footnotes}<nav class="reader-pagination" aria-label="Document section pagination">{previous}{following}</nav><a class="reader-return breadcrumb-publication-link" href="#contents-heading">← Back to contents</a></div>
           </div></section>''')
     toggles = '<input class="vlrc-view-toggle" type="radio" name="vlrc-publication-view" id="vlrc-view-landing" checked aria-label="Show publication overview" tabindex="-1" aria-hidden="true">'
     toggles += ''.join(f'<input class="vlrc-view-toggle" type="radio" name="vlrc-publication-view" id="{view_id}" data-reader="reader-{escape(section["id"])}" aria-label="Read {escape(section["displayTitle"])}" tabindex="-1" aria-hidden="true">' for view_id,section in zip(view_ids,sections))
@@ -836,7 +836,6 @@ def build_accessible_html(
 <html lang="en-AU"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>{title}</title>
 <script type="application/ld+json">{safe_json_ld}</script><style>{PREVIEW_STYLE}{report_style}{view_style}{SCRIPT_FREE_STYLE}</style></head><body>
 <div class="vlrc-publication-embed" data-konverter-publication {"data-report-chat" if chat_api_base else ""}>
-<nav class="vlrc-site-breadcrumb" aria-label="Breadcrumb"><ol><li><a href="https://www.lawreform.vic.gov.au/" target="_blank" rel="noopener">Home</a></li><li><span class="vlrc-site-breadcrumb-separator" aria-hidden="true">»</span><a href="https://www.lawreform.vic.gov.au/publication/" target="_blank" rel="noopener">Publications</a></li><li class="breadcrumb-publication-item"><span class="vlrc-site-breadcrumb-separator" aria-hidden="true">»</span><span class="breadcrumb-publication-current" aria-current="page">{title}</span><a class="breadcrumb-publication-link" href="#contents-heading" hidden>{title}</a></li><li class="breadcrumb-section-item" hidden><span class="vlrc-site-breadcrumb-separator" aria-hidden="true">»</span><span class="breadcrumb-section-current" aria-current="page"></span></li></ol></nav>
 {toggles}<a class="skip-link" href="#publication-title">Skip to publication content</a>
 <div class="vlrc-publication-views"><section class="vlrc-preview-body" id="publication-landing" aria-labelledby="publication-title">
 <div class="preview-report-card-shell"><section class="report-card preview-report-card" aria-labelledby="publication-title" itemscope itemtype="https://schema.org/Report">
