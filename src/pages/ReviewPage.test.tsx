@@ -57,7 +57,7 @@ describe('ReviewPage', () => {
     const guide = screen.getByLabelText('Structure label definitions')
     const h4Guide = within(guide).getByText('H4').parentElement!
     fireEvent.mouseEnter(h4Guide)
-    expect(screen.getByRole('tooltip')).toHaveTextContent('A lower-level heading nested under an H3.')
+    expect(screen.getByRole('tooltip')).toHaveTextContent('Use this for a smaller subsection within an H3 section.')
     expect(screen.getByRole('tooltip').parentElement).toBe(document.body)
 
     await screen.findAllByText('Section heading needs confirmation')

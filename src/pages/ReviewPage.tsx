@@ -72,118 +72,131 @@ const structureLabels: Array<{
   {
     value: "title",
     label: "Title",
-    description: "The single main title of the whole document.",
+    description:
+      "Use this for the document's main title. A document usually has only one title.",
     shortMeaning: "Main title of the document.",
   },
   {
     value: "section_header_1",
     label: "H1",
     description:
-      "A top-level printed-contents entry. Numbered chapters are collapsible; front and back matter are direct links.",
+      "Use this for a main chapter or major section, such as '1 Introduction'.",
     shortMeaning: "Main chapter or top-level section.",
   },
   {
     value: "section_header_2",
     label: "H2",
-    description: "A printed-contents entry nested under the current H1.",
+    description: "Use this for a section within a main chapter or H1 section.",
     shortMeaning: "Section within the current H1.",
   },
   {
     value: "section_header_3",
     label: "H3",
-    description: "A body subsection below the H1/H2 navigation level.",
+    description: "Use this for a smaller subsection within an H2 section.",
     shortMeaning: "Subsection within an H2.",
   },
   {
     value: "section_header_4",
     label: "H4",
-    description: "A lower-level heading nested under an H3.",
+    description: "Use this for a smaller subsection within an H3 section.",
     shortMeaning: "Subsection within an H3.",
   },
   {
     value: "section_header_5",
     label: "H5",
-    description: "The fifth level in the document hierarchy.",
+    description:
+      "Use this for the smallest heading level, within an H4 section.",
     shortMeaning: "Lowest heading level.",
   },
   {
     value: "caption",
     label: "Caption",
-    description: "Text identifying or explaining a table, picture, or figure.",
+    description:
+      "Use this for text that names or explains a table, picture, chart, or figure.",
     shortMeaning: "Description for a table or image.",
   },
   {
     value: "box_section",
     label: "Box Section",
     description:
-      "A bounded section that preserves its own paragraphs, lists, tables, figures and other child elements.",
+      "Use this for content grouped inside a visible box, callout, sidebar, or highlighted area.",
     shortMeaning: "Grouped callout or highlighted content.",
   },
   {
     value: "document_index",
     label: "Document index",
-    description: "A table of contents or document index.",
+    description:
+      "Use this for a table of contents or a list that helps readers find topics or sections.",
     shortMeaning: "Contents or index listing.",
   },
   {
     value: "footnote",
     label: "Footnote",
     description:
-      "A note referenced from the main text, usually at the bottom of a page.",
+      "Use this for an extra note linked to the main text, usually shown at the bottom of a page.",
     shortMeaning: "Reference note outside the main text.",
   },
   {
     value: "header",
     label: "Header",
-    description: "Repeated page-header content excluded from the reading flow.",
+    description:
+      "Use this for content repeated at the top of pages, such as a document name or chapter title.",
     shortMeaning: "Repeated content at the page top.",
   },
   {
     value: "footer",
     label: "Footer",
-    description: "Repeated page-footer content excluded from the reading flow.",
+    description:
+      "Use this for content repeated at the bottom of pages, such as a page number or copyright notice.",
     shortMeaning: "Repeated content at the page bottom.",
   },
   {
     value: "form",
     label: "Form",
-    description: "A group of fields or controls intended for user input.",
+    description:
+      "Use this for an area where someone can enter or select information, such as names, dates, or choices.",
     shortMeaning: "Fields or controls for user input.",
   },
   {
     value: "formula",
     label: "Formula",
-    description: "A mathematical or scientific expression.",
+    description:
+      "Use this for a mathematical or scientific equation or calculation.",
     shortMeaning: "Mathematical or scientific expression.",
   },
   {
     value: "list",
     label: "List",
-    description: "Related items presented in an ordered or unordered sequence.",
+    description:
+      "Use this for items shown with bullets, numbers, or separate lines.",
     shortMeaning: "Ordered or unordered sequence of items.",
   },
   {
     value: "picture",
     label: "Picture",
-    description: "A photograph, illustration, chart, or other embedded image.",
+    description:
+      "Use this for a photograph, drawing, diagram, chart, or other image.",
     shortMeaning: "Photograph, chart, or illustration.",
   },
   {
     value: "table",
     label: "Table",
-    description: "Information organised into rows and columns.",
+    description:
+      "Use this for information arranged in rows and columns, sometimes it could be borderless table.",
     shortMeaning: "Information in rows and columns.",
   },
   {
     value: "text",
     label: "Text",
-    description: "A paragraph or other body-text content.",
+    description:
+      "Use this for normal paragraphs or other main written content.",
     shortMeaning: "Paragraph or body-text content.",
   },
   {
     value: "quote",
     label: "Quote",
-    description: "A visually identified quotation or testimonial panel.",
+    description:
+      "Use this for words quoted from a person or source, including a testimonial.",
     shortMeaning: "Quoted content or testimonial.",
   },
 ];
@@ -1085,17 +1098,14 @@ export function ReviewPage() {
   };
 
   const clearAllLabels = () => {
-    setExcludedLabels(
-      new Set(presentLabels.map((entry) => entry.value)),
-    );
+    setExcludedLabels(new Set(presentLabels.map((entry) => entry.value)));
     setShowDetailMobile(false);
   };
 
   const allLabelsSelected =
     presentLabels.length > 0 && selectedLabels.size === presentLabels.length;
   const filtersActive =
-    statusFilter !== "all" ||
-    (presentLabels.length > 0 && !allLabelsSelected);
+    statusFilter !== "all" || (presentLabels.length > 0 && !allLabelsSelected);
 
   const filteredItems = useMemo(() => {
     let list = [...reviewItems];
@@ -2066,17 +2076,24 @@ export function ReviewPage() {
                     <dl className="kv extract-box">
                       {selected.keyValues?.map(([key, value]) => (
                         <div key={key} style={{ display: "contents" }}>
-                          <dt>{key}</dt><dd>{value}</dd>
+                          <dt>{key}</dt>
+                          <dd>{value}</dd>
                         </div>
                       ))}
                     </dl>
                   ) : !editing && usesTableEditor(selected.type) ? (
                     <TableExtract
                       table={selected.correctedTable ?? selected.tableData}
-                      caption={(selected.correctedTable ?? selected.tableData)?.caption}
+                      caption={
+                        (selected.correctedTable ?? selected.tableData)?.caption
+                      }
                     />
                   ) : !editing && selected.type === "list" ? (
-                    <ReviewListPreview text={selected.correctedText ?? selected.extractedText ?? ""} />
+                    <ReviewListPreview
+                      text={
+                        selected.correctedText ?? selected.extractedText ?? ""
+                      }
+                    />
                   ) : (
                     <textarea
                       className="extract-box extract-input review-extracted-text"
@@ -2084,7 +2101,13 @@ export function ReviewPage() {
                       aria-describedby="extracted-text-help"
                       rows={6}
                       readOnly={!editing}
-                      value={editing ? editText : selected.correctedText ?? selected.extractedText ?? ""}
+                      value={
+                        editing
+                          ? editText
+                          : (selected.correctedText ??
+                            selected.extractedText ??
+                            "")
+                      }
                       onChange={(event) => setEditText(event.target.value)}
                       placeholder="No text or image was extracted."
                     />
