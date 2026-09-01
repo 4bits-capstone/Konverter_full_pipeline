@@ -80,6 +80,16 @@ SUPABASE_ANON_KEY=                # same as VITE_SUPABASE_ANON_KEY
 SUPABASE_SERVICE_ROLE_KEY=        # backend only, never exposed to the frontend
 ```
 
+### Remote Docling settings
+
+```dotenv
+KONVERTER_DOCLING_MODE=local      # local | remote — offload PDF parsing to a RunPod serverless worker
+KONVERTER_DOCLING_ENDPOINT_URL=   # RunPod endpoint, e.g. https://api.runpod.ai/v2/<ENDPOINT_ID>
+KONVERTER_RUNPOD_API_KEY=         # backend only, never exposed to the frontend
+KONVERTER_STORAGE_BUCKET=konverter-docs  # Supabase Storage bucket used to hand off PDFs to the worker
+KONVERTER_SIGNED_URL_TTL=3600     # seconds a signed upload/download URL stays valid
+```
+
 ## Document chat assistant
 
 The Preview page includes a chat/voice assistant that answers questions about
@@ -125,6 +135,24 @@ Also add the site that will host the export to CORS:
 ```dotenv
 KONVERTER_CORS_ORIGINS=http://localhost:5173,https://your-wordpress-site.example
 ```
+
+## Remote Docling mode
+
+By default (`KONVERTER_DOCLING_MODE=local`) PDFs are parsed with Docling
+in-process, same as always — nothing to configure. Setting it to `remote`
+instead offloads parsing to a GPU-backed
+[RunPod](https://www.runpod.io/) serverless worker: the backend uploads the
+PDF to Supabase Storage, invokes the worker via
+`KONVERTER_DOCLING_ENDPOINT_URL`, and downloads the resulting Docling output
+once the job completes.
+
+This requires:
+
+- `SUPABASE_SERVICE_ROLE_KEY` set (used to create signed upload/download URLs)
+- the `KONVERTER_STORAGE_BUCKET` bucket to already exist in your Supabase project
+- a deployed RunPod endpoint running the worker image in `docling_worker/`
+  (its own `Dockerfile` and `requirements.txt` — build and push it to RunPod
+  separately; it isn't part of the regular backend/frontend build)
 
 ## Verify
 
