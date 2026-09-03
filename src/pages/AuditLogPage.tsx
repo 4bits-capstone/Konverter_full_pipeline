@@ -164,7 +164,7 @@ export function AuditLogPage() {
                 <option value="oldest">Oldest first</option>
               </select>
             </label>
-            <span className="admin-count">{visibleEntries.length} of {entries.length} events</span>
+            <span className="admin-count">{visibleEntries.length} of {auditTotal.toLocaleString('en-AU')} events</span>
           </div>
           <div className="admin-toolbar">
             <div className="tb-control">
