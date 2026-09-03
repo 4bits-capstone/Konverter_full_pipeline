@@ -38,6 +38,9 @@ describe('Preview and report pages', () => {
     expect(links.map(link => link.getAttribute('href'))).toEqual([
       '/api/documents/test-document/exports/html', '/api/documents/test-document/exports/jsonld', '/api/documents/test-document/exports/structured',
     ])
+    expect(links[0]).toHaveTextContent('Ready-to-Publish PageUse the complete pageA polished landing page, ready to publish.')
+    expect(links[1]).toHaveTextContent('AI MetadataEnhance your existing pageAdd AI-readable information without replacing your current page.')
+    expect(links[2]).toHaveTextContent('Content StructureUnderstand your documentView how the document has been organized into sections and topics.')
     expect(screen.queryByText('Cosmograph')).not.toBeInTheDocument()
     expect(screen.queryByText('Original PDF')).not.toBeInTheDocument()
     const preview = await screen.findByTitle('Accessible publication preview: Accessibility Standards Report')
@@ -96,7 +99,7 @@ describe('Preview and report pages', () => {
     fireEvent.blur(trigger, { relatedTarget: screen.getByRole('link', { name: 'Open report' }) })
     expect(trigger).toHaveAttribute('aria-expanded', 'false')
     fireEvent.click(trigger)
-    const download = screen.getByRole('link', { name: /JSON-LD Structured metadata/ })
+    const download = screen.getByRole('link', { name: /AI Metadata Enhance your existing page/ })
     download.addEventListener('click', event => event.preventDefault(), { once: true })
     fireEvent.click(download)
     expect(trigger).toHaveAttribute('aria-expanded', 'false')

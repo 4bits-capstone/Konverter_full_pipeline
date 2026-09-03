@@ -201,6 +201,13 @@
   font-size: 13.5px;
   line-height: 1.35;
 }
+.converter-app .converter-download-popover .converter-download-action {
+  margin-top: 3px;
+  color: var(--blue-dark);
+  font-size: 12px;
+  font-weight: 600;
+  line-height: 1.4;
+}
 .converter-app .converter-download-popover small {
   margin-top: 3px;
   color: var(--muted);
