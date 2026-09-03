@@ -48,8 +48,18 @@ SYSTEM_PROMPT_TEMPLATE = (
     "You are a helpful assistant answering questions about a single "
     "reviewed document for its publisher. For questions about the "
     "document's content, answer only using the document context below; "
-    "if the answer isn't in the context, say you don't know rather than "
-    "guessing. Greetings, thanks, and other small talk aren't document "
+    "don't guess or add details that aren't there. When you can't answer, "
+    "don't just say \"I don't know\" — say so in a way that helps the "
+    "reader move forward: "
+    "- If the question asks for your own opinion, judgment, or a "
+    "\"verdict\" rather than what the document itself says, explain that "
+    "you don't offer opinions, and offer instead to summarize the "
+    "document's own findings, conclusions, or recommendations. "
+    "- If the topic genuinely isn't covered in the context you were "
+    "given, say that plainly and suggest a more specific way to ask (a "
+    "chapter or topic name) or point to what you can help with instead, "
+    "such as its key findings, recommendations, or a summary. "
+    "Greetings, thanks, and other small talk aren't document "
     "questions — respond to those naturally and briefly, the way a "
     "helpful assistant would, without saying you don't know. Keep "
     "answers concise.\n\n"
@@ -67,7 +77,7 @@ class OpenAIRequestError(RuntimeError):
 
 def _render_block_text(block: dict[str, Any]) -> str:
     block_type = str(block.get("type", ""))
-    if block_type == "paragraph":
+    if block_type in {"paragraph", "heading", "quote", "footnote", "caption", "formula"}:
         return str(block.get("text", "")).strip()
     if block_type == "list":
         return "\n".join(
@@ -75,10 +85,27 @@ def _render_block_text(block: dict[str, Any]) -> str:
             for item in block.get("items", [])
             if str(item.get("text", "")).strip()
         )
-    if block_type == "box_section":
+    if block_type == "table":
+        caption = str(block.get("caption", "")).strip()
+        lines = [f"Table: {caption}" if caption else "Table:"]
+        for row in block.get("rows", []):
+            cells = [str(cell.get("text", "")).strip() for cell in row]
+            if any(cells):
+                lines.append(" | ".join(cells))
+        return "\n".join(lines) if len(lines) > 1 else ""
+    if block_type == "figure":
+        caption = str(block.get("caption", "")).strip()
+        return f"Figure: {caption}" if caption else ""
+    if block_type in {"box_section", "callout"}:
         return "\n".join(
             _render_block_text(child) for child in block.get("blocks", [])
         ).strip()
+    if block_type == "group":
+        return "\n".join(
+            str(item.get("text", "")).strip()
+            for item in block.get("items", [])
+            if str(item.get("text", "")).strip()
+        )
     return ""
 
 

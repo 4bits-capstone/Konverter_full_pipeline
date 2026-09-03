@@ -88,13 +88,28 @@
     list.addEventListener('click', function () { nav.classList.remove('is-open'); button.setAttribute('aria-expanded', 'false'); });
   });
   var copy = publication.querySelector('.report-copy-citation');
+  // In a sandboxed iframe without allow-same-origin (how the app previews
+  // this same document), the page has an opaque origin: no permission can
+  // ever be granted to it, so navigator.clipboard.writeText neither
+  // resolves nor rejects — it just hangs forever, silently skipping the
+  // execCommand fallback below. Racing it against a short timeout is what
+  // actually lets that fallback run in that context.
+  function withTimeout(promise, ms) {
+    return new Promise(function (resolve, reject) {
+      var timer = setTimeout(function () { reject(new Error('Clipboard API timed out')); }, ms);
+      promise.then(
+        function (value) { clearTimeout(timer); resolve(value); },
+        function (error) { clearTimeout(timer); reject(error); },
+      );
+    });
+  }
   if (copy) copy.addEventListener('click', async function () {
     var text = (copy.getAttribute('data-citation') || '').trim();
     var status = publication.querySelector('.citation-copy-status');
     if (!text || !status) return;
     try {
       if (!navigator.clipboard) throw new Error('Clipboard unavailable');
-      await navigator.clipboard.writeText(text);
+      await withTimeout(navigator.clipboard.writeText(text), 800);
       status.textContent = 'Citation copied.';
     } catch (_) {
       var textarea = document.createElement('textarea');

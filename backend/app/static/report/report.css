@@ -129,6 +129,22 @@ body:has(> .vlrc-publication-embed) {
   padding-top: 24px;
 }
 
+/* Always-visible plain text, not just the button's data-citation attribute:
+   this report is embedded on sites (e.g. WordPress) that strip script
+   tags, so the "Copy citation" click handler never runs there and this is
+   the only way anyone can actually get the citation in that context. */
+.vlrc-publication-embed .report-citation-text {
+  margin-top: 10px;
+  color: var(--muted, #6b6b6b);
+  font-size: 13px;
+  line-height: 1.5;
+  user-select: all;
+}
+
+.vlrc-publication-embed .report-citation-label {
+  font-weight: 700;
+}
+
 .vlrc-publication-embed .report-inline-action {
   -webkit-appearance: none;
   appearance: none;

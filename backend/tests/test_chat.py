@@ -56,6 +56,40 @@ def test_build_chat_context_uses_metadata_summary_and_sections():
     assert "- Second point" in context
 
 
+def test_build_chat_context_includes_table_quote_figure_and_footnote_text():
+    structured = {
+        "metadata": {"title": "Example report"},
+        "publication": {
+            "sections": [
+                {
+                    "displayTitle": "1. Findings",
+                    "blocks": [
+                        {
+                            "type": "table",
+                            "caption": "Survey results",
+                            "rows": [
+                                [{"text": "Option", "columnHeader": True}, {"text": "Votes", "columnHeader": True}],
+                                [{"text": "Yes"}, {"text": "42"}],
+                            ],
+                        },
+                        {"type": "quote", "text": "This is a pull quote from a stakeholder."},
+                        {"type": "figure", "caption": "Diagram of the process"},
+                        {"type": "footnote", "text": "See appendix B for methodology."},
+                    ],
+                }
+            ],
+        },
+    }
+
+    context = build_chat_context(structured, {})
+
+    assert "Survey results" in context
+    assert "Yes | 42" in context
+    assert "This is a pull quote from a stakeholder." in context
+    assert "Diagram of the process" in context
+    assert "See appendix B for methodology." in context
+
+
 def test_build_chat_context_truncates_a_single_oversized_section():
     long_text = "x" * 100_000
     structured = {
