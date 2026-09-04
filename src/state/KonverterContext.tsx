@@ -304,7 +304,14 @@ export function KonverterProvider({ children }: PropsWithChildren) {
         setActiveDocumentId((activeId) =>
           activeId === id ? (next[0]?.id ?? null) : activeId,
         );
-        if (!next.length) setUploaded(false);
+        if (!next.length) {
+          setUploaded(false);
+          // No document left to back them, so later stages must re-lock —
+          // otherwise a prior document's progress leaves review/metadata/
+          // preview reachable with nothing behind them.
+          setUnlocked(initialUnlocked);
+          setDoneStages(new Set());
+        }
         return next;
       });
       setDocumentProcessing((current) => {
