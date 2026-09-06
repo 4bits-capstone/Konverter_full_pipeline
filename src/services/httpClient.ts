@@ -21,11 +21,9 @@ export async function apiRequest<T>(
   path: string,
   init: ApiRequestInit = {},
 ): Promise<T> {
-  const controller = new AbortController();
-  const timeout = window.setTimeout(
-    () => controller.abort(),
-    init.timeoutMs ?? runtimeConfig.requestTimeoutMs,
-  );
+  const timeoutMs = init.timeoutMs ?? runtimeConfig.requestTimeoutMs;
+  let controller = new AbortController();
+  let timeout = window.setTimeout(() => controller.abort(), timeoutMs);
 
   const buildHeaders = async () => {
     const headers = new Headers(init.headers);
@@ -60,6 +58,13 @@ export async function apiRequest<T>(
       // token and retry once before treating the user as signed out.
       const { error: refreshError } = await supabase.auth.refreshSession();
       if (!refreshError) {
+        // The original controller's timer has been counting down since
+        // the very first request — reusing it here would give the retry
+        // whatever time happens to be left instead of its own full
+        // window, aborting it early on a slow-but-healthy backend.
+        window.clearTimeout(timeout);
+        controller = new AbortController();
+        timeout = window.setTimeout(() => controller.abort(), timeoutMs);
         response = await doFetch();
       }
     }

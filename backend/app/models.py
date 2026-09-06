@@ -118,6 +118,10 @@ class ReviewItem(ApiModel):
     title: str
     kind: ReviewKind
     status: ReviewStatus = "pending"
+    # Who last made the decision behind `status` — the pipeline itself
+    # (footnotes start pre-accepted, unseen by anyone) or a reviewer
+    # (any accept/edit/bulk-resolve action). None until either happens.
+    reviewed_by: Literal["system", "reviewer"] | None = None
     extracted_text: str | None = None
     corrected_text: str | None = None
     note: str | None = None

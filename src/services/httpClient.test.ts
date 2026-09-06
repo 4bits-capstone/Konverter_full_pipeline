@@ -61,6 +61,59 @@ describe('apiRequest', () => {
   })
 })
 
+it('gives the refreshed retry its own fresh timeout window instead of the original request\'s leftover budget', async () => {
+  // The retry used to share the original AbortController/timer, so it
+  // inherited whatever time was left rather than a full window — a retry
+  // that's merely slow (not stuck) could be aborted almost immediately.
+  // Simulate: the first request takes 900ms of a 1000ms budget before
+  // 401ing, then the retry itself also takes 900ms. With a shared timer
+  // only ~100ms would remain for the retry; with a fresh one per attempt
+  // it has the full 1000ms and succeeds. The fetch mock has to honour the
+  // AbortSignal itself (reject on abort) the same way the real fetch does,
+  // or an abort silently has no effect on the outcome being asserted.
+  vi.useFakeTimers()
+  try {
+    let resolveFirst: (value: unknown) => void
+    let resolveSecond: (value: unknown) => void
+    const firstResponse = new Promise((resolve) => {
+      resolveFirst = resolve
+    })
+    const secondResponse = new Promise((resolve) => {
+      resolveSecond = resolve
+    })
+    const withAbort = (response: Promise<unknown>, signal: AbortSignal) =>
+      new Promise((resolve, reject) => {
+        signal.addEventListener('abort', () => reject(new DOMException('Aborted', 'AbortError')))
+        response.then(resolve, reject)
+      })
+    const fetchMock = vi
+      .fn()
+      .mockImplementationOnce((_url: string, options: { signal: AbortSignal }) =>
+        withAbort(firstResponse, options.signal),
+      )
+      .mockImplementationOnce((_url: string, options: { signal: AbortSignal }) =>
+        withAbort(secondResponse, options.signal),
+      )
+    vi.stubGlobal('fetch', fetchMock)
+    signOut.mockClear()
+    refreshSession.mockClear()
+
+    const requestPromise = apiRequest('/documents', { timeoutMs: 1000 })
+
+    await vi.advanceTimersByTimeAsync(900)
+    resolveFirst!({ ok: false, status: 401, json: async () => ({ detail: 'Not authenticated' }) })
+    await vi.advanceTimersByTimeAsync(0)
+
+    await vi.advanceTimersByTimeAsync(900)
+    resolveSecond!({ ok: true, status: 200, json: async () => ({ documents: [] }) })
+
+    await expect(requestPromise).resolves.toEqual({ documents: [] })
+    expect(signOut).not.toHaveBeenCalled()
+  } finally {
+    vi.useRealTimers()
+  }
+})
+
 it('loads report HTML with the same authentication and retry policy as JSON requests', async () => {
   const fetchMock = vi.fn().mockResolvedValue({ ok: true, status: 200, text: async () => '<html>Report</html>' })
   vi.stubGlobal('fetch', fetchMock)

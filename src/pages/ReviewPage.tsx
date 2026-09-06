@@ -496,36 +496,86 @@ function tableToText(table: ReviewTableData): string {
     .join("\n");
 }
 
-function tableToListText(table: ReviewTableData): string {
-  const dataRows = table.rows
-    .map((row) => row.map((cell) => cell.trim()).filter(Boolean))
-    .filter((row) => row.length);
+// Decimal paragraph numbering (7.1, 1.2.3 — common in these reports) needs
+// a bare space, not a colon, before its text: the export step's own
+// numbered-paragraph detection looks for exactly "<number> <text>" and
+// otherwise the item silently loses its numbered styling and renders as a
+// plain bullet instead.
+const PARAGRAPH_NUMBER_RE = /^\d+(?:\.\d+)+$/;
 
+function isGenericHeader(value: string): boolean {
+  return !value.trim() || /^column \d+$/i.test(value.trim());
+}
+
+// `indexed` pairs each present cell with its original column index so it
+// can be matched back to `headers` after empty cells have been filtered out.
+function joinRowValues(indexed: [number, string][], headers: string[]): string {
+  const values = indexed.map(([, value]) => value);
+  // A cell with a real column header (not "Column N") gets that header as
+  // its label; a cell without one is left as a bare value rather than
+  // guessed at — labeling *some* of a row and leaving the rest bare is
+  // still more honest than falling back to "the first cell labels the
+  // second" the moment even one column's header is missing or generic.
+  const hasAnyHeader = indexed.some(
+    ([index]) => headers[index] && !isGenericHeader(headers[index]),
+  );
+  if (hasAnyHeader) {
+    return indexed
+      .map(([index, value]) =>
+        headers[index] && !isGenericHeader(headers[index])
+          ? `${headers[index]}: ${value}`
+          : value,
+      )
+      .join("; ");
+  }
+  return values.length === 2 ? `${values[0]}: ${values[1]}` : values.join("; ");
+}
+
+function tableToListText(table: ReviewTableData): string {
+  const indexRow = (row: string[]) =>
+    row
+      .map((cell, index): [number, string] => [index, cell.trim()])
+      .filter(([, value]) => value);
+
+  const dataRows = table.rows.map(indexRow).filter((row) => row.length);
+
+  // A header's own text, once it stands in for a missing data row, is
+  // content — not a value that header describes — so labeling it against
+  // `headers` (by position) is never right, even when the position happens
+  // to line up: "Definition" labeled by its own header reads as
+  // "Definition: Definition", not the plain header text it should be.
+  const usingHeaderFallback = !dataRows.length;
   const fallbackRows = dataRows.length
     ? dataRows
-    : [
-        table.headers
-          .map((header) => header.trim())
-          .filter((header) => header && !/^column \d+$/i.test(header)),
-      ];
+    : [indexRow(table.headers).filter(([, value]) => !isGenericHeader(value))];
+  const effectiveHeaders = usingHeaderFallback ? [] : table.headers;
 
   return fallbackRows
     .filter((row) => row.length)
     .map((row) => {
-      const [first, ...rest] = row;
+      const [[, first], ...rest] = row;
       const marker = first?.match(/^\(?([0-9]+|[A-Za-z]|[ivxlcdm]+)[.)]?$/i);
       if (marker && rest.length) {
         const sourceMarker =
           first.includes("(") || /[.)]$/.test(first) ? first : `${first}.`;
-        return `${sourceMarker} ${rest.join(" — ")}`;
+        return `${sourceMarker} ${joinRowValues(rest, effectiveHeaders)}`;
       }
-      return row.join(" — ");
+      // Decimal paragraph numbering (7.1, 1.2.3 — common in these reports)
+      // needs a bare space before its text, not the usual header-labeling
+      // shape — but only when there's no real column header to respect
+      // instead. A genuine "Clause"/"Description" table with a
+      // "7.1"-shaped clause number is a real label/value pair, not a
+      // numbered paragraph, and should keep its header.
+      const hasAnyHeader = row.some(
+        ([index]) =>
+          effectiveHeaders[index] && !isGenericHeader(effectiveHeaders[index]),
+      );
+      if (!hasAnyHeader && row.length === 2 && PARAGRAPH_NUMBER_RE.test(row[0][1])) {
+        return `${row[0][1]} ${row[1][1]}`;
+      }
+      return joinRowValues(row, effectiveHeaders);
     })
     .join("\n");
-}
-
-function isGenericHeader(value: string): boolean {
-  return !value.trim() || /^column \d+$/i.test(value.trim());
 }
 
 function tableToStructuredText(
@@ -544,11 +594,18 @@ function tableToStructuredText(
       ),
     )
     .filter((row) => row.some(Boolean));
+  const usingHeaderFallback = !rows.length;
   const dataRows = rows.length
     ? rows
     : headers
         .filter((header) => header && !isGenericHeader(header))
         .map((header) => [header]);
+  // A header's own text, once it stands in for a missing data row, is
+  // content — not a value that header describes — so labeling it against
+  // `headers` (by position) is never right, even when the position happens
+  // to line up: "Definition" labeled by its own header reads as
+  // "Definition: Definition", not the plain header text it should be.
+  const effectiveHeaders = usingHeaderFallback ? [] : headers;
 
   if (targetType === "form") {
     return dataRows
@@ -556,8 +613,8 @@ function tableToStructuredText(
         row
           .map((value, index) =>
             value
-              ? !isGenericHeader(headers[index] ?? "")
-                ? `${headers[index]}: ${value}`
+              ? !isGenericHeader(effectiveHeaders[index] ?? "")
+                ? `${effectiveHeaders[index]}: ${value}`
                 : value
               : "",
           )
@@ -571,23 +628,47 @@ function tableToStructuredText(
   if (targetType === "footnote") {
     return dataRows
       .map((row) => {
-        const facts = row
-          .map((value, index) =>
-            value
-              ? !isGenericHeader(headers[index] ?? "")
-                ? `${headers[index]}: ${value}`
-                : value
-              : "",
+        const cells = row
+          .map((value, index): [number, string] => [index, value])
+          .filter(([, value]) => value);
+        if (!cells.length) return "";
+        const [, firstValue] = cells[0];
+        // A bare leading number is the footnote's own citation index, not
+        // a value to label — "1 Smith v Tamworth..." not "1; Smith v
+        // Tamworth...". Every other footnote in the document uses that
+        // same "<number> <text>" shape, so a semicolon here reads wrong
+        // next to genuine footnotes and breaks the export's own recovery
+        // of the real citation number.
+        const isLeadingNumber = /^\d{1,4}$/.test(firstValue);
+        const bodyCells = isLeadingNumber ? cells.slice(1) : cells;
+        const facts = bodyCells
+          .map(([index, value]) =>
+            !isGenericHeader(effectiveHeaders[index] ?? "")
+              ? `${effectiveHeaders[index]}: ${value}`
+              : value,
           )
           .filter(Boolean);
-        return facts.length ? `${facts.join("; ").replace(/\.$/, "")}.` : "";
+        const body = facts.join("; ").replace(/\.$/, "");
+        if (!isLeadingNumber) return body ? `${body}.` : "";
+        return body ? `${firstValue} ${body}.` : `${firstValue}.`;
       })
       .filter(Boolean)
-      .join(" ");
+      // Every other branch here joins rows with "\n" (see "form" above and
+      // the default branch below) — this one used to join with a plain
+      // space, collapsing a whole table of separate citations into one
+      // unbroken paragraph with no row boundary left to recover downstream.
+      .join("\n");
   }
 
   return dataRows
-    .map((row) => row.filter(Boolean).join(" — "))
+    .map((row) =>
+      joinRowValues(
+        row
+          .map((value, index): [number, string] => [index, value])
+          .filter(([, value]) => value),
+        effectiveHeaders,
+      ),
+    )
     .filter(Boolean)
     .join("\n");
 }
@@ -1930,7 +2011,7 @@ export function ReviewPage() {
                   </div>
                   <div className="qitem-txt">{item.title}</div>
                   <div className="qitem-bot">
-                    <StatusTag status={item.status} />
+                    <StatusTag status={item.status} reviewedBy={item.reviewedBy} />
                   </div>
                 </button>
               </div>
@@ -1954,7 +2035,7 @@ export function ReviewPage() {
                   band={selected.band}
                   score={selected.confidence}
                 />
-                <StatusTag status={selected.status} />
+                <StatusTag status={selected.status} reviewedBy={selected.reviewedBy} />
                 <span className="mono detail-page">
                   Flag {selectedPosition} of {filteredItems.length} · page{" "}
                   {selected.page}
@@ -2179,13 +2260,17 @@ export function ReviewPage() {
                     <button
                       className="btn btn-outline"
                       disabled={
-                        selected.status === "accepted" ||
+                        (selected.status === "accepted" &&
+                          selected.reviewedBy !== "system") ||
                         actingItemId === selected.id
                       }
                       onClick={() => act(selected, "accepted")}
                     >
                       <Check />
-                      Accept
+                      {selected.status === "accepted" &&
+                      selected.reviewedBy === "system"
+                        ? "Confirm"
+                        : "Accept"}
                     </button>
                     <button
                       className="btn btn-outline"

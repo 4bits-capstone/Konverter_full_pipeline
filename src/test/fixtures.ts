@@ -54,6 +54,7 @@ export const testReviewItems: ReviewItem[] = [
         ['Accessible format', 'Content that people can perceive and operate.'],
         ['Semantic structure', 'Meaning conveyed through programmatic markup.'],
         ['Review flag', 'An item that requires human confirmation.'],
+        ['7.1', 'A clause that references a specific numbered provision.'],
       ],
     },
     source: {

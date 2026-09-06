@@ -106,7 +106,6 @@ interface KonverterContextValue {
   requiredManualChecks: ManualCheckKey[];
   toggleManualCheck: (key: ManualCheckKey) => void;
   setAllManualChecks: (value: boolean) => void;
-  approvalReady: boolean;
   toastState: ToastState;
   showToast: (message: string) => void;
   resetWorkflow: () => void;
@@ -346,11 +345,21 @@ export function KonverterProvider({ children }: PropsWithChildren) {
   const reopenDocument = useCallback(
     (document: DocumentSummary): Stage => {
       addDocuments([document]);
+      // addDocuments only seeds a document's workflow state the first time
+      // its id is seen, so it never picks up a newer approvedAt/
+      // metadataConfirmed for a document already known from earlier in
+      // this session (e.g. approved elsewhere, then reopened here) — this
+      // is the one place we know `document` is the authoritative, just-
+      // fetched record for this specific id, so refresh it unconditionally.
+      patchWorkflow(document.id, {
+        approvedAt: document.approvedAt ?? null,
+        metadataResolved: Boolean(document.metadataConfirmed),
+      });
       setActiveDocumentId(document.id);
       setUnlocked(unlockedForDocument(document));
       return document.approvedAt ? "preview" : "review";
     },
-    [addDocuments],
+    [addDocuments, patchWorkflow],
   );
 
   const startDocumentProcessing = useCallback(
@@ -421,8 +430,25 @@ export function KonverterProvider({ children }: PropsWithChildren) {
   useEffect(() => {
     if (!runningDocumentIds) return;
     let cancelled = false;
+    // setInterval doesn't wait for the previous tick to resolve — under
+    // network jitter, an earlier-started poll can resolve *after* a later
+    // one and overwrite fresher state with stale data (a document already
+    // reported "complete" flipping back to "running"). Skipping a tick
+    // while the previous one is still in flight means there's never more
+    // than one outstanding request batch to race against itself.
+    let inFlight = false;
 
     const refreshProcessingJobs = async () => {
+      if (inFlight) return;
+      inFlight = true;
+      try {
+        await refreshOnce();
+      } finally {
+        inFlight = false;
+      }
+    };
+
+    const refreshOnce = async () => {
       const ids = runningDocumentIds.split("|");
       const results = await Promise.allSettled(
         ids.map(async (id) => {
@@ -631,11 +657,6 @@ export function KonverterProvider({ children }: PropsWithChildren) {
     [activeDocumentId, patchWorkflow],
   );
 
-  // Final approval is based only on automated workflow state. Reviewer
-  // checkboxes were removed from the approval gate; their work is already
-  // represented by resolved flags and confirmed metadata.
-  const approvalReady = pendingCount === 0 && metadataResolved;
-
   const activeDocument = useMemo(
     () =>
       documents.find((document) => document.id === activeDocumentId) ?? null,
@@ -746,7 +767,6 @@ export function KonverterProvider({ children }: PropsWithChildren) {
       requiredManualChecks,
       toggleManualCheck,
       setAllManualChecks,
-      approvalReady,
       toastState,
       showToast,
       resetWorkflow,
@@ -792,7 +812,6 @@ export function KonverterProvider({ children }: PropsWithChildren) {
       requiredManualChecks,
       toggleManualCheck,
       setAllManualChecks,
-      approvalReady,
       toastState,
       showToast,
       resetWorkflow,

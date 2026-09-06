@@ -143,6 +143,7 @@ export function MetadataPage() {
     metadataResolved,
     setMetadataResolved,
     pendingCount,
+    resolvedCount,
     reviewItems,
     setApprovedAt,
     unlock,
@@ -249,10 +250,20 @@ export function MetadataPage() {
     },
     {
       label: "Review flags resolved",
+      // pendingCount only tracks *blocking* flags (approval doesn't
+      // require a decision on non-blocking types like pictures, tables,
+      // or footnotes — see NON_BLOCKING_REVIEW_TYPES), so it can be zero
+      // while resolvedCount is still short of reviewItems.length. Basing
+      // the detail text on the same resolvedCount shown in the approval
+      // summary below avoids the two contradicting each other in the
+      // same modal (e.g. this saying "all 10 have a decision" while the
+      // summary says "6/10 resolved").
       ok: pendingCount === 0,
       detail: pendingCount
         ? `${pendingCount} of ${reviewItems.length} flags still need a decision`
-        : `All ${reviewItems.length} flags have a decision`,
+        : resolvedCount === reviewItems.length
+          ? `All ${reviewItems.length} flags have a decision`
+          : `${resolvedCount} of ${reviewItems.length} flags have a decision — the rest are optional`,
     },
     {
       label: "Metadata confirmed",
@@ -775,7 +786,7 @@ export function MetadataPage() {
               </span>
               <span>
                 <b>Review flags</b>
-                {reviewItems.length - pendingCount}/{reviewItems.length}{" "}
+                {resolvedCount}/{reviewItems.length}{" "}
                 resolved
               </span>
               <span>

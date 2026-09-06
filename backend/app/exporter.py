@@ -10,6 +10,8 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any
 
+from .footnote_numbering import FOOTNOTE_LEADING_NUMBER_RE
+
 
 def _slug(value: str) -> str:
     result = re.sub(r"[^a-z0-9]+", "-", value.lower()).strip("-")
@@ -37,6 +39,27 @@ def _unique_slug(value: str, counts: Counter[str]) -> str:
     base = _slug(value)
     counts[base] += 1
     return base if counts[base] == 1 else f"{base}-{counts[base]}"
+
+
+def _split_footnote_entries(text: str) -> list[str]:
+    """A table of citations converted straight to "footnote" carries one
+    citation per line inside a single block's text — every other
+    footnote block Docling extracts is already one citation per block,
+    and nothing downstream (structured.json, the HTML <ol>, JSON-LD)
+    expects one entry to bundle several. Splitting only when each line
+    opens with its own strictly-increasing citation number — the same
+    trustworthy-sequence signal preview_html.py's _render_footnotes_list
+    already uses — avoids splitting a genuine single footnote that
+    merely wrapped onto multiple lines."""
+    lines = [line.strip() for line in text.splitlines() if line.strip()]
+    if len(lines) < 2:
+        return [text.strip()]
+    matches = [FOOTNOTE_LEADING_NUMBER_RE.match(line) for line in lines]
+    numbers = [int(match.group(1)) for match in matches if match]
+    trustworthy = len(numbers) == len(lines) and all(
+        later > earlier for earlier, later in zip(numbers, numbers[1:])
+    )
+    return lines if trustworthy else [text.strip()]
 
 
 def _split_lines(value: str) -> list[str]:
@@ -95,6 +118,84 @@ def _is_chapter_title(value: str) -> bool:
             re.IGNORECASE,
         )
     )
+
+
+_NUMBERED_CHAPTER_RE = re.compile(r"^(\d+)[.)]\s+(.+)$")
+
+# The same generic front/back-matter names toc_hierarchy.py's own TOC
+# parsing (_TOP_LEVEL) already treats as never a numbered chapter —
+# reused here so boundary inference (below) never assigns a number to a
+# "Preface" or "Glossary" just because it happens to sit next to one, only
+# to genuinely chapter-shaped headings like "Introduction" or "Mediation".
+_NEVER_A_CHAPTER = re.compile(
+    r"^(?:"
+    r"preface|foreword|overview|summary|snapshot|key\s+facts?|"
+    r"terms?\s+of\s+reference|scope\s+of\s+(?:the\s+)?report|"
+    r"glossary(?:\s+of\b.*)?|abbreviations?|acronyms?|"
+    r"executive\s+summary|recommendations?|contributors?|"
+    r"acknowledg(?:e)?ments?|appendix(?:\s+\w+)?|appendices|"
+    r"bibliography|references|index|"
+    r"list\s+of\s+(?:figures|tables|recommendations)|"
+    r"about\s+the\s+commission"
+    r")\s*(?::.*)?$",
+    re.IGNORECASE,
+)
+
+
+def _fill_missing_chapter_numbers(sections: list[dict[str, Any]]) -> None:
+    """Docling's heading extraction occasionally drops a chapter's own
+    number from its title on some runs but not others — "3. Disputes",
+    "Community values", "5. Options for reform" — while the printed
+    Contents page and every other chapter keep theirs. When an unnumbered
+    section sits directly between two numbered chapters, and the count of
+    unnumbered sections in the gap exactly matches the numeric gap between
+    them, the missing number(s) are unambiguous from position alone —
+    independent of whatever Docling did or didn't capture in the title
+    text that run. Mutates `sections` in place."""
+    numbered = [
+        (index, int(match.group(1)))
+        for index, section in enumerate(sections)
+        if (match := _NUMBERED_CHAPTER_RE.match(str(section.get("displayTitle", ""))))
+    ]
+    for (index_a, num_a), (index_b, num_b) in zip(numbered, numbered[1:]):
+        gap_indexes = list(range(index_a + 1, index_b))
+        if gap_indexes and len(gap_indexes) == num_b - num_a - 1:
+            for offset, gap_index in enumerate(gap_indexes, start=1):
+                gap_section = sections[gap_index]
+                if gap_section.get("isChapter"):
+                    continue
+                title = str(gap_section.get("displayTitle", "")).strip()
+                gap_section["displayTitle"] = f"{num_a + offset}. {title}"
+                gap_section["isChapter"] = True
+
+    # A gap at the very start or end of the list has no numbered chapter on
+    # the far side to confirm the count against — "Introduction" before
+    # chapter 3 could just as easily be chapter 1 or 2, or genuinely
+    # unnumbered front matter, and the gap count alone can't tell those
+    # apart. Only close the walk in one direction at a time, and stop the
+    # moment a title matches a name that's never a real chapter (a real
+    # "Preface" immediately before "1. Introduction" must stay unnumbered)
+    # or the inferred number would reach zero.
+    if numbered:
+        first_index, first_num = numbered[0]
+        number = first_num
+        for index in range(first_index - 1, -1, -1):
+            title = str(sections[index].get("displayTitle", "")).strip()
+            if number <= 1 or _NEVER_A_CHAPTER.match(title) or sections[index].get("isChapter"):
+                break
+            number -= 1
+            sections[index]["displayTitle"] = f"{number}. {title}"
+            sections[index]["isChapter"] = True
+
+        last_index, last_num = numbered[-1]
+        number = last_num
+        for index in range(last_index + 1, len(sections)):
+            title = str(sections[index].get("displayTitle", "")).strip()
+            if _NEVER_A_CHAPTER.match(title) or sections[index].get("isChapter"):
+                break
+            number += 1
+            sections[index]["displayTitle"] = f"{number}. {title}"
+            sections[index]["isChapter"] = True
 
 
 def _summary_from_values(values: list[str], max_chars: int) -> str:
@@ -312,6 +413,51 @@ def _ordered_reader_sections(
     )
 
 
+_BARE_NUM_RE = re.compile(r"^\d{1,4}\s")
+
+
+def promote_bare_number_markers(
+    entries: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    """A numbered item with no punctuation after the number ("1 The
+    Registrar should...") isn't recognised as a marker on its own by
+    _parsed_list_entry — too easy to confuse with ordinary prose that
+    happens to start with a number ("1 in 3 people..."). Requiring every
+    item in the list to share this same unpunctuated numbering rules out
+    most false positives, but not a bulleted list of *statistics* ("5 per
+    cent... 10 per cent... 15 per cent...") — every item still matches, and
+    a merely *increasing* run doesn't rule it out either, since ascending
+    statistics are common. A genuine numbered list's markers don't just
+    increase, they run consecutively — 1, 2, 3, never 5, 10, 15 — which a
+    coincidental run of leading numbers is unlikely to do by chance.
+    Requiring that is what pipeline.py's own bare-number heuristic
+    (_is_footnote_list_block) achieves via a content-vocabulary check —
+    this achieves the same rejection with a structural one instead."""
+    if len(entries) < 2:
+        return entries
+    texts = [str(entry.get("text", "")) for entry in entries]
+    matches = [_BARE_NUM_RE.match(text) for text in texts]
+    if not all(
+        not entry.get("marker") and match for entry, match in zip(entries, matches)
+    ):
+        return entries
+    numbers = [int(text[: match.end()].strip()) for text, match in zip(texts, matches)]
+    if any(later != earlier + 1 for earlier, later in zip(numbers, numbers[1:])):
+        return entries
+    promoted = []
+    for entry, text, match in zip(entries, texts, matches):
+        assert match is not None
+        promoted.append(
+            {
+                **entry,
+                "marker": f"{text[: match.end()].strip()}.",
+                "text": text[match.end() :].strip(),
+                "enumerated": True,
+            }
+        )
+    return promoted
+
+
 def _list_publication_blocks(
     block: dict[str, Any],
     page: int,
@@ -327,6 +473,7 @@ def _list_publication_blocks(
             for value in source_lines
             if (entry := _parsed_list_entry(value)) is not None
         ]
+    entries = promote_bare_number_markers(entries)
     output: list[dict[str, Any]] = []
     pending: list[dict[str, Any]] = []
     pending_style: str | None = None
@@ -376,6 +523,23 @@ def _list_publication_blocks(
                     "type": "paragraph",
                     "text": numbered_paragraph.group(2),
                     "number": numbered_paragraph.group(1),
+                    "page": page,
+                }
+            )
+            continue
+        # A decimal-style paragraph number (1.1, 7.2) can also already be
+        # sitting in its own marker field — Docling's native list extraction
+        # stores it there directly rather than leaving it embedded in text.
+        # Without this, an already-correctly-marked numbered paragraph would
+        # fall through to a generic ordered list below and lose its real
+        # number in favour of plain 1, 2, 3, ... list-position counting.
+        if re.fullmatch(r"\d+(?:\.\d+)+", marker):
+            flush()
+            output.append(
+                {
+                    "type": "paragraph",
+                    "text": text,
+                    "number": marker,
                     "page": page,
                 }
             )
@@ -496,16 +660,17 @@ def _box_section_publication_content(
                 }
             )
         elif label == "footnote":
-            output.append(
-                {
-                    "type": "footnote",
-                    "id": _unique_slug(
-                        f"box-footnote-{str(child.get('id', ''))}", counts
-                    ),
-                    "text": text,
-                    "page": child_page,
-                }
-            )
+            for entry_text in _split_footnote_entries(text):
+                output.append(
+                    {
+                        "type": "footnote",
+                        "id": _unique_slug(
+                            f"box-footnote-{str(child.get('id', ''))}", counts
+                        ),
+                        "text": entry_text,
+                        "page": child_page,
+                    }
+                )
         elif label.startswith("section_header_"):
             level = min(5, max(1, int(label.rsplit("_", 1)[1])))
             output.append(
@@ -645,15 +810,16 @@ def build_publication(
             continue
 
         if label == "footnote":
-            current["footnotes"].append(
-                {
-                    "id": _unique_slug(
-                        f"footnote-{len(current['footnotes']) + 1}", counts
-                    ),
-                    "text": text,
-                    "page": page,
-                }
-            )
+            for entry_text in _split_footnote_entries(text):
+                current["footnotes"].append(
+                    {
+                        "id": _unique_slug(
+                            f"footnote-{len(current['footnotes']) + 1}", counts
+                        ),
+                        "text": entry_text,
+                        "page": page,
+                    }
+                )
             continue
 
         if label.startswith("section_header_"):
@@ -763,6 +929,7 @@ def build_publication(
 
     finish_current()
     reader_sections = _ordered_reader_sections(_reader_sections(sections))
+    _fill_missing_chapter_numbers(reader_sections)
     if not reader_sections:
         fallback = next(
             (
@@ -807,7 +974,15 @@ def build_publication(
             1 for block in blocks if block.get("label") in {"table", "document_index"}
         ),
         "pictures": sum(1 for block in blocks if block.get("label") == "picture"),
-        "footnotes": sum(1 for block in blocks if block.get("label") == "footnote"),
+        # One "footnote"-labeled block can hold several citations bundled
+        # onto separate lines (see _split_footnote_entries) and becomes
+        # several entries in a section's footnotes list — counting blocks
+        # 1:1 undercounts against what actually gets exported.
+        "footnotes": sum(
+            len(_split_footnote_entries(str(block.get("text", "")).strip()))
+            for block in blocks
+            if block.get("label") == "footnote"
+        ),
     }
     return {
         "schemaName": "Konverter accessible document",

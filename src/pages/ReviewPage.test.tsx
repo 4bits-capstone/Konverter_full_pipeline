@@ -194,13 +194,28 @@ describe('ReviewPage', () => {
 
     expect(screen.getByRole('group', { name: 'Editable corrected list' })).toBeInTheDocument()
     const firstListItem = screen.getByLabelText('List item 1') as HTMLTextAreaElement
-    expect(firstListItem.value).toContain('Accessible format — Content that people can perceive')
+    expect(firstListItem.value).toContain('Term: Accessible format; Definition: Content that people can perceive')
     expect(firstListItem.value).not.toContain('|')
     expect(screen.queryByText('Term | Definition')).not.toBeInTheDocument()
 
     fireEvent.click(screen.getByRole('button', { name: 'Save changes' }))
     await waitFor(() => expect(screen.queryByRole('group', { name: 'Editable corrected list' })).not.toBeInTheDocument())
     expect(screen.getByRole('button', { name: 'Structure label: List' })).toBeDisabled()
+  })
+
+  it('keeps a real column header on a decimal-numbered clause instead of treating it as a numbered paragraph', async () => {
+    renderReview()
+    await screen.findAllByText('Definitions table needs confirmation')
+
+    fireEvent.click(screen.getByRole('button', { name: /Definitions table needs confirmation/ }))
+    fireEvent.click(screen.getByRole('button', { name: 'Edit flagged item' }))
+    fireEvent.click(screen.getByRole('button', { name: 'Structure label: Table' }))
+    fireEvent.click(within(screen.getByRole('listbox', { name: 'Structure label' })).getByRole('option', { name: 'List' }))
+
+    const fourthListItem = screen.getByLabelText('List item 4') as HTMLTextAreaElement
+    expect(fourthListItem.value).toBe(
+      'Term: 7.1; Definition: A clause that references a specific numbered provision.',
+    )
   })
 
   it('converts a table directly into footnote prose without table delimiters', async () => {

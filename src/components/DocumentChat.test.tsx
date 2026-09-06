@@ -124,6 +124,14 @@ describe('DocumentChat', () => {
     expect(screen.getByRole('button', { name: 'Ask about this document' })).toBeInTheDocument()
   })
 
+  it('tells the reader answers are scoped to this document only, not general knowledge or current legislation', () => {
+    render(<DocumentChat documentId="doc-1" />)
+    fireEvent.click(screen.getByRole('button', { name: 'Ask about this document' }))
+    expect(
+      screen.getByText(/based only on this document.*not general knowledge or current legislation/i),
+    ).toBeInTheDocument()
+  })
+
   it('sends a starter prompt immediately when clicked', async () => {
     render(<DocumentChat documentId="doc-1" />)
     fireEvent.click(screen.getByRole('button', { name: 'Ask about this document' }))

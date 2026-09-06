@@ -145,6 +145,25 @@ body:has(> .vlrc-publication-embed) {
   font-weight: 700;
 }
 
+.vlrc-publication-embed .citation-copy-status {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12.5px;
+  font-weight: 700;
+  color: var(--green-dark, #1a7a4c);
+  opacity: 0;
+  transition: opacity 0.2s ease;
+}
+
+.vlrc-publication-embed .citation-copy-status.is-visible {
+  opacity: 1;
+}
+
+.vlrc-publication-embed .citation-copy-status.is-error {
+  color: var(--red, #b3261e);
+}
+
 .vlrc-publication-embed .report-inline-action {
   -webkit-appearance: none;
   appearance: none;

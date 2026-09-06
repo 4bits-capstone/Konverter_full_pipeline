@@ -67,6 +67,10 @@ export interface ReviewItem {
   title: string
   kind: 'kv' | 'text' | 'table'
   status: ReviewStatus
+  /** Who last made the decision behind `status` — the pipeline itself
+   * (footnotes start pre-accepted, unseen by anyone) or a reviewer (any
+   * accept/edit/bulk-resolve action). Absent until either happens. */
+  reviewedBy?: 'system' | 'reviewer'
   extractedText?: string
   correctedText?: string
   note?: string

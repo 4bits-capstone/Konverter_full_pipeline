@@ -240,14 +240,29 @@ def test_upload_review_correct_and_export(tmp_path):
         # panel keeps showing the real evidence even after the structure
         # label is corrected to "list".
         assert changed.json()["kind"] == "table"
-        assert changed.json()["correctedText"] == "Structure — Review"
+        assert changed.json()["correctedText"] == "Item: Structure; Status: Review"
         assert "|" not in changed.json()["correctedText"]
+        # A reviewer's own PATCH always supersedes whatever the pipeline
+        # itself decided, distinguishing this from a footnote the pipeline
+        # pre-accepted without anyone looking at it.
+        assert changed.json()["reviewedBy"] == "reviewer"
+
+        before_resolve = client.get(f"/api/documents/{document_id}/review-items").json()
+        pending_ids = {item["id"] for item in before_resolve if item["status"] == "pending"}
 
         resolved = client.post(f"/api/documents/{document_id}/review-items/resolve-all")
         assert resolved.status_code == 200
         assert all(
             item["status"] == "accepted" or item["status"] == "edited"
             for item in resolved.json()
+        )
+        # Bulk-resolving is still a deliberate reviewer decision, not the
+        # pipeline's own — every item resolve-all actually flipped from
+        # pending must be tagged accordingly.
+        assert all(
+            item["reviewedBy"] == "reviewer"
+            for item in resolved.json()
+            if item["id"] in pending_ids
         )
 
         metadata_response = client.get(f"/api/documents/{document_id}/metadata")

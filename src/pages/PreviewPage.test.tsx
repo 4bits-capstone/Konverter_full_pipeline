@@ -38,9 +38,9 @@ describe('Preview and report pages', () => {
     expect(links.map(link => link.getAttribute('href'))).toEqual([
       '/api/documents/test-document/exports/html', '/api/documents/test-document/exports/jsonld', '/api/documents/test-document/exports/structured',
     ])
-    expect(links[0]).toHaveTextContent('Ready-to-Publish PageUse the complete pageA polished landing page, ready to publish.')
-    expect(links[1]).toHaveTextContent('AI MetadataEnhance your existing pageAdd AI-readable information without replacing your current page.')
-    expect(links[2]).toHaveTextContent('Content StructureUnderstand your documentView how the document has been organized into sections and topics.')
+    expect(links[0]).toHaveTextContent('Ready-to-Publish PageGet the complete pageA polished, accessible web page ready to publish.')
+    expect(links[1]).toHaveTextContent('AI MetadataEnhance your existing pageAdd AI-readable metadata to your current page without replacing its content.')
+    expect(links[2]).toHaveTextContent('Content StructureUnderstand your documentSee how your document is organized into sections, headings, and topics.')
     expect(screen.queryByText('Cosmograph')).not.toBeInTheDocument()
     expect(screen.queryByText('Original PDF')).not.toBeInTheDocument()
     const preview = await screen.findByTitle('Accessible publication preview: Accessibility Standards Report')

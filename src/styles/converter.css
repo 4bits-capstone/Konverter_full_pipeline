@@ -1545,6 +1545,16 @@
   color: var(--hi);
 }
 
+/* Deliberately not --hi (accepted): a pipeline pre-acceptance is not the
+   same claim as a reviewer's own decision, and needs to read differently
+   at a glance rather than blend in with items a person actually looked
+   at — reuses the medium-confidence tone to signal "not fully verified". */
+.converter-app .status-tag.system-validated {
+  background: var(--md-soft);
+  border-color: var(--md-line);
+  color: var(--md);
+}
+
 .converter-app .status-tag.edited {
   background: var(--accent-soft);
   border-color: #cfe0f0;

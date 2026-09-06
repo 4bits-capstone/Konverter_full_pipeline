@@ -2,6 +2,8 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import fitz  # PyMuPDF, used only to build test fixture PDFs with real text
+
 from app.config import Settings
 from app.pipeline import KonverterPipeline, _relabel_footnote_lists
 
@@ -156,3 +158,152 @@ def test_footnote_review_items_are_pre_accepted_but_other_types_stay_pending():
         "footnote": "accepted",
         "text": "pending",
     }
+    # A footnote's "accepted" status is the pipeline's own decision, made
+    # before any reviewer has seen the item — Docling cannot preserve
+    # italics on PDF text (verified directly against this project's own
+    # Docling install), so an auto-accepted citation with an italicised
+    # case name may have already silently lost that styling. Tagging it
+    # "system" keeps that distinct from a reviewer's own accept.
+    assert {item["type"]: item.get("reviewed_by") for item in items} == {
+        "footnote": "system",
+        "text": None,
+    }
+
+
+def test_box_section_review_item_uses_childrens_clean_list_items():
+    """A bulleted/numbered list absorbed into a callout panel by
+    group_visual_callouts (visual_structure.py) becomes a box_section
+    whose own "text" is just its children's raw text joined verbatim —
+    markers included. The reviewer's *editable* starting text should be
+    clean the same way a standalone list block's is, by preferring each
+    child's own list_items when it has one."""
+    blocks = [
+        {
+            "id": "box-section:1",
+            "label": "box_section",
+            "text": "• 114 Ibid 98.\n• 115 Tim Holding, Minister.",
+            "box_section_title": "Recommendation",
+            "box_section_blocks": [
+                {
+                    "id": "#/texts/2",
+                    "label": "list",
+                    "text": "• 114 Ibid 98.\n• 115 Tim Holding, Minister.",
+                    "list_items": ["114 Ibid 98.", "115 Tim Holding, Minister."],
+                }
+            ],
+            "page": 41,
+            "confidence": 0.6,
+        }
+    ]
+
+    pipeline = KonverterPipeline(_settings())
+    items = pipeline._build_review_items(blocks)
+
+    assert len(items) == 1
+    extracted = items[0]["extracted_text"]
+    assert "•" not in extracted
+    assert extracted == "114 Ibid 98.\n115 Tim Holding, Minister."
+
+
+def _write_footnote_pdf(path: Path, footnote_text: str) -> dict:
+    """A one-page PDF with a single line of real text at a known position,
+    mimicking a footnote at the bottom of a page. Returns the source_bounds
+    a Docling block for that text would carry (top-down, matching what
+    pipeline.py's blocks actually use)."""
+    doc = fitz.open()
+    page = doc.new_page(width=595, height=842)
+    x, y, fontsize = 72, 800, 9
+    page.insert_text((x, y), footnote_text, fontsize=fontsize, fontname="helv")
+    width = fitz.get_text_length(footnote_text, fontsize=fontsize, fontname="helv")
+    doc.save(path)
+    doc.close()
+    # PyMuPDF's insert_text baseline sits a little above the glyphs'
+    # descenders — pad the box generously so the real text is fully
+    # enclosed, the same way real Docling provenance boxes are.
+    return {
+        "left": x - 2,
+        "top": y - fontsize - 2,
+        "right": x + width + 2,
+        "bottom": y + 4,
+        "page_width": 595,
+        "page_height": 842,
+    }
+
+
+def test_footnote_matching_the_source_pdf_is_verified_and_pre_accepted(tmp_path):
+    pdf_path = tmp_path / "source.pdf"
+    footnote_text = "6 Lemmon v Webb [1895] AC 1."
+    bounds = _write_footnote_pdf(pdf_path, footnote_text)
+    blocks = [
+        {
+            "id": "#/texts/1",
+            "label": "footnote",
+            "text": footnote_text,
+            "page": 1,
+            "confidence": 0.6,
+            "source_bounds": bounds,
+        }
+    ]
+
+    pipeline = KonverterPipeline(_settings())
+    items = pipeline._build_review_items(blocks, pdf_path)
+
+    assert len(items) == 1
+    assert items[0]["status"] == "accepted"
+    assert items[0]["reviewed_by"] == "system"
+
+
+def test_footnote_disagreeing_with_the_source_pdf_is_not_pre_accepted(tmp_path):
+    """Reproduces the real failure mode found in a 364-page VLRC report:
+    Docling's own text for a footnote block can be truncated to a
+    fragment of what's actually in that region of the PDF, with an
+    unremarkable confidence score — cross-validating against an
+    independent re-extraction of the same region is what catches it."""
+    pdf_path = tmp_path / "source.pdf"
+    real_text = "76 Joel Silver, Nuisance by Tree, permit the nuisance to be adopted."
+    bounds = _write_footnote_pdf(pdf_path, real_text)
+    blocks = [
+        {
+            "id": "#/texts/1",
+            "label": "footnote",
+            # Docling's own text for this block is a truncated fragment of
+            # what's actually at these bounds in the PDF.
+            "text": "76 permit the nuisance to be adopted.",
+            "page": 1,
+            "confidence": 0.6,
+            "source_bounds": bounds,
+        }
+    ]
+
+    pipeline = KonverterPipeline(_settings())
+    items = pipeline._build_review_items(blocks, pdf_path)
+
+    assert len(items) == 1
+    assert items[0]["status"] == "pending"
+    assert items[0]["reviewed_by"] is None
+
+
+def test_footnote_verification_is_skipped_without_a_pdf_path():
+    """No pdf_path means there's no PDF to independently check against at
+    all — that's "unverifiable", not "verified and wrong" — so it must
+    fall back to the old trust-by-default behaviour rather than marking
+    every footnote pending just because verification wasn't possible."""
+    blocks = [
+        {
+            "id": "#/texts/1",
+            "label": "footnote",
+            "text": "1 Ibid.",
+            "page": 1,
+            "confidence": 0.6,
+            "source_bounds": {
+                "left": 72, "top": 800, "right": 200, "bottom": 812,
+                "page_width": 595, "page_height": 842,
+            },
+        }
+    ]
+
+    pipeline = KonverterPipeline(_settings())
+    items = pipeline._build_review_items(blocks)
+
+    assert items[0]["status"] == "accepted"
+    assert items[0]["reviewed_by"] == "system"

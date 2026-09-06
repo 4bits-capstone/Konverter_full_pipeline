@@ -19,14 +19,29 @@ _TOKEN_CACHE_TTL_SECONDS = 5.0
 _token_cache: dict[str, tuple[float, dict]] = {}
 
 
+def _prune_expired_tokens(now: float) -> None:
+    # Each distinct bearer token a user ever presents (every Supabase
+    # access-token rotation, roughly hourly per active session) becomes a
+    # permanent dict key otherwise — an entry is only ever overwritten if
+    # the exact same token string comes back, never deleted once its TTL
+    # passes. Sweeping expired entries on every call keeps the cache
+    # bounded to whatever's actually been looked up in the last few
+    # seconds, since the TTL itself is short.
+    expired = [key for key, (expiry, _) in _token_cache.items() if expiry <= now]
+    for key in expired:
+        del _token_cache[key]
+
+
 async def get_current_user(authorization: str | None = Header(default=None)) -> dict:
     """Return the Supabase user for the request's bearer token, or 401."""
     if not authorization or not authorization.lower().startswith("bearer "):
         raise HTTPException(status_code=401, detail="Not authenticated")
     token = authorization.split(" ", 1)[1]
 
+    now = time.monotonic()
+    _prune_expired_tokens(now)
     cached = _token_cache.get(token)
-    if cached and cached[0] > time.monotonic():
+    if cached and cached[0] > now:
         return cached[1]
 
     async with httpx.AsyncClient(timeout=10) as client:

@@ -132,6 +132,38 @@ describe('MetadataPage', () => {
     expect(screen.getByRole('button', { name: 'Approve and open preview' })).toBeDisabled()
   })
 
+  it('keeps the checklist and the resolved-count summary consistent when a non-blocking flag is still pending', async () => {
+    // pendingCount only tracks *blocking* flags — approval doesn't require
+    // a decision on non-blocking types (pictures/tables/footnotes) — so it
+    // can read 0 while resolvedCount is still short of the total. Both
+    // pieces of text in this same modal must agree, not contradict each
+    // other (one saying "all flags have a decision", the other showing a
+    // count short of the total).
+    const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } })
+    renderMetadata(queryClient)
+    await screen.findByRole('heading', { name: 'Document metadata' })
+    approveMetadataFields()
+    fireEvent.click(screen.getByRole('button', { name: /Run final system checks/ }))
+    await screen.findByRole('list', { name: 'Approval system checks' })
+
+    await act(async () => {
+      queryClient.setQueryData(['review-items', testDocument.id], testReviewItems.map((item, index) => ({
+        ...item,
+        type: index === 0 ? 'table' : item.type,
+        status: index === 0 ? 'pending' : 'accepted',
+      })))
+    })
+
+    const summary = await screen.findByLabelText('Document approval summary')
+    await waitFor(() => expect(within(summary).getByText(/resolved$/).textContent).not.toMatch(
+      new RegExp(`^${testReviewItems.length}/${testReviewItems.length}`),
+    ))
+    const checklist = within(screen.getByRole('list', { name: 'Approval system checks' }))
+    expect(checklist.getByText(/flags have a decision/)).not.toHaveTextContent(
+      `All ${testReviewItems.length} flags have a decision`,
+    )
+  })
+
   it('updates the top bar after revised metadata is saved', async () => {
     renderMetadata()
     await screen.findByRole('heading', { name: 'Document metadata' })

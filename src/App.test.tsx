@@ -54,7 +54,10 @@ describe('Konverter frontend', () => {
     expect(await screen.findByRole('heading', { name: 'Upload documents' }, { timeout: 3000 })).toBeInTheDocument()
     expect(screen.getByRole('navigation', { name: 'Review pipeline' })).toBeInTheDocument()
     expect(screen.getByRole('button', { name: /Step 2: Review/i })).toBeDisabled()
-    expect(screen.getByText('Helping businesses use AI to be more efficient and effective.')).toBeInTheDocument()
+    // The tagline's own <br> splits it into two DOM text nodes, so a
+    // single-string exact match never finds it — match each half instead.
+    expect(screen.getByText(/Helping businesses use AI/)).toBeInTheDocument()
+    expect(screen.getByText(/to be more efficient and effective\.$/)).toBeInTheDocument()
     expect(screen.getByText('Convert, review and export')).toBeInTheDocument()
   })
 
@@ -69,7 +72,10 @@ describe('Konverter frontend', () => {
     expect(await screen.findByRole('heading', { name: 'Sign in to continue' })).toBeInTheDocument()
     expect(screen.getByText('Reviewer console')).toBeInTheDocument()
     expect(screen.getByText('Use your Konverter account to convert, review and export accessible reports.')).toBeInTheDocument()
-    expect(screen.getByText('Helping businesses use AI to be more efficient and effective.')).toBeInTheDocument()
+    // The tagline's own <br> splits it into two DOM text nodes, so a
+    // single-string exact match never finds it — match each half instead.
+    expect(screen.getByText(/Helping businesses use AI/)).toBeInTheDocument()
+    expect(screen.getByText(/to be more efficient and effective\.$/)).toBeInTheDocument()
     expect(screen.queryByText(/remember me/i)).not.toBeInTheDocument()
     expect(screen.queryByText(/forgot password/i)).not.toBeInTheDocument()
   })

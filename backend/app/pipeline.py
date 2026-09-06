@@ -8,6 +8,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+import pypdfium2 as pdfium
+
 from . import docling_runner, runpod_client, storage_bucket
 from .config import Settings
 from .metadata_rules import empty_metadata_payload, extract_metadata_from_docling
@@ -120,6 +122,54 @@ def _plain_text_from_table(table: dict[str, Any] | None) -> str:
     return "\n".join(value for value in rows if value.strip(" |"))
 
 
+def _normalize_for_text_comparison(value: str) -> str:
+    value = value.replace("’", "'").replace("‘", "'")
+    value = value.replace("“", '"').replace("”", '"')
+    value = value.replace("–", "-").replace("—", "-")
+    value = re.sub(r"\s+", "", value)
+    return value
+
+
+def _footnote_text_is_trustworthy(
+    page_textpage: Any, bounds: dict[str, Any], docling_text: str
+) -> bool:
+    """Independently re-extract this footnote's own region of the PDF —
+    bypassing Docling's own text entirely — and compare. Verified directly
+    against a real 364-page VLRC report: Docling occasionally truncates a
+    footnote to its last sentence, or interleaves two adjacent footnotes'
+    content across their block boundaries, while reporting an unremarkable
+    confidence score for the (wrong) result — auto-accepting every
+    footnote regardless would ship those silently. `page_textpage` covers
+    the whole page in PDF canvas units (bottom-left origin); `bounds`
+    (from Docling's own provenance) is top-down, hence the flip below.
+    A merely dropped hyphen at a line-wrap (common in wrapped citation
+    URLs) is treated as untrustworthy too, same as real content loss —
+    both mean the extracted text doesn't match the source, just at
+    different severities, and either way a person should confirm it."""
+    page_height = float(bounds.get("page_height", 0))
+    if page_height <= 0:
+        return False
+    try:
+        independent_text = page_textpage.get_text_bounded(
+            left=float(bounds.get("left", 0)),
+            right=float(bounds.get("right", 0)),
+            bottom=page_height - float(bounds.get("bottom", 0)),
+            top=page_height - float(bounds.get("top", 0)),
+        )
+    except Exception:
+        return False
+    doc_norm = _normalize_for_text_comparison(docling_text)
+    ind_norm = _normalize_for_text_comparison(independent_text)
+    if not doc_norm or not ind_norm:
+        return False
+    # The independent crop commonly bleeds in stray characters from the
+    # line directly above (ascenders/descenders clipped at the bbox edge)
+    # without losing any of the footnote's own text — a true superset —
+    # so a substring match either way, not exact equality, is the right
+    # bar for "matches", verified against the real document above.
+    return doc_norm in ind_norm or ind_norm in doc_norm
+
+
 @dataclass
 class PipelineOutput:
     blocks: list[dict[str, Any]]
@@ -156,7 +206,7 @@ class KonverterPipeline:
             metadata_payload = empty_metadata_payload(self.settings)
 
         stage(5, "Scoring confidence")
-        review_items = self._build_review_items(blocks)
+        review_items = self._build_review_items(blocks, pdf_path)
         stage(6, "Preparing review")
         return PipelineOutput(
             blocks=blocks,
@@ -822,7 +872,44 @@ class KonverterPipeline:
             "rows": matrix,
         }
 
-    def _build_review_items(self, blocks: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    def _build_review_items(
+        self, blocks: list[dict[str, Any]], pdf_path: Path | None = None
+    ) -> list[dict[str, Any]]:
+        # No PDF to independently check against (e.g. these blocks came
+        # from something other than a real, on-disk PDF) means footnote
+        # cross-validation simply isn't possible — that's "unverifiable",
+        # not "verified and wrong", so it falls back to the old trust-by-
+        # default behaviour rather than marking every footnote pending.
+        if pdf_path is None:
+            return self._build_review_items_with_textpages(blocks, None)
+
+        try:
+            pdf_document = pdfium.PdfDocument(str(pdf_path))
+        except Exception:
+            return self._build_review_items_with_textpages(blocks, None)
+
+        textpage_cache: dict[int, Any] = {}
+
+        def footnote_textpage(page_number: int) -> Any:
+            if page_number not in textpage_cache:
+                try:
+                    textpage_cache[page_number] = pdf_document[
+                        page_number - 1
+                    ].get_textpage()
+                except Exception:
+                    textpage_cache[page_number] = None
+            return textpage_cache[page_number]
+
+        try:
+            return self._build_review_items_with_textpages(blocks, footnote_textpage)
+        finally:
+            pdf_document.close()
+
+    def _build_review_items_with_textpages(
+        self,
+        blocks: list[dict[str, Any]],
+        footnote_textpage: Callable[[int], Any] | None,
+    ) -> list[dict[str, Any]]:
         items: list[dict[str, Any]] = []
         for block in blocks:
             label = str(block.get("label", "unspecified"))
@@ -847,6 +934,66 @@ class KonverterPipeline:
                 # review. Keeping them creates indistinguishable full-page flags.
                 continue
             source_text = html.escape(text[:1800]).replace("\n", "<br>")
+            list_items = block.get("list_items")
+            box_children = block.get("box_section_blocks")
+            # The evidence preview above (source_text) should show exactly
+            # what was extracted, bullets and all — but the *editable*
+            # starting text shouldn't, or a reviewer who only changes the
+            # structure label without retyping anything carries stray
+            # marker characters (e.g. "• 114 Ibid 98.") straight into a
+            # footnote/quote/heading correction instead of clean text.
+            # list_items already has markers parsed out; the raw block
+            # text doesn't. A box_section absorbs whichever blocks a
+            # detected panel contains (group_visual_callouts in
+            # visual_structure.py) and its own "text" is just those
+            # children's raw text joined verbatim, so a bulleted list
+            # trapped inside a callout panel leaks the same marker
+            # characters through the box_section path instead — falling
+            # back to each child's own list_items (when it has one) fixes
+            # that case the same way.
+            if list_items:
+                extracted_text = "\n".join(
+                    str(item).strip() for item in list_items if str(item).strip()
+                )
+            elif box_children:
+                extracted_text = "\n\n".join(
+                    cleaned
+                    for child in box_children
+                    if (
+                        cleaned := (
+                            "\n".join(
+                                str(item).strip()
+                                for item in child.get("list_items") or []
+                                if str(item).strip()
+                            )
+                            if child.get("list_items")
+                            else str(child.get("text", "")).strip()
+                        )
+                    )
+                )
+            else:
+                extracted_text = text
+            # A footnote only gets the pipeline's own pre-acceptance if an
+            # independent re-extraction of its own PDF region agrees with
+            # Docling's text — verified directly against a real 364-page
+            # VLRC report, Docling's confidence score does not catch this:
+            # a truncated-to-one-sentence footnote and two footnotes with
+            # interleaved content both carried unremarkable confidence.
+            # One that fails cross-validation goes to the ordinary
+            # "pending" queue instead, same as everything else.
+            if label != "footnote":
+                footnote_verified = False
+            elif footnote_textpage is None:
+                # No PDF available to check against at all (e.g. these
+                # blocks didn't come from a real on-disk PDF) — that's
+                # "unverifiable", not "verified and wrong".
+                footnote_verified = True
+            else:
+                footnote_verified = bool(
+                    block.get("source_bounds")
+                ) and _footnote_text_is_trustworthy(
+                    footnote_textpage(page), block.get("source_bounds") or {}, text
+                )
             items.append(
                 {
                     "id": f"review-{len(items) + 1}",
@@ -860,11 +1007,26 @@ class KonverterPipeline:
                     "kind": kind,
                     # Footnotes are already non-blocking (see
                     # NON_BLOCKING_REVIEW_TYPES in service.py) and are
-                    # low-stakes reference text, so they start pre-accepted
-                    # rather than sitting in the queue as "pending" —
-                    # reviewers can still reopen and edit any of them.
-                    "status": "accepted" if label == "footnote" else "pending",
-                    "extracted_text": None if kind == "table" else text,
+                    # low-stakes reference text, so a verified one starts
+                    # pre-accepted rather than sitting in the queue as
+                    # "pending" — reviewers can still reopen and edit any
+                    # of them regardless.
+                    "status": "accepted" if footnote_verified else "pending",
+                    # This "accepted" is the pipeline's own decision, made
+                    # before any person has seen the item — distinct from a
+                    # reviewer's own accept/edit/bulk-resolve action later
+                    # (service.py sets "reviewer" the moment one happens).
+                    # Docling itself cannot preserve italics on PDF text
+                    # (verified directly: the DoclingDocument schema has a
+                    # formatting field, but the PDF backend never populates
+                    # it — see BACKEND_AUDIT.md), so an auto-accepted legal
+                    # citation with an italicised case name has already
+                    # silently lost that styling by the time it reaches
+                    # this queue; flagging it as system-validated rather
+                    # than indistinguishable from a human decision keeps
+                    # that gap visible instead of hidden.
+                    "reviewed_by": "system" if footnote_verified else None,
+                    "extracted_text": None if kind == "table" else extracted_text,
                     "corrected_text": None,
                     "note": (
                         "Confirm the structure label and extracted content against the original PDF. "

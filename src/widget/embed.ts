@@ -227,7 +227,7 @@ function mountKonverterChatWidget(config: KonverterChatConfig): void {
     <div class="kcw-head">
       <div>
         <h4>Ask about this document</h4>
-        <p class="kcw-hint">Answers use this document&rsquo;s reviewed content and structured export as context.</p>
+        <p class="kcw-hint">Answers are based only on this document&rsquo;s own content — not general knowledge or current legislation.</p>
       </div>
       <button type="button" class="kcw-close" aria-label="Close chat">${svg(ICONS.close)}</button>
     </div>

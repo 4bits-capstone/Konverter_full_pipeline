@@ -103,6 +103,17 @@
       );
     });
   }
+  var statusHideTimer = null;
+  function showCopyStatus(status, text, isError) {
+    status.textContent = text;
+    status.classList.toggle('is-error', Boolean(isError));
+    status.classList.add('is-visible');
+    if (statusHideTimer !== null) window.clearTimeout(statusHideTimer);
+    statusHideTimer = window.setTimeout(function () {
+      status.classList.remove('is-visible');
+      statusHideTimer = null;
+    }, 2500);
+  }
   if (copy) copy.addEventListener('click', async function () {
     var text = (copy.getAttribute('data-citation') || '').trim();
     var status = publication.querySelector('.citation-copy-status');
@@ -110,15 +121,15 @@
     try {
       if (!navigator.clipboard) throw new Error('Clipboard unavailable');
       await withTimeout(navigator.clipboard.writeText(text), 800);
-      status.textContent = 'Citation copied.';
+      showCopyStatus(status, 'Citation copied.', false);
     } catch (_) {
       var textarea = document.createElement('textarea');
       textarea.value = text; textarea.style.position = 'fixed'; textarea.style.left = '-9999px';
       document.body.appendChild(textarea); textarea.select();
       try {
         if (!document.execCommand('copy')) throw new Error('Copy unavailable');
-        status.textContent = 'Citation copied.';
-      } catch (_) { status.textContent = 'Citation could not be copied. Please try again.'; focusTarget(copy); }
+        showCopyStatus(status, 'Citation copied.', false);
+      } catch (_) { showCopyStatus(status, 'Citation could not be copied. Please try again.', true); focusTarget(copy); }
       textarea.remove();
     }
   });

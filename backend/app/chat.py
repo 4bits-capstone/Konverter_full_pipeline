@@ -88,11 +88,13 @@ def _render_block_text(block: dict[str, Any]) -> str:
     if block_type == "table":
         caption = str(block.get("caption", "")).strip()
         lines = [f"Table: {caption}" if caption else "Table:"]
+        has_rows = False
         for row in block.get("rows", []):
             cells = [str(cell.get("text", "")).strip() for cell in row]
             if any(cells):
                 lines.append(" | ".join(cells))
-        return "\n".join(lines) if len(lines) > 1 else ""
+                has_rows = True
+        return "\n".join(lines) if (caption or has_rows) else ""
     if block_type == "figure":
         caption = str(block.get("caption", "")).strip()
         return f"Figure: {caption}" if caption else ""

@@ -21,6 +21,165 @@ def test_quote_reaches_publication_and_accessible_html_semantically():
     assert rendered == '<blockquote class="document-quote"><p>Quoted statement.</p><p>Speaker</p></blockquote>'
 
 
+def test_footnote_block_bundling_multiple_citations_splits_into_separate_entries():
+    """A table of citations converted straight to "footnote" (rather than
+    via table -> list -> footnote) ends up as one block whose text has
+    one citation per line — exporter.py used to always create exactly
+    one footnote entry per block, so every citation in that table merged
+    into a single <li> and rendered as one unbroken paragraph (the
+    default HTML white-space rules collapse the embedded newlines).
+    Splitting a block's text into separate entries whenever each line
+    opens with its own strictly-increasing citation number fixes this
+    without touching genuine single footnotes that happen to wrap."""
+    publication = build_publication(
+        [
+            {"id": "title", "label": "title", "text": "Report", "order": 0},
+            {"id": "section", "label": "section_header_1", "text": "Findings", "order": 1},
+            {
+                "id": "footnote-table",
+                "label": "footnote",
+                "text": "100 First citation.\n101 Second citation.\n102 Third citation.",
+                "order": 2,
+            },
+        ],
+        {"title": "Report", "pages": 1, "file_name": "report.pdf"},
+    )
+
+    footnotes = publication["sections"][0]["footnotes"]
+    assert [note["text"] for note in footnotes] == [
+        "100 First citation.",
+        "101 Second citation.",
+        "102 Third citation.",
+    ]
+
+
+def test_genuine_wrapped_footnote_is_not_split():
+    publication = build_publication(
+        [
+            {"id": "title", "label": "title", "text": "Report", "order": 0},
+            {"id": "section", "label": "section_header_1", "text": "Findings", "order": 1},
+            {
+                "id": "footnote-wrapped",
+                "label": "footnote",
+                "text": "7 A statement that continues\nonto a second line.",
+                "order": 2,
+            },
+        ],
+        {"title": "Report", "pages": 1, "file_name": "report.pdf"},
+    )
+
+    footnotes = publication["sections"][0]["footnotes"]
+    assert len(footnotes) == 1
+    assert footnotes[0]["text"] == "7 A statement that continues\nonto a second line."
+
+
+def test_inbody_footnote_reference_resolves_by_printed_number_not_position():
+    """_footnote_targets used to key a footnote by its *position* in the
+    section's footnote list (parsed from the auto-generated id, e.g.
+    "footnote-7" -> "7"), not by the citation number actually printed in
+    its text. Docling doesn't create one footnote block per printed
+    number — a repeated "Ibid" citation reuses an earlier number without
+    a new block — so position drifts from the printed number, and every
+    in-body reference after that point silently resolved to the wrong
+    footnote. A body reference to citation "6" must land on the footnote
+    whose own text says "6 ...", not on whichever footnote happens to
+    sit in position 6."""
+    from app.preview_html import _footnote_targets, _render_inline_text
+
+    footnotes = [
+        # Position 1 in the list, and its own printed number is "1" — matches.
+        {"id": "footnote-1", "text": "1 First citation.", "page": 1},
+        # An "Ibid"-style repeat with no printed number of its own —
+        # falls back to position ("2").
+        {"id": "footnote-2", "text": "Ibid.", "page": 1},
+        # Genuinely printed as citation "6" despite sitting in position
+        # 3 — position-based lookup would have wrongly resolved a body
+        # reference to "6" to whatever sits in position 6 (nothing, in
+        # this section) instead of this entry.
+        {"id": "footnote-3", "text": "6 Real citation six.", "page": 1},
+    ]
+    targets = _footnote_targets(footnotes)
+
+    rendered = _render_inline_text("As established in the case. 6", targets)
+    assert 'href="#footnote-3"' in rendered
+    assert 'aria-label="Footnote 6"' in rendered
+
+
+def test_footnote_target_number_match_beats_a_prior_positional_collision():
+    """A degenerate note with no real citation number of its own (a
+    stray fragment, e.g. a lone "5" left over from a page-break split)
+    used to grab a position-based fallback key (its position happens to
+    be "6") before the very next, genuinely-numbered note ("6 Lemmon v
+    Webb...") got a chance to register under that same key by its own
+    printed number — first-registered-wins meant the fragment silently
+    blocked the real citation. Filling every real printed number first,
+    across the whole list, before any position fallback runs at all,
+    means order no longer matters."""
+    from app.preview_html import _footnote_targets
+
+    footnotes = [
+        {"id": "footnote-5-3", "text": "See Financial Rights Legal Centre.", "page": 1},
+        # A stray fragment with no body — position happens to be "6".
+        {"id": "footnote-6-3", "text": "5", "page": 1},
+        # Its own printed number is "6" — must win key "6" regardless of
+        # appearing after the fragment above.
+        {"id": "footnote-7-2", "text": "6 Lemmon v Webb [1895] AC 1.", "page": 1},
+    ]
+    targets = _footnote_targets(footnotes)
+    assert targets["6"] == "footnote-7-2"
+
+
+def test_chapter_number_boundary_fill_does_not_number_overview_or_appendices():
+    """_fill_missing_chapter_numbers walks outward from the first/last
+    numbered chapter, assigning the next number to each unnumbered
+    section until it hits one that's never a real chapter. The
+    blocklist used to miss both directions' most common VLRC report
+    shape: an unnumbered "Overview" before chapter 1, and unnumbered
+    "Appendix A"/"Appendix B" sections after the last chapter — both got
+    silently renumbered into fake chapters ("1. Overview",
+    "8. Appendix A") instead of staying as the front/back matter they
+    are."""
+    publication = build_publication(
+        [
+            {"id": "title", "label": "title", "text": "Report", "order": 0},
+            {"id": "overview", "label": "section_header_1", "text": "Overview", "order": 1},
+            {
+                "id": "chapter-2",
+                "label": "section_header_1",
+                "text": "2. Community values",
+                "order": 2,
+            },
+            {
+                "id": "appendix-a",
+                "label": "section_header_1",
+                "text": "Appendix A: Submissions",
+                "order": 3,
+            },
+            {
+                "id": "appendix-b",
+                "label": "section_header_1",
+                "text": "Appendix B: Data tables",
+                "order": 4,
+            },
+        ],
+        {"title": "Report", "pages": 4, "file_name": "report.pdf"},
+    )
+
+    titles = [section["displayTitle"] for section in publication["sections"]]
+    assert titles == [
+        "Overview",
+        "2. Community values",
+        "Appendix A: Submissions",
+        "Appendix B: Data tables",
+    ]
+    assert [section["isChapter"] for section in publication["sections"]] == [
+        False,
+        True,
+        False,
+        False,
+    ]
+
+
 def test_all_printed_contents_sections_are_kept_before_and_after_chapters():
     publication = build_publication(
         [

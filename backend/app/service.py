@@ -13,7 +13,12 @@ from typing import Any
 
 from . import audit
 from .config import Settings
-from .exporter import build_accessible_html, build_json_ld, build_publication
+from .exporter import (
+    promote_bare_number_markers,
+    build_accessible_html,
+    build_json_ld,
+    build_publication,
+)
 from .logging_utils import document_logger, sanitize_for_log
 from .media import render_pdf_region, render_pdf_regions
 from .pipeline import LABEL_DISPLAY, KonverterPipeline, _plain_text_from_table
@@ -74,6 +79,31 @@ def _strip_list_marker(line: str) -> str:
     return str(entry.get("text", "")) if entry else ""
 
 
+def _clean_source_text(block: dict[str, Any]) -> str:
+    """The single, marker-stripped source of truth for a block's own
+    content — used whenever a structure-label change falls back to
+    "whatever this block already contains" rather than an explicit edit.
+    A block's raw text field can carry a leading marker character ("• 2
+    The Act should...") that's already been parsed out elsewhere into
+    clean list_entries, or that a box_section's own top-level text
+    inherited unstripped from its children. Reusing the already-clean
+    list_entries (or box_section_blocks' own text) and stripping the same
+    marker pattern from whatever's left avoids leaking it into whatever
+    type gets converted to next."""
+    list_entries = block.get("list_entries")
+    if list_entries:
+        raw = "\n".join(str(entry.get("text", "")) for entry in list_entries)
+    else:
+        children = block.get("box_section_blocks")
+        raw = (
+            "\n".join(str(child.get("text", "")) for child in children)
+            if children
+            else str(block.get("text", ""))
+        )
+    lines = [_strip_list_marker(line) for line in raw.splitlines()]
+    return "\n".join(line for line in lines if line)
+
+
 def _list_entries(value: str) -> list[dict[str, Any]]:
     return [
         entry
@@ -104,20 +134,55 @@ def _list_entries_from_table(
 ) -> list[dict[str, Any]]:
     if not table:
         return []
+    headers = [
+        " ".join(str(value).replace("|", " ").split())
+        for value in table.get("headers", [])
+    ]
     rows = table.get("rows") or []
+    # A header's own text, once it stands in for a missing data row, is
+    # content — not a value that header describes — so labeling it against
+    # `headers` (by position) is never right, whichever header it lands on.
+    effective_headers = headers
     if not rows:
         rows = [[value] for value in table.get("headers", []) if str(value).strip()]
+        effective_headers = []
     entries: list[dict[str, Any]] = []
     for row in rows:
-        cells = [
-            " ".join(str(value).replace("|", " ").split())
-            for value in row
-            if " ".join(str(value).replace("|", " ").split())
+        indexed_cells = [
+            (index, " ".join(str(value).replace("|", " ").split()))
+            for index, value in enumerate(row)
         ]
+        indexed_cells = [(index, value) for index, value in indexed_cells if value]
+        cells = [value for _, value in indexed_cells]
         if not cells:
             continue
         marker = _table_list_marker(cells[0]) if len(cells) > 1 else ""
-        text = " — ".join(cells[1:] if marker else cells)
+        remaining_indexed = indexed_cells[1:] if marker else indexed_cells
+        remaining = [value for _, value in remaining_indexed]
+        # A cell with a real column header (not "Column N") gets that
+        # header as its label; a cell without one is left as a bare value
+        # rather than guessed at — labeling *some* of a row and leaving the
+        # rest bare is still more honest than falling back to "the first
+        # cell labels the second" the moment even one column's header is
+        # missing or generic.
+        has_any_header = any(
+            index < len(effective_headers) and not _is_generic_header(effective_headers[index])
+            for index, _ in remaining_indexed
+        )
+        # Decimal paragraph numbering (7.1, 1.2.3 — common in these reports)
+        # isn't recognised by _table_list_marker, but the exporter's own
+        # numbered-paragraph detection (_list_publication_blocks) looks for
+        # exactly "<number> <text>" with a bare space, so that space must be
+        # preserved here rather than joined with a colon like a real
+        # label/value pair, or the item silently loses its numbered styling
+        # and falls back to a plain bullet. Only when there's no real
+        # header to respect instead — a genuine "Clause"/"Description"
+        # table with a "7.1"-shaped clause number is a real label/value
+        # pair, not a numbered paragraph, and should keep its header.
+        if not marker and not has_any_header and len(remaining) == 2 and re.fullmatch(r"\d+(?:\.\d+)+", remaining[0]):
+            text = f"{remaining[0]} {remaining[1]}"
+        else:
+            text = _label_row_with_headers(remaining_indexed, effective_headers)
         parsed = _parse_list_line(text)
         if parsed is None:
             continue
@@ -134,6 +199,38 @@ def _list_items_from_table(table: dict[str, Any] | None) -> list[str]:
 
 def _is_generic_header(value: str) -> bool:
     return not value or bool(re.fullmatch(r"column\s+\d+", value, re.IGNORECASE))
+
+
+def _labeled_cell(index: int, value: str, headers: list[str]) -> str:
+    """A single cell's real column header (not a generic "Column N"
+    placeholder) as its label, or the bare value when there isn't one —
+    the one place this decision is made, so _label_row_with_headers and
+    _text_from_table's "form" branch (which needs a different join
+    shape, one pair per line rather than "; "-joined) can't drift apart
+    on which cells get labeled."""
+    if index < len(headers) and not _is_generic_header(headers[index]):
+        return f"{headers[index]}: {value}"
+    return value
+
+
+def _label_row_with_headers(indexed: list[tuple[int, str]], headers: list[str]) -> str:
+    """Join a table row's present cells into prose, using each cell's real
+    column header (not a generic "Column N" placeholder) as its label when
+    available. A cell without one is left bare rather than guessed at —
+    labeling *some* of a row and leaving the rest bare is still more
+    honest than falling back to "the first cell labels the second" the
+    moment even one column's header is missing or generic."""
+    values = [value for _, value in indexed]
+    has_any_header = any(
+        index < len(headers) and not _is_generic_header(headers[index])
+        for index, _ in indexed
+    )
+    if has_any_header:
+        parts = [_labeled_cell(index, value, headers) for index, value in indexed]
+        return "; ".join(parts)
+    if len(values) == 2:
+        return f"{values[0]}: {values[1]}"
+    return "; ".join(values)
 
 
 SINGLE_LINE_TYPES = {
@@ -169,18 +266,23 @@ def _text_from_table(table: dict[str, Any] | None, target_type: str) -> str:
         for row in rows
     ]
     cleaned_rows = [row for row in cleaned_rows if any(row)]
+    # A header's own text, once it stands in for a missing data row, is
+    # content — not a value that header describes — so labeling it against
+    # `headers` (by position) is never right, whichever header it lands on.
+    # Rendering these fallback rows with no headers at all keeps every
+    # branch below from mislabeling them.
+    effective_headers = headers
     if not cleaned_rows:
         cleaned_rows = [
             [value] for value in headers if value and not _is_generic_header(value)
         ]
+        effective_headers = []
 
     if target_type == "form":
         rendered = []
         for row in cleaned_rows:
             pairs = [
-                f"{headers[index]}: {value}"
-                if index < len(headers) and not _is_generic_header(headers[index])
-                else value
+                _labeled_cell(index, value, effective_headers)
                 for index, value in enumerate(row)
                 if value
             ]
@@ -191,20 +293,47 @@ def _text_from_table(table: dict[str, Any] | None, target_type: str) -> str:
     if target_type == "footnote":
         rendered = []
         for row in cleaned_rows:
+            cells = [(index, value) for index, value in enumerate(row) if value]
+            if not cells:
+                continue
+            _, first_value = cells[0]
+            # A bare leading number is the footnote's own citation index,
+            # not a value to label — "1 Smith v Tamworth..." not "1;
+            # Smith v Tamworth...". Every other footnote in the document
+            # uses that same "<number> <text>" shape (see
+            # _render_footnotes_list in preview_html.py, which specifically
+            # looks for the space to recover the real citation number and
+            # avoid a doubled-up count), so a semicolon here breaks that
+            # recognition and reads wrong next to genuine footnotes too.
+            body_cells = cells[1:] if re.fullmatch(r"\d{1,4}", first_value) else cells
             facts = [
-                f"{headers[index]}: {value}"
-                if index < len(headers) and not _is_generic_header(headers[index])
+                f"{effective_headers[index]}: {value}"
+                if index < len(effective_headers) and not _is_generic_header(effective_headers[index])
                 else value
-                for index, value in enumerate(row)
-                if value
+                for index, value in body_cells
             ]
-            if facts:
-                rendered.append("; ".join(facts).rstrip(".") + ".")
-        return " ".join(rendered)
+            body = "; ".join(facts).rstrip(".")
+            if body_cells is cells:
+                if body:
+                    rendered.append(f"{body}.")
+            elif body:
+                rendered.append(f"{first_value} {body}.")
+            else:
+                rendered.append(f"{first_value}.")
+        # Every other branch in this function joins rows with "\n" (see the
+        # generic branch below) — this one used to join with a plain space,
+        # which collapsed an entire table of separate citations (one per
+        # row) into one unbroken paragraph with no row boundary left to
+        # recover downstream. A table converted to "list" first and then to
+        # "footnote" never hit this branch, so it kept its per-row line
+        # breaks and rendered correctly — the fix is to do the same here.
+        return "\n".join(rendered)
 
-    rendered_rows = [
-        " — ".join(value for value in row if value) for row in cleaned_rows
-    ]
+    def _join_row(row: list[str]) -> str:
+        indexed = [(index, value) for index, value in enumerate(row) if value]
+        return _label_row_with_headers(indexed, effective_headers)
+
+    rendered_rows = [_join_row(row) for row in cleaned_rows]
     return "\n".join(value for value in rendered_rows if value)
 
 
@@ -692,12 +821,30 @@ class WorkflowService:
         target_is_table = target_type in {"table", "document_index"}
         if target_type == "box_section":
             children = block.get("box_section_blocks") or []
-            if changes.get("corrected_text") is not None and len(children) == 1:
-                children[0]["text"] = str(changes["corrected_text"])
+            if changes.get("corrected_text") is not None:
+                # A box section with more than one contained block (any box
+                # with more than one sentence — the common case) used to
+                # only apply this edit when there was exactly one child,
+                # silently discarding a reviewer's correction the rest of
+                # the time: block["text"] would just get rebuilt from the
+                # unedited children below as if nothing had been typed.
+                # Collapsing to one synthetic child holding the correction
+                # applies it regardless of how many children there were.
+                children = [
+                    {
+                        "label": children[0].get("label", "text") if children else "text",
+                        "text": str(changes["corrected_text"]),
+                    }
+                ]
+                block["box_section_blocks"] = children
             block["text"] = "\n\n".join(
-                str(child.get("text", "")).strip()
+                cleaned
                 for child in children
-                if str(child.get("text", "")).strip()
+                # A synthesised child (converting a non-box_section block
+                # into one, elsewhere in this method) is a raw deep-copy of
+                # the original block, markers and all — reading its clean
+                # source rather than its raw text avoids leaking those in.
+                if (cleaned := _clean_source_text(child))
             )
             block.pop("table_data", None)
             block.pop("list_items", None)
@@ -707,9 +854,15 @@ class WorkflowService:
         elif target_is_table:
             table = changes.get("corrected_table")
             if table is None:
-                table = block.get("table_data") or _table_from_text(
-                    changes.get("corrected_text") or block.get("text", "")
-                )
+                table = block.get("table_data")
+            if table is None:
+                source_text = changes.get("corrected_text")
+                if source_text is None:
+                    # _table_from_text has no marker-stripping of its own —
+                    # each raw line becomes a cell verbatim, so an
+                    # unstripped "• 114 Ibid 98." would leak straight in.
+                    source_text = _clean_source_text(block)
+                table = _table_from_text(source_text)
             block["table_data"] = table
             block["text"] = _plain_text_from_table(table)
             block.pop("list_items", None)
@@ -721,11 +874,19 @@ class WorkflowService:
             if text is None and original_type == "list" and block.get("list_entries"):
                 list_entries = [dict(entry) for entry in block["list_entries"]]
             elif text is None:
+                # Deliberately the block's own raw text, not
+                # _clean_source_text: this branch only runs when there's no
+                # pre-existing list_entries to prefer (that case is handled
+                # above), so _list_entries below needs to do its own first
+                # and only marker-detection pass on "1. First point" —
+                # pre-stripping the marker here would delete it before
+                # _list_entries ever gets to recognise it as one.
                 list_entries = _list_entries_from_table(
                     block.get("table_data")
                 ) or _list_entries(str(block.get("text", "")))
             else:
                 list_entries = _list_entries(str(text))
+            list_entries = promote_bare_number_markers(list_entries)
             list_items = [str(entry.get("text", "")) for entry in list_entries]
             text = "\n".join(
                 f"{entry.get('marker', '')} {entry.get('text', '')}".strip()
@@ -744,7 +905,7 @@ class WorkflowService:
                 text = (
                     _text_from_table(block.get("table_data"), target_type)
                     if block.get("table_data")
-                    else block.get("text", "")
+                    else _clean_source_text(block)
                 )
             if target_type in SINGLE_LINE_TYPES:
                 text = _single_line(text)
@@ -762,6 +923,13 @@ class WorkflowService:
         ):
             item["status"] = "edited"
         block["removed"] = item["status"] == "removed"
+        # This function only ever runs from a reviewer's own PATCH/bulk
+        # request (update_review_item(s) in this class) — a person is
+        # always the one making the change here, so any pipeline-set
+        # "reviewed_by": "system" (see pipeline.py's footnote auto-accept)
+        # is superseded the moment a person actually looks at the item,
+        # even if all they did was accept it as-is.
+        item["reviewed_by"] = "reviewer"
         return item
 
     def resolve_all(self, document_id: str) -> list[dict[str, Any]]:
@@ -770,6 +938,11 @@ class WorkflowService:
             for item in items:
                 if item["status"] == "pending":
                     item["status"] = "accepted"
+                    # A deliberate reviewer decision to accept everything
+                    # still-pending at once — distinct from the pipeline's
+                    # own pre-acceptance of footnotes before anyone opened
+                    # the review queue at all.
+                    item["reviewed_by"] = "reviewer"
             self.store.write_artifact(document_id, "review_items.json", items)
             self._discard_generated(document_id)
             return items

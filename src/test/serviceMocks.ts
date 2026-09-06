@@ -117,6 +117,10 @@ export const reviewService: ReviewService = {
   async setStatus(id: string, status: ReviewStatus) {
     const item = findReviewItem(id)
     item.status = status
+    // Mirrors service.py's _apply_review_item_changes: any reviewer-driven
+    // change (including re-confirming an already-accepted item) supersedes
+    // the pipeline's own "system" pre-acceptance.
+    item.reviewedBy = 'reviewer'
     return structuredClone(item)
   },
   async updateText(id: string, text: string) {
@@ -143,6 +147,7 @@ export const reviewService: ReviewService = {
     if (changes.correctedText !== undefined) item.correctedText = changes.correctedText
     if (changes.correctedTable !== undefined) item.correctedTable = structuredClone(changes.correctedTable)
     item.status = changes.status ?? 'edited'
+    item.reviewedBy = 'reviewer'
     return structuredClone(item)
   },
   async bulkUpdate(ids: string[], changes: ReviewUpdate) {
@@ -153,7 +158,7 @@ export const reviewService: ReviewService = {
   async resolveAll() {
     reviewItems = reviewItems.map((item) => (
       item.status === 'pending'
-        ? { ...item, status: 'accepted' as const }
+        ? { ...item, status: 'accepted' as const, reviewedBy: 'reviewer' as const }
         : item
     ))
     return structuredClone(reviewItems)

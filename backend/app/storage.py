@@ -112,11 +112,8 @@ class LocalDocumentStore:
 
     def write_artifacts(self, document_id: str, values: dict[str, Any]) -> None:
         with self._lock:
-            directory = self.document_dir(document_id)
             for name, value in values.items():
-                if "/" in name or "\\" in name or name.startswith("."):
-                    raise ValueError("Invalid artifact name")
-                self._write_json(directory / name, value)
+                self._write_json(self.artifact_path(document_id, name), value)
 
     def write_text_artifact(self, document_id: str, name: str, value: str) -> None:
         with self._lock:

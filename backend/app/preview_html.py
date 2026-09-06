@@ -16,6 +16,8 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any
 
+from .footnote_numbering import FOOTNOTE_LEADING_NUMBER_RE
+
 
 def _slug(value: str) -> str:
     return re.sub(r"[^a-z0-9]+", "-", value.casefold()).strip("-") or "publication"
@@ -215,6 +217,7 @@ _FOOTNOTE_CONTEXT_WORDS = {
     "clause",
     "figure",
     "item",
+    "list",
     "number",
     "option",
     "paragraph",
@@ -232,13 +235,92 @@ _FOOTNOTE_CONTEXT_WORDS = {
 }
 
 
+def _render_footnotes_list(notes: list[dict[str, Any]]) -> str:
+    """A footnote's own citation number (e.g. "7 A blended family...") is
+    part of its extracted text, but the <ol> around it also counts by
+    position — the two disagree the moment the source document's own
+    numbering has a gap (a repeated citation sharing an earlier footnote,
+    common in legal documents), showing both and reading as a doubled
+    number. Using the citation's real number as the <li value> — the same
+    pattern _render_list_items already uses for ordered lists — keeps the
+    displayed number single and correct, gaps included, instead of relying
+    on the browser to count list position.
+
+    But a footnote's text can just as easily open with a number that isn't
+    its citation index at all — a statute section ("42 U.S.C. ...") or a
+    statistic ("18 per cent of respondents...") — and stripping that would
+    corrupt the citation instead of fixing a doubled number. A genuine
+    citation index only ever increases down the list; requiring that
+    ordering across every match (not just per item) is what makes this
+    safe to trust — one out-of-order match falls the whole list back to
+    plain, position-counted rendering rather than guessing per item.
+
+    A note with no leading number at all (e.g. "See generally...") sitting
+    between two matched notes is the remaining trap: with no <li value> of
+    its own, it inherits the browser's auto-continued count — one past
+    whichever number came before it — which collides with the very next
+    explicit value and reproduces the doubled number this function exists
+    to prevent. Hiding its own marker rather than letting it display a
+    number nobody assigned it sidesteps that; the next matched <li>'s
+    explicit value always wins regardless of what the counter did in
+    between."""
+    matches = [FOOTNOTE_LEADING_NUMBER_RE.match(str(note.get("text", ""))) for note in notes]
+    numbers = [int(match.group(1)) for match in matches if match]
+    trustworthy = len(numbers) >= 2 and all(
+        later > earlier for earlier, later in zip(numbers, numbers[1:])
+    )
+    parts = []
+    for note, match in zip(notes, matches):
+        safe_id = html.escape(str(note["id"]), quote=True)
+        if trustworthy and match:
+            parts.append(
+                f'<li id="{safe_id}" value="{html.escape(match.group(1), quote=True)}">'
+                f"{html.escape(match.group(2))}</li>"
+            )
+        elif trustworthy:
+            parts.append(
+                f'<li id="{safe_id}" style="list-style: none">'
+                f'{html.escape(str(note.get("text", "")))}</li>'
+            )
+        else:
+            parts.append(f'<li id="{safe_id}">{html.escape(str(note.get("text", "")))}</li>')
+    return "".join(parts)
+
+
 def _footnote_targets(footnotes: list[dict[str, Any]]) -> dict[str, str]:
+    """Map an in-body citation marker's bare number (the flattened
+    superscript, e.g. "95" in "...(Vic).95") to the note it should link
+    to. This has to be the citation's own printed number, parsed the
+    same way _render_footnotes_list recovers it — not the footnote's
+    position in the section's list, which was the previous key here.
+    Docling doesn't create one footnote block per printed number: a
+    repeated citation ("Ibid") reuses an earlier number without a new
+    block, and several citations bundled into one table (see
+    _split_footnote_entries in exporter.py) can land a different count
+    of entries than the printed range covers either way. Position drifts
+    from the printed number the moment either happens, and once it does
+    every later in-body reference in the section resolves to the wrong
+    note — falling back to position only when a note has no parseable
+    leading number of its own keeps that case working as before."""
     targets: dict[str, str] = {}
+    unmatched_ids: list[str] = []
     for note in footnotes:
         note_id = str(note.get("id", "")).strip()
-        match = re.match(r"footnote-(\d+)(?:-|$)", note_id, re.IGNORECASE)
-        if match and match.group(1) not in targets:
-            targets[match.group(1)] = note_id
+        number_match = FOOTNOTE_LEADING_NUMBER_RE.match(str(note.get("text", "")))
+        if number_match and number_match.group(1) not in targets:
+            targets[number_match.group(1)] = note_id
+        else:
+            unmatched_ids.append(note_id)
+    # A degenerate note with no real citation number (a stray fragment
+    # like just the digit "5" left over from a page-break split) would
+    # otherwise claim a position-based key first and block the very next
+    # note's own genuine citation number from ever registering, purely
+    # because of list order — filling every real number first, in one
+    # full pass, before any position fallback runs at all avoids that.
+    for note_id in unmatched_ids:
+        position_match = re.match(r"footnote-(\d+)(?:-|$)", note_id, re.IGNORECASE)
+        if position_match and position_match.group(1) not in targets:
+            targets[position_match.group(1)] = note_id
     return targets
 
 
@@ -807,7 +889,7 @@ def build_accessible_html(
         if blocks and blocks[0].get('type') == 'paragraph' and str(blocks[0].get('text', '')).strip() == str(section['displayTitle']).strip():
             blocks = blocks[1:]
         content = ''.join(_render_block(block, figure_directory, targets, asset_base_url) for block in blocks)
-        footnotes = ('<details class="reader-footnotes"><summary>References and footnotes (' + str(len(notes)) + ')</summary><ol>' + ''.join(f'<li id="{escape(note["id"])}">{escape(note["text"])}</li>' for note in notes) + '</ol></details>') if notes else ''
+        footnotes = ('<details class="reader-footnotes"><summary>References and footnotes (' + str(len(notes)) + ')</summary><ol>' + _render_footnotes_list(notes) + '</ol></details>') if notes else ''
         previous = view_link(index-1, '<span>Previous</span>' + escape(sections[index-1]['displayTitle'])) if index else '<span class="pagination-disabled"><span>Previous</span>Beginning of document</span>'
         following = view_link(index+1, '<span>Next</span>' + escape(sections[index+1]['displayTitle'])) if index+1<len(sections) else '<span class="pagination-disabled"><span>Next</span>End of document</span>'
         readers.append(f'''<section class="vlrc-reader" id="reader-{sid}" tabindex="-1" aria-labelledby="reader-title-{sid}">
@@ -844,7 +926,7 @@ def build_accessible_html(
 <a class="report-cover-action report-cover-action--project" href="{project_url}" target="_blank" rel="noopener">{icon('link')}<span>Go to project page</span><span class="report-action-detail">{icon('right')}</span></a></div></div>
 <div class="report-card-content"><div class="report-card-status-row"><span class="official-source-badge">✓ Reviewed source</span><span>Reviewed publication</span></div><h1 class="report-card-title" id="publication-title" itemprop="headline" tabindex="-1">{title}</h1><p class="report-publisher">{publisher}</p><p class="report-summary">{summary}</p>
 <dl class="report-card-meta"><div><dt>Published</dt><dd>{published_date}</dd></div><div><dt>Length</dt><dd>{pages} pages</dd></div><div><dt>Jurisdiction</dt><dd>{jurisdiction}</dd></div></dl><ul class="topic-list" aria-label="Report topics">{topics}</ul>
-<div class="report-card-actions" role="group" aria-label="Publication utilities"><a class="report-inline-action report-view-sections" href="#report-contents">{icon('list')}<span>View sections</span></a><button class="report-inline-action report-copy-citation" type="button" data-citation="{citation}">{icon('quote')}<span>Copy citation</span></button><span class="sr-only citation-copy-status" role="status" aria-live="polite"></span></div>
+<div class="report-card-actions" role="group" aria-label="Publication utilities"><a class="report-inline-action report-view-sections" href="#report-contents">{icon('list')}<span>View sections</span></a><button class="report-inline-action report-copy-citation" type="button" data-citation="{citation}">{icon('quote')}<span>Copy citation</span></button><span class="citation-copy-status" role="status" aria-live="polite"></span></div>
 <p class="report-citation-text"><span class="report-citation-label">Cite as:</span> {citation}</p></div></section></div>
 <div class="preview-publication-main"><section class="vlrc-contents vlrc-contents--grouped" id="report-contents" aria-labelledby="contents-heading"><div class="contents-heading-row"><div><h2 id="contents-heading">Contents</h2><p class="contents-section-count">{len(sections)} sections</p></div></div><div class="vlrc-accordion" aria-label="Complete report sections">{accordion}</div></section>
 </div></section>
