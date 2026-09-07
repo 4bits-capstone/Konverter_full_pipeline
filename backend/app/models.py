@@ -182,6 +182,15 @@ class ApprovalResult(ApiModel):
     approved_at: str
 
 
+class WordPressPublicationResult(ApiModel):
+    success: bool = True
+    page_id: int = Field(gt=0)
+    status: Literal["draft"] = "draft"
+    edit_url: str = Field(max_length=2_048)
+    preview_url: str = Field(max_length=2_048)
+    published_at: str
+
+
 class ChatMessage(ApiModel):
     role: Literal["user", "assistant"]
     content: str = Field(max_length=8_000)

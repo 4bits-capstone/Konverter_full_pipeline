@@ -11,6 +11,7 @@ import type {
   ReviewStatus,
   ReviewTableData,
   ReviewType,
+  WordPressPublication,
 } from '../types/konverter'
 
 export interface DocumentService {
@@ -66,4 +67,6 @@ export interface PublicationService {
   figureUrl(documentId: string, imageKey: string): string
   coverUrl(documentId: string): string
   exportUrl(documentId: string, type: 'html' | 'jsonld' | 'structured'): string
+  getWordPressPublication(documentId: string): Promise<WordPressPublication | null>
+  publishToWordPress(documentId: string): Promise<WordPressPublication>
 }

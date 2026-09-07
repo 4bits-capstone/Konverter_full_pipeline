@@ -315,13 +315,97 @@
 .converter-app .converter-output-download-bar {
   grid-area: download;
   min-width: 0;
-  align-items: center;
+  align-items: flex-start;
+  align-self: center;
   justify-content: flex-end;
   gap: 10px;
+  flex-wrap: nowrap;
   padding: 24px 28px 22px 16px;
   border-left: 0;
   border-radius: 0 6px 0 0;
   background: #fff;
+}
+
+.converter-app .wordpress-publish-control {
+  display: flex;
+  width: 232px;
+  min-width: 0;
+  min-height: 76px;
+  align-items: stretch;
+  flex: 0 0 232px;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.converter-app .wordpress-publish-button,
+.converter-app .wordpress-view-button {
+  width: 100%;
+  min-width: 0;
+  min-height: 50px;
+  justify-content: center;
+  white-space: nowrap;
+  text-decoration: none;
+}
+
+.converter-app .wordpress-view-button:hover,
+.converter-app .wordpress-view-button:focus-visible {
+  text-decoration: none;
+}
+
+.converter-app .wordpress-publish-button:focus-visible,
+.converter-app .wordpress-view-button:focus-visible {
+  outline: 3px solid var(--blue-2);
+  outline-offset: 3px;
+}
+
+.converter-app .wordpress-publish-button .spinner {
+  width: 16px;
+  height: 16px;
+  border-color: rgba(255, 255, 255, 0.45);
+  border-top-color: #fff;
+}
+
+.converter-app .wordpress-publish-meta,
+.converter-app .wordpress-publish-error {
+  font-size: 12px;
+  line-height: 1.5;
+  overflow-wrap: anywhere;
+}
+
+.converter-app .wordpress-publish-meta {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 5px;
+  color: var(--muted);
+  text-align: center;
+}
+
+.converter-app .wordpress-publish-success .wordpress-publish-meta {
+  color: var(--hi);
+  font-weight: 600;
+}
+
+.converter-app .wordpress-publish-meta svg {
+  width: 14px;
+  height: 14px;
+  flex: none;
+}
+
+.converter-app .wordpress-publish-error {
+  color: var(--danger);
+}
+
+.converter-app .wordpress-status-retry {
+  display: inline;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: var(--blue-dark);
+  font: inherit;
+  font-weight: 700;
+  text-decoration: underline;
+  text-underline-offset: 3px;
 }
 
 .converter-app .converter-download-menu {
@@ -382,21 +466,20 @@
   padding: 10px 12px;
 }
 
-@media (max-width: 760px) {
+@media (max-width: 1100px) {
   .converter-app .converter-output-card {
     grid-template-columns: minmax(0, 1fr);
     grid-template-areas:
       "summary"
-      "metadata"
-      "download";
+      "download"
+      "metadata";
   }
 
   .converter-app .converter-output-download-bar {
-    justify-content: flex-end;
-    padding: 16px 20px;
-    border-top: 1px solid var(--line);
+    justify-content: flex-start;
+    padding: 0 28px 22px;
     border-left: 0;
-    border-radius: 0 0 6px 6px;
+    border-radius: 0;
   }
 
   .converter-app .converter-download-menu {
@@ -435,7 +518,10 @@
   }
 
   .converter-app .converter-output-download-bar {
-    align-items: stretch;
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) 50px;
+    align-items: start;
+    gap: 14px 10px;
     padding: 14px 16px 16px;
   }
 
@@ -445,8 +531,19 @@
     min-width: 0;
   }
 
+  .converter-app .wordpress-publish-control,
+  .converter-app .wordpress-publish-button,
+  .converter-app .wordpress-view-button {
+    width: 100%;
+    min-width: 0;
+  }
+
+  .converter-app .wordpress-publish-control {
+    grid-column: 1 / -1;
+  }
+
   .converter-app .converter-download-menu {
-    flex: 1 1 auto;
+    grid-column: 1;
   }
 
   .converter-app .converter-download-trigger {

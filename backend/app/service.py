@@ -611,6 +611,7 @@ class WorkflowService:
         "schema.jsonld",
         "structured.json",
         "accessible.html",
+        "wordpress-publication.json",
     )
 
     def __init__(self, settings: Settings, store: LocalDocumentStore):

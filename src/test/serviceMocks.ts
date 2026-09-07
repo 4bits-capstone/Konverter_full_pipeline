@@ -13,6 +13,7 @@ import type {
   ReviewTableData,
   ReviewType,
   ReviewUpdate,
+  WordPressPublication,
 } from '../types/konverter'
 import {
   testDocument,
@@ -24,11 +25,13 @@ import {
 let documents = new Map<string, DocumentSummary>([[testDocument.id, structuredClone(testDocument)]])
 let reviewItems = structuredClone(testReviewItems)
 let metadataPayload = structuredClone(testMetadataPayload)
+let wordpressPublication: WordPressPublication | null = null
 
 export function resetTestServices(): void {
   documents = new Map([[testDocument.id, structuredClone(testDocument)]])
   reviewItems = structuredClone(testReviewItems)
   metadataPayload = structuredClone(testMetadataPayload)
+  wordpressPublication = null
 }
 
 export const documentService: DocumentService = {
@@ -219,5 +222,19 @@ export const publicationService: PublicationService = {
   },
   exportUrl(documentId, type) {
     return documentUrl(documentId, `/exports/${type}`)
+  },
+  async getWordPressPublication() {
+    return structuredClone(wordpressPublication)
+  },
+  async publishToWordPress() {
+    wordpressPublication = {
+      success: true,
+      pageId: 26036,
+      status: 'draft',
+      editUrl: 'https://vlrc.komosion.com/wp-admin/post.php?post=26036&action=edit',
+      previewUrl: 'https://vlrc.komosion.com/?page_id=26036&preview=true',
+      publishedAt: '2026-09-06T10:00:00Z',
+    }
+    return structuredClone(wordpressPublication)
   },
 }

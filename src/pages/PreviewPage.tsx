@@ -4,6 +4,7 @@ import {
   ChevronDown,
   Code2,
   Download,
+  Eye,
   ExternalLink,
   FileCheck2,
   FileJson2,
@@ -11,9 +12,10 @@ import {
   Menu,
   Network,
   RotateCcw,
+  Send,
 } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
-import { useQuery } from "@tanstack/react-query";
+import { useMutation, useQuery } from "@tanstack/react-query";
 import { Link, useNavigate } from "react-router-dom";
 import { ReportFrame } from "../components/ReportFrame";
 import { emptyMetadata } from "../config/workflow";
@@ -81,7 +83,7 @@ function DownloadMenu({ documentId }: { documentId: string }) {
       <button
         ref={trigger}
         type="button"
-        className="btn btn-primary converter-download-trigger"
+        className="btn btn-outline converter-download-trigger"
         aria-expanded={open}
         aria-controls="converted-download-options"
         onClick={() => setOpen((value) => !value)}
@@ -124,9 +126,94 @@ function DownloadMenu({ documentId }: { documentId: string }) {
   );
 }
 
+function WordPressPublishControl({
+  documentId,
+  onPublished,
+}: {
+  documentId: string;
+  onPublished: () => void;
+}) {
+  const status = useQuery({
+    queryKey: ["wordpress-publication", documentId],
+    queryFn: () => publicationService.getWordPressPublication(documentId),
+    retry: false,
+  });
+  const publish = useMutation({
+    mutationFn: () => publicationService.publishToWordPress(documentId),
+    retry: false,
+    onSuccess: onPublished,
+  });
+  const result = publish.data ?? status.data;
+  const errorMessage =
+    publish.error instanceof Error
+      ? publish.error.message
+      : "The WordPress draft could not be created.";
+
+  if (result) {
+    return (
+      <div className="wordpress-publish-control wordpress-publish-success">
+        <a
+          className="btn btn-primary wordpress-view-button"
+          href={result.previewUrl}
+          target="_blank"
+          rel="noopener noreferrer"
+          title="View the draft on WordPress. Sign-in may be required."
+        >
+          <Eye aria-hidden="true" />
+          View on WordPress
+        </a>
+        <span className="wordpress-publish-meta" role="status">
+          <Check aria-hidden="true" />
+          Draft ready
+        </span>
+      </div>
+    );
+  }
+
+  return (
+    <div className="wordpress-publish-control">
+      <button
+        type="button"
+        className="btn btn-primary wordpress-publish-button"
+        disabled={publish.isPending || status.isPending || status.isError}
+        onClick={() => publish.mutate()}
+      >
+        {publish.isPending ? (
+          <>
+            <span className="spinner" aria-hidden="true" />
+            Publishing draft…
+          </>
+        ) : (
+          <>
+            <Send aria-hidden="true" />
+            {publish.isError ? "Try publishing again" : "Publish to WordPress"}
+          </>
+        )}
+      </button>
+      {!publish.isPending && !publish.isError && !status.isError && (
+        <span className="wordpress-publish-meta">Save a draft to WordPress</span>
+      )}
+      {status.isError && (
+        <span className="wordpress-publish-error" role="alert">
+          Could not check for an existing WordPress draft.{" "}
+          <button className="wordpress-status-retry" type="button" onClick={() => void status.refetch()} disabled={status.isFetching}>
+            Retry status check
+          </button>
+        </span>
+      )}
+      {publish.isError && (
+        <span className="wordpress-publish-error" role="alert">
+          {errorMessage}
+        </span>
+      )}
+    </div>
+  );
+}
+
 export function PreviewPage() {
   const navigate = useNavigate();
-  const { activeDocument, activeDocumentId, resetWorkflow } = useKonverter();
+  const { activeDocument, activeDocumentId, resetWorkflow, showToast } =
+    useKonverter();
   const query = useQuery({
     queryKey: ["publication", activeDocumentId ?? "none"],
     queryFn: () => publicationService.get(activeDocumentId!),
@@ -213,6 +300,13 @@ export function PreviewPage() {
               role="group"
               aria-label="Downloads and report"
             >
+              <WordPressPublishControl
+                key={`wordpress-${activeDocumentId}`}
+                documentId={activeDocumentId}
+                onPublished={() =>
+                  showToast("WordPress draft created · ready to view")
+                }
+              />
               <DownloadMenu
                 key={activeDocumentId}
                 documentId={activeDocumentId}

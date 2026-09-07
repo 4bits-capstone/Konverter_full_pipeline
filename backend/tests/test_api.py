@@ -32,6 +32,12 @@ def load_client(tmp_path):
         "https://creativecommons.org/licenses/by/4.0/"
     )
     os.environ["KONVERTER_DEFAULT_COPYRIGHT_HOLDER"] = "Example Commission"
+    # Tests must never inherit a developer's real WordPress integration and
+    # accidentally create staging drafts.
+    os.environ.pop("KONVERTER_WORDPRESS_PUBLISH_URL", None)
+    os.environ.pop("KONVERTER_WORDPRESS_BEARER_TOKEN", None)
+    os.environ.pop("KONVERTER_WORDPRESS_USERNAME", None)
+    os.environ.pop("KONVERTER_WORDPRESS_APPLICATION_PASSWORD", None)
 
     import app.main
     from app.pipeline import PipelineOutput

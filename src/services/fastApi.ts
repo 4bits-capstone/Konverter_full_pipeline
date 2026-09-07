@@ -180,4 +180,15 @@ export const fastApiPublicationService: PublicationService = {
         : '/exports/structured.json'
     return documentUrl(documentId, suffix)
   },
+  getWordPressPublication(documentId) {
+    return apiRequest(`/documents/${encodeURIComponent(documentId)}/wordpress-publication`)
+  },
+  publishToWordPress(documentId) {
+    return apiRequest(`/documents/${encodeURIComponent(documentId)}/wordpress-publication`, {
+      method: 'POST',
+      // Allow FastAPI's maximum 120-second WordPress timeout to finish and
+      // return a safe error before the browser gives up on the request.
+      timeoutMs: 150_000,
+    })
+  },
 }

@@ -3,8 +3,9 @@ from __future__ import annotations
 import os
 import re
 import sys
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
+from urllib.parse import urlsplit
 
 from dotenv import load_dotenv
 
@@ -54,6 +55,36 @@ def _as_docling_mode(name: str, default: str) -> str:
     return value
 
 
+def _as_wordpress_publish_url(name: str) -> str:
+    """Accept HTTPS endpoints, plus loopback HTTP for local test servers."""
+    value = os.getenv(name, "").strip().rstrip("/")
+    if not value:
+        return ""
+    parsed = urlsplit(value)
+    hostname = (parsed.hostname or "").lower()
+    if (
+        not hostname
+        or parsed.username
+        or parsed.password
+        or parsed.query
+        or parsed.fragment
+        or parsed.scheme not in {"http", "https"}
+    ):
+        raise ValueError(f"{name} must be a plain HTTP(S) endpoint URL")
+    if parsed.scheme != "https" and hostname not in {"localhost", "127.0.0.1", "::1"}:
+        raise ValueError(f"{name} must use HTTPS outside local development")
+    return value
+
+
+def _as_wordpress_bearer_token(name: str) -> str:
+    value = os.getenv(name, "").strip()
+    # Validate without ever including the secret in configuration errors.
+    # The environment contains the token only, not the 'Bearer ' prefix.
+    if value and (len(value) > 8_192 or not re.fullmatch(r"[A-Za-z0-9._~+/-]+=*", value)):
+        raise ValueError(f"{name} must contain only the token, without Bearer or whitespace")
+    return value
+
+
 @dataclass(frozen=True)
 class Settings:
     data_dir: Path
@@ -75,14 +106,17 @@ class Settings:
     default_copyright_holder: str
     description_max_chars: int
     log_level: str
-    openai_api_key: str
+    openai_api_key: str = field(repr=False)
     docling_mode: str
     docling_endpoint_url: str
-    runpod_api_key: str
+    runpod_api_key: str = field(repr=False)
     storage_bucket: str
     signed_url_ttl: int
     supabase_url: str
-    supabase_service_key: str
+    supabase_service_key: str = field(repr=False)
+    wordpress_publish_url: str = ""
+    wordpress_bearer_token: str = field(default="", repr=False)
+    wordpress_timeout_seconds: float = 30.0
 
 
 def load_settings() -> Settings:
@@ -134,4 +168,17 @@ def load_settings() -> Settings:
         signed_url_ttl=max(60, int(os.getenv("KONVERTER_SIGNED_URL_TTL", "3600"))),
         supabase_url=os.getenv("SUPABASE_URL", "").strip().rstrip("/"),
         supabase_service_key=os.getenv("SUPABASE_SERVICE_ROLE_KEY", "").strip(),
+        wordpress_publish_url=_as_wordpress_publish_url(
+            "KONVERTER_WORDPRESS_PUBLISH_URL"
+        ),
+        wordpress_bearer_token=_as_wordpress_bearer_token(
+            "KONVERTER_WORDPRESS_BEARER_TOKEN"
+        ),
+        wordpress_timeout_seconds=max(
+            1.0,
+            min(
+                120.0,
+                float(os.getenv("KONVERTER_WORDPRESS_TIMEOUT_SECONDS", "30")),
+            ),
+        ),
     )

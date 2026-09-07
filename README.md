@@ -80,6 +80,33 @@ SUPABASE_ANON_KEY=                # same as VITE_SUPABASE_ANON_KEY
 SUPABASE_SERVICE_ROLE_KEY=        # backend only, never exposed to the frontend
 ```
 
+### WordPress staging publishing
+
+The Preview page uses Truc's Nam Builder API through FastAPI. Update these
+values in your existing project-root `.env` (keep your other settings):
+
+```dotenv
+KONVERTER_WORDPRESS_PUBLISH_URL=https://vlrc.komosion.com/wp-json/nam-builder/v1/pages
+KONVERTER_WORDPRESS_BEARER_TOKEN= # bearer token
+KONVERTER_WORDPRESS_TIMEOUT_SECONDS=30
+```
+
+FastAPI sends `POST` with `Authorization: Bearer <token>` and
+`Content-Type: application/json`. Its JSON body contains exactly:
+
+```json
+{
+  "title": "Reviewed report title",
+  "html": "<main>Reviewed report HTML</main>",
+  "status": "draft"
+}
+```
+
+Testing remains **draft-only** even though the remote API also accepts `publish`.
+Process and approve a document, then select **Publish to WordPress** on Preview.
+After success, use **View on WordPress**.
+
+
 ### Remote Docling settings
 
 ```dotenv

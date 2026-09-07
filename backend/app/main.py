@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import json
 import os
@@ -44,9 +45,17 @@ from .models import (
     ReviewBulkPatch,
     ReviewPatch,
     TtsRequest,
+    WordPressPublicationResult,
 )
 from .service import ProcessingManager, WorkflowService
 from .storage import DocumentNotFoundError, LocalDocumentStore
+from .wordpress import (
+    WordPressAuthenticationError,
+    WordPressNotConfiguredError,
+    WordPressPublisher,
+    WordPressPublishingError,
+    WordPressTimeoutError,
+)
 
 MAX_PDF_BYTES = 200 * 1024 * 1024
 MAX_DOCUMENTS_PER_UPLOAD = 5
@@ -60,6 +69,10 @@ settings.data_dir.mkdir(parents=True, exist_ok=True)
 store = LocalDocumentStore(settings.data_dir)
 processing = ProcessingManager(settings, store)
 workflow = WorkflowService(settings, store)
+wordpress = WordPressPublisher(settings)
+wordpress_publish_lock = asyncio.Lock()
+
+WORDPRESS_PUBLICATION_ARTIFACT = "wordpress-publication.json"
 
 
 @asynccontextmanager
@@ -188,6 +201,31 @@ def _pretty_json_download(
         media_type=media_type,
         headers={"Content-Disposition": f'attachment; filename="{filename}"'},
     )
+
+
+def _wordpress_source_signature(record: dict, html: str) -> str:
+    material = "\0".join(
+        (
+            str(record.get("id") or ""),
+            str(record.get("approved_at") or ""),
+            settings.wordpress_publish_url,
+            html,
+        )
+    )
+    return hashlib.sha256(material.encode("utf-8")).hexdigest()
+
+
+def _cached_wordpress_publication(
+    document_id: str,
+    source_signature: str,
+) -> WordPressPublicationResult | None:
+    cached = store.read_artifact(document_id, WORDPRESS_PUBLICATION_ARTIFACT, {})
+    if not isinstance(cached, dict) or cached.get("source_signature") != source_signature:
+        return None
+    try:
+        return WordPressPublicationResult(**cached)
+    except (TypeError, ValueError):
+        return None
 
 
 def _render_cover(source_path: Path, destination: Path) -> None:
@@ -639,6 +677,105 @@ def publication(document_id: str) -> PublicationPayload:
         return PublicationPayload(**workflow.publication_payload(document_id))
     except ValueError as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from exc
+
+
+@app.get(
+    "/api/documents/{document_id}/wordpress-publication",
+    response_model=WordPressPublicationResult | None,
+)
+def wordpress_publication(
+    document_id: str,
+    user: CurrentUser,
+) -> WordPressPublicationResult | None:
+    record = _record(document_id)
+    _require_owner(record, user)
+    if not record.get("approved_at"):
+        return None
+    path = store.artifact_path(document_id, "accessible.html")
+    if not path.is_file():
+        return None
+    html = path.read_text(encoding="utf-8")
+    return _cached_wordpress_publication(
+        document_id,
+        _wordpress_source_signature(record, html),
+    )
+
+
+@app.post(
+    "/api/documents/{document_id}/wordpress-publication",
+    response_model=WordPressPublicationResult,
+)
+async def publish_to_wordpress(
+    document_id: str,
+    user: CurrentUser,
+) -> WordPressPublicationResult:
+    record = _record(document_id)
+    _require_owner(record, user)
+    if not record.get("approved_at"):
+        raise HTTPException(
+            status_code=409,
+            detail="Approve the document before publishing to WordPress",
+        )
+    path = store.artifact_path(document_id, "accessible.html")
+    if not path.is_file():
+        raise HTTPException(
+            status_code=409,
+            detail="The approved HTML export is not available",
+        )
+    html = path.read_text(encoding="utf-8")
+    source_signature = _wordpress_source_signature(record, html)
+
+    # Serialise the local check-and-publish operation. The same stable key is
+    # also sent to WordPress, but remote idempotency support is not confirmed.
+    # Do not automatically retry ambiguous failures: a draft may already exist.
+    async with wordpress_publish_lock:
+        cached = _cached_wordpress_publication(document_id, source_signature)
+        if cached is not None:
+            return cached
+        try:
+            metadata = workflow.get_metadata(document_id).get("metadata") or {}
+            result = await wordpress.publish(
+                title=str(metadata.get("title") or record.get("title") or "Document").strip(),
+                html=html,
+                idempotency_key=f"konverter-{source_signature}",
+            )
+        except WordPressNotConfiguredError as exc:
+            raise HTTPException(status_code=503, detail=str(exc)) from exc
+        except WordPressAuthenticationError as exc:
+            raise HTTPException(status_code=502, detail=str(exc)) from exc
+        except WordPressTimeoutError as exc:
+            raise HTTPException(status_code=504, detail=str(exc)) from exc
+        except WordPressPublishingError as exc:
+            raise HTTPException(status_code=502, detail=str(exc)) from exc
+
+        current = _record(document_id)
+        if current.get("approved_at") != record.get("approved_at"):
+            raise HTTPException(
+                status_code=409,
+                detail="The document approval changed while WordPress was publishing",
+            )
+        store.write_artifact(
+            document_id,
+            WORDPRESS_PUBLICATION_ARTIFACT,
+            {
+                **result.model_dump(by_alias=True),
+                "source_signature": source_signature,
+            },
+        )
+
+    await audit.record_audit(
+        "publish_wordpress",
+        document_id=document_id,
+        actor_id=user.get("id"),
+        actor_email=user.get("email"),
+        detail={
+            "file_name": record.get("file_name"),
+            "page_id": result.page_id,
+            "status": result.status,
+            "preview_url": result.preview_url,
+        },
+    )
+    return result
 
 
 @app.get("/api/documents/{document_id}/source")

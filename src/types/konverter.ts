@@ -114,6 +114,15 @@ export interface PublicationPayload {
   confidence?: DocumentConfidence | null
 }
 
+export interface WordPressPublication {
+  success: true
+  pageId: number
+  status: 'draft'
+  editUrl: string
+  previewUrl: string
+  publishedAt: string
+}
+
 export interface ReviewUpdate {
   status?: ReviewStatus
   type?: ReviewType
