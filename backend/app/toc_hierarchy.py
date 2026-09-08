@@ -20,7 +20,7 @@ two-column and mixed contents/body pages.
 from __future__ import annotations
 
 import re
-from collections import Counter, defaultdict
+from collections import defaultdict
 from dataclasses import dataclass, field
 from difflib import SequenceMatcher
 from pathlib import Path
@@ -1407,87 +1407,6 @@ def _heading_style(
     )
 
 
-_COLUMN_OFFSET_STEP = 100_000.0
-
-
-def _column_offsets_by_page(blocks: list[dict[str, Any]]) -> dict[str, float]:
-    """apply_outline's own final sort orders every block purely by (page,
-    top) — necessary to interleave restored/missing headings into the
-    right vertical position among body content, but on a genuine
-    side-by-side layout (a front-matter page pairing "Terms of Reference"
-    with an "Acknowledgements" contributor list; a two-column Bibliography)
-    it flattens two independent columns into one incoherent sequence
-    ordered purely by vertical position. This mirrors
-    KonverterPipeline._column_aware_text_ranks' conservative column
-    detection — deliberately re-checked here rather than trusted from
-    upstream, since this sort runs last and overrides anything decided
-    earlier in the pipeline — and returns a per-block offset to add to its
-    "top" so the later sort naturally reads one column in full before the
-    next: a lone off-column element (a caption, a stray pull-quote) never
-    counts as a second column on its own.
-
-    Unlike KonverterPipeline._column_aware_text_ranks, this never skips a
-    page just because its *input* order already reads column-by-column —
-    that would matter for a sort that starts from the existing order, but
-    this function feeds a sort keyed purely on (page, top), which flattens
-    a column-clean input right back into vertical-position order on its
-    own. The offset must always be added whenever a genuine two-column
-    split is detected, or the two-column layout gets scrambled by this
-    same sort regardless of how clean the input was."""
-    by_page: dict[int, list[tuple[int, str, dict[str, Any]]]] = defaultdict(list)
-    for index, block in enumerate(blocks):
-        reference = str(block.get("id", ""))
-        bounds = block.get("source_bounds") or {}
-        if not reference or "left" not in bounds or "top" not in bounds:
-            continue
-        by_page[int(block.get("page", 1))].append((index, reference, bounds))
-
-    offsets: dict[str, float] = {}
-    for entries in by_page.values():
-        if len(entries) < 4:
-            continue
-        page_width = float(entries[0][2].get("page_width") or 0)
-        if page_width <= 0:
-            continue
-        threshold = max(page_width * 0.35, 150.0)
-        lefts = sorted({round(bounds["left"]) for _, _, bounds in entries})
-        clusters: list[list[float]] = []
-        for left in lefts:
-            if not clusters or left - clusters[-1][-1] > threshold:
-                clusters.append([left])
-            else:
-                clusters[-1].append(left)
-        if len(clusters) < 2:
-            continue
-
-        def column_of(left: float) -> int:
-            return min(
-                range(len(clusters)),
-                key=lambda cluster_index: min(
-                    abs(left - value) for value in clusters[cluster_index]
-                ),
-            )
-
-        columned = [
-            (index, reference, bounds, column_of(bounds["left"]))
-            for index, reference, bounds in entries
-        ]
-        # Count-based, not share-based: a genuine column can legitimately
-        # be a handful of dense, multi-line blocks (a "Terms of Reference"
-        # paragraph plus a bulleted list, both merged into single blocks
-        # upstream) set against dozens of short one-line blocks in the
-        # other column (a name-and-title contributor list) — the *count*
-        # of blocks per column is naturally lopsided even on a genuinely
-        # two-column page, so only a truly lone item (count 1) is treated
-        # as noise rather than a real column.
-        column_counts = Counter(column for *_, column in columned)
-        if any(count < 2 for count in column_counts.values()):
-            continue
-        for _, reference, _, column in columned:
-            offsets[reference] = column * _COLUMN_OFFSET_STEP
-    return offsets
-
-
 class TocHierarchyResolver:
     """Map Docling items to the printed TOC's two-level navigation outline."""
 
@@ -1845,20 +1764,46 @@ class TocHierarchyResolver:
         return self.text_by_ref.get(reference, _clean_text(str(item.get("text", ""))))
 
     def apply_outline(self, blocks: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        """Merge the printed-TOC outline's restored/promoted headings back
+        into the document's own content, in reading order.
+
+        `blocks` already arrives in the right order — Docling runs a real
+        reading-order model (docling_ibm_models' rule-based predictor,
+        an r-tree/adjacency-graph algorithm, not a naive top-to-bottom
+        scan) as part of its own pipeline, and it gets multi-column pages
+        right: verified directly against real front-matter and Bibliography
+        pages in this codebase's own output, left column read in full
+        before right column, with no reordering needed. An earlier version
+        of this method re-sorted every block by (page, top) regardless,
+        which discarded that already-correct order and interleaved
+        side-by-side columns by raw vertical position — the fix that
+        replaced that blanket re-sort with a geometric column-clustering
+        heuristic (thresholds, share checks) was itself still fragile
+        (failed on a page with a stray off-page bounding box, and could
+        never generalise past exactly two columns). The actual fix is
+        simpler: never re-sort the real content at all. Only a handful of
+        outline entries per document need position-based placement — a
+        heading Docling missed and this outline is restoring, or one
+        Docling saw but mislabeled and this outline is promoting — so only
+        those get spliced into their approximate position within each
+        page's own already-correct sequence, leaving everything else
+        completely untouched."""
         matched_ids = {entry.matched_ref for entry in self.outline.entries if entry.matched_ref}
         output = [block for block in blocks if str(block.get("id", "")) not in matched_ids]
         matched_blocks = {
             str(block.get("id", "")): block for block in blocks if str(block.get("id", ""))
         }
-        column_offset_by_id = _column_offsets_by_page(output)
 
-        positioned: list[tuple[float, float, int, dict[str, Any]]] = []
-        for index, block in enumerate(output):
-            page = int(block.get("page", 1))
-            bounds = block.get("source_bounds") or {}
-            top = float(bounds.get("top", 10_000 + index))
-            top += column_offset_by_id.get(str(block.get("id", "")), 0.0)
-            positioned.append((float(page), top, 1, block))
+        page_order: dict[int, list[dict[str, Any]]] = defaultdict(list)
+        for block in output:
+            page_order[int(block.get("page", 1))].append(block)
+
+        def insertion_index(page_blocks: list[dict[str, Any]], top: float) -> int:
+            for index, existing in enumerate(page_blocks):
+                existing_top = (existing.get("source_bounds") or {}).get("top")
+                if existing_top is not None and existing_top > top:
+                    return index
+            return len(page_blocks)
 
         for entry in self.outline.entries:
             if entry.matched_ref and entry.matched_ref in matched_blocks:
@@ -1866,7 +1811,6 @@ class TocHierarchyResolver:
                 page = int(source.get("page", entry.target_page or 1))
                 bounds = source.get("source_bounds") or {}
                 top = float(bounds.get("top", entry.target_y or -1))
-                top += column_offset_by_id.get(str(source.get("id", "")), 0.0)
                 confidence = source.get("confidence")
                 block_id = str(source.get("id", entry.matched_ref))
                 source_bounds = source.get("source_bounds")
@@ -1876,34 +1820,29 @@ class TocHierarchyResolver:
                 confidence = 1.0
                 block_id = f"#/toc-outline/{entry.sequence}"
                 source_bounds = None
-            positioned.append(
-                (
-                    float(page),
-                    top,
-                    0,
-                    {
-                        "id": block_id,
-                        "label": f"section_header_{entry.level}",
-                        "text": entry.title,
-                        "page": page,
-                        "confidence": confidence,
-                        "source_bounds": source_bounds,
-                        "toc_derived": True,
-                        "toc_sequence": entry.sequence,
-                    },
-                )
-            )
+            new_block = {
+                "id": block_id,
+                "label": f"section_header_{entry.level}",
+                "text": entry.title,
+                "page": page,
+                "confidence": confidence,
+                "source_bounds": source_bounds,
+                "toc_derived": True,
+                "toc_sequence": entry.sequence,
+            }
+            page_blocks = page_order[page]
+            page_blocks.insert(insertion_index(page_blocks, top), new_block)
 
-        positioned.sort(key=lambda value: (value[0], value[1], value[2]))
         final: list[dict[str, Any]] = []
         seen_headings: set[tuple[str, int]] = set()
-        for _, _, _, block in positioned:
-            if str(block.get("label", "")).startswith("section_header_"):
-                key = (_match_key(str(block.get("text", ""))), int(block.get("page", 1)))
-                if key[0] and key in seen_headings:
-                    continue
-                seen_headings.add(key)
-            final.append(block)
+        for page in sorted(page_order):
+            for block in page_order[page]:
+                if str(block.get("label", "")).startswith("section_header_"):
+                    key = (_match_key(str(block.get("text", ""))), int(block.get("page", 1)))
+                    if key[0] and key in seen_headings:
+                        continue
+                    seen_headings.add(key)
+                final.append(block)
 
         chapter_children_by_page: dict[int, list[str]] = defaultdict(list)
         active_chapter_page: int | None = None
