@@ -226,13 +226,13 @@ export const publicationService: PublicationService = {
   async getWordPressPublication() {
     return structuredClone(wordpressPublication)
   },
-  async publishToWordPress() {
+  async publishToWordPress(_documentId, status) {
     wordpressPublication = {
       success: true,
       pageId: 26036,
-      status: 'draft',
+      status,
       editUrl: 'https://vlrc.komosion.com/wp-admin/post.php?post=26036&action=edit',
-      previewUrl: 'https://vlrc.komosion.com/?page_id=26036&preview=true',
+      previewUrl: 'https://vlrc.komosion.com/?page_id=26036' + (status === 'draft' ? '&preview=true' : ''),
       publishedAt: '2026-09-06T10:00:00Z',
     }
     return structuredClone(wordpressPublication)

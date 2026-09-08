@@ -7,14 +7,14 @@ vi.mock('./httpClient', () => ({ apiRequest: vi.fn() }))
 beforeEach(() => vi.mocked(apiRequest).mockReset())
 
 describe('WordPress backend-only transport', () => {
-  it('sends only a document ID to FastAPI, never WordPress credentials or HTML', async () => {
-    const response = { pageId: 26036, status: 'draft' }
+  it.each(['draft', 'publish'] as const)('sends the document ID and %s choice, never WordPress credentials or HTML', async (status) => {
+    const response = { pageId: 26036, status }
     vi.mocked(apiRequest).mockResolvedValue(response)
-    await expect(fastApiPublicationService.publishToWordPress('document/with spaces'))
+    await expect(fastApiPublicationService.publishToWordPress('document/with spaces', status))
       .resolves.toEqual(response)
     expect(apiRequest).toHaveBeenCalledExactlyOnceWith(
       '/documents/document%2Fwith%20spaces/wordpress-publication',
-      { method: 'POST', timeoutMs: 150_000 },
+      { method: 'POST', body: JSON.stringify({ status }), timeoutMs: 150_000 },
     )
   })
 

@@ -46,6 +46,7 @@ from .models import (
     ReviewPatch,
     TtsRequest,
     WordPressPublicationResult,
+    WordPressPublishRequest,
 )
 from .service import ProcessingManager, WorkflowService
 from .storage import DocumentNotFoundError, LocalDocumentStore
@@ -708,6 +709,7 @@ def wordpress_publication(
 async def publish_to_wordpress(
     document_id: str,
     user: CurrentUser,
+    payload: WordPressPublishRequest = WordPressPublishRequest(),
 ) -> WordPressPublicationResult:
     record = _record(document_id)
     _require_owner(record, user)
@@ -731,13 +733,17 @@ async def publish_to_wordpress(
     async with wordpress_publish_lock:
         cached = _cached_wordpress_publication(document_id, source_signature)
         if cached is not None:
-            return cached
+            if cached.status == payload.status:
+                return cached
+            if cached.status == "publish":
+                raise HTTPException(status_code=409, detail="This document is already live. Draft publishing is no longer available.")
         try:
             metadata = workflow.get_metadata(document_id).get("metadata") or {}
             result = await wordpress.publish(
                 title=str(metadata.get("title") or record.get("title") or "Document").strip(),
                 html=html,
-                idempotency_key=f"konverter-{source_signature}",
+                idempotency_key=f"konverter-{source_signature}-{payload.status}",
+                status=payload.status,
             )
         except WordPressNotConfiguredError as exc:
             raise HTTPException(status_code=503, detail=str(exc)) from exc

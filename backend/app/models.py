@@ -182,10 +182,15 @@ class ApprovalResult(ApiModel):
     approved_at: str
 
 
+class WordPressPublishRequest(ApiModel):
+    model_config = ConfigDict(extra="forbid")
+    status: Literal["draft", "publish"] = "draft"
+
+
 class WordPressPublicationResult(ApiModel):
     success: bool = True
     page_id: int = Field(gt=0)
-    status: Literal["draft"] = "draft"
+    status: Literal["draft", "publish"] = "draft"
     edit_url: str = Field(max_length=2_048)
     preview_url: str = Field(max_length=2_048)
     published_at: str

@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from datetime import datetime, timezone
-from typing import Any
+from typing import Any, Literal
 from urllib.parse import urlsplit, urlunsplit
 
 import httpx
@@ -26,10 +26,10 @@ class WordPressTimeoutError(WordPressPublishingError):
     pass
 
 
-_CHECK_BEFORE_RETRY = " Check WordPress Pages before retrying; a draft may already exist."
+_CHECK_BEFORE_RETRY = " Check WordPress Pages before retrying; a page may already exist."
 
 
-def _created_page_id(payload: Any) -> int:
+def _created_page_id(payload: Any, status: str = "draft") -> int:
     """Read common REST/plugin response shapes without forwarding raw data.
 
     Only the request schema has been supplied for Nam Builder. Accept a flat
@@ -42,10 +42,10 @@ def _created_page_id(payload: Any) -> int:
             break
         if ("success" in page and page["success"] is not True) or page.get("error"):
             raise WordPressPublishingError(
-                "WordPress did not confirm that the draft was created."
+                "WordPress did not confirm that the page was created."
                 + _CHECK_BEFORE_RETRY
             )
-        if "status" in page and page["status"] not in ("draft", "success"):
+        if "status" in page and page["status"] not in (status, "success"):
             raise WordPressPublishingError(
                 "WordPress returned an unexpected page status."
                 + _CHECK_BEFORE_RETRY
@@ -70,7 +70,7 @@ def _created_page_id(payload: Any) -> int:
     )
 
 
-def _draft_links(endpoint_url: str, page_id: int) -> tuple[str, str]:
+def _draft_links(endpoint_url: str, page_id: int, status: str = "draft") -> tuple[str, str]:
     """Build standard WordPress links from the validated ID, not remote URLs.
 
     This prevents a plugin response from reflecting credentials, nonces, or
@@ -83,7 +83,7 @@ def _draft_links(endpoint_url: str, page_id: int) -> tuple[str, str]:
     base = urlunsplit((endpoint.scheme, endpoint.netloc, prefix, "", ""))
     return (
         f"{base}/wp-admin/post.php?post={page_id}&action=edit",
-        f"{base}/?page_id={page_id}&preview=true",
+        f"{base}/?page_id={page_id}" + ("&preview=true" if status == "draft" else ""),
     )
 
 
@@ -113,8 +113,11 @@ class WordPressPublisher:
         title: str,
         html: str,
         idempotency_key: str,
+        status: Literal["draft", "publish"] = "draft",
     ) -> WordPressPublicationResult:
         self._require_configuration()
+        if status not in {"draft", "publish"}:
+            raise WordPressPublishingError("Choose draft or live publishing.")
         headers = {
             "Accept": "application/json",
             "Content-Type": "application/json",
@@ -134,12 +137,12 @@ class WordPressPublisher:
                     json={
                         "title": title,
                         "html": html,
-                        "status": "draft",
+                        "status": status,
                     },
                 )
         except httpx.TimeoutException:
             raise WordPressTimeoutError(
-                "WordPress took too long to confirm the draft." + _CHECK_BEFORE_RETRY
+                "WordPress took too long to confirm the page." + _CHECK_BEFORE_RETRY
             ) from None
         except httpx.RequestError:
             raise WordPressPublishingError(
@@ -165,7 +168,7 @@ class WordPressPublisher:
             # Do not include the remote response body: plugins sometimes echo
             # request/authentication details in error payloads.
             raise WordPressPublishingError(
-                "WordPress could not confirm draft creation." + _CHECK_BEFORE_RETRY
+                "WordPress could not confirm page creation." + _CHECK_BEFORE_RETRY
             )
 
         try:
@@ -174,12 +177,12 @@ class WordPressPublisher:
             raise WordPressPublishingError(
                 "WordPress returned an invalid publishing response." + _CHECK_BEFORE_RETRY
             ) from None
-        page_id = _created_page_id(payload)
-        edit_url, preview_url = _draft_links(self.settings.wordpress_publish_url, page_id)
+        page_id = _created_page_id(payload, status)
+        edit_url, preview_url = _draft_links(self.settings.wordpress_publish_url, page_id, status)
         return WordPressPublicationResult(
             success=True,
             page_id=page_id,
-            status="draft",
+            status=status,
             edit_url=edit_url,
             preview_url=preview_url,
             published_at=datetime.now(timezone.utc).isoformat(),

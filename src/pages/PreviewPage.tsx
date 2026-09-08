@@ -4,7 +4,6 @@ import {
   ChevronDown,
   Code2,
   Download,
-  Eye,
   ExternalLink,
   FileCheck2,
   FileJson2,
@@ -12,12 +11,12 @@ import {
   Menu,
   Network,
   RotateCcw,
-  Send,
 } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
-import { useMutation, useQuery } from "@tanstack/react-query";
+import { useQuery } from "@tanstack/react-query";
 import { Link, useNavigate } from "react-router-dom";
 import { ReportFrame } from "../components/ReportFrame";
+import { WordPressPublishControl } from "../components/WordPressPublishControl";
 import { emptyMetadata } from "../config/workflow";
 import { converterStagePath } from "../lib/converterRoutes";
 import { formatPublicationDate } from "../lib/publicationFormatting";
@@ -126,90 +125,6 @@ function DownloadMenu({ documentId }: { documentId: string }) {
   );
 }
 
-function WordPressPublishControl({
-  documentId,
-  onPublished,
-}: {
-  documentId: string;
-  onPublished: () => void;
-}) {
-  const status = useQuery({
-    queryKey: ["wordpress-publication", documentId],
-    queryFn: () => publicationService.getWordPressPublication(documentId),
-    retry: false,
-  });
-  const publish = useMutation({
-    mutationFn: () => publicationService.publishToWordPress(documentId),
-    retry: false,
-    onSuccess: onPublished,
-  });
-  const result = publish.data ?? status.data;
-  const errorMessage =
-    publish.error instanceof Error
-      ? publish.error.message
-      : "The WordPress draft could not be created.";
-
-  if (result) {
-    return (
-      <div className="wordpress-publish-control wordpress-publish-success">
-        <a
-          className="btn btn-primary wordpress-view-button"
-          href={result.previewUrl}
-          target="_blank"
-          rel="noopener noreferrer"
-          title="View the draft on WordPress. Sign-in may be required."
-        >
-          <Eye aria-hidden="true" />
-          View on WordPress
-        </a>
-        <span className="wordpress-publish-meta" role="status">
-          <Check aria-hidden="true" />
-          Draft ready
-        </span>
-      </div>
-    );
-  }
-
-  return (
-    <div className="wordpress-publish-control">
-      <button
-        type="button"
-        className="btn btn-primary wordpress-publish-button"
-        disabled={publish.isPending || status.isPending || status.isError}
-        onClick={() => publish.mutate()}
-      >
-        {publish.isPending ? (
-          <>
-            <span className="spinner" aria-hidden="true" />
-            Publishing draft…
-          </>
-        ) : (
-          <>
-            <Send aria-hidden="true" />
-            {publish.isError ? "Try publishing again" : "Publish to WordPress"}
-          </>
-        )}
-      </button>
-      {!publish.isPending && !publish.isError && !status.isError && (
-        <span className="wordpress-publish-meta">Save a draft to WordPress</span>
-      )}
-      {status.isError && (
-        <span className="wordpress-publish-error" role="alert">
-          Could not check for an existing WordPress draft.{" "}
-          <button className="wordpress-status-retry" type="button" onClick={() => void status.refetch()} disabled={status.isFetching}>
-            Retry status check
-          </button>
-        </span>
-      )}
-      {publish.isError && (
-        <span className="wordpress-publish-error" role="alert">
-          {errorMessage}
-        </span>
-      )}
-    </div>
-  );
-}
-
 export function PreviewPage() {
   const navigate = useNavigate();
   const { activeDocument, activeDocumentId, resetWorkflow, showToast } =
@@ -303,8 +218,8 @@ export function PreviewPage() {
               <WordPressPublishControl
                 key={`wordpress-${activeDocumentId}`}
                 documentId={activeDocumentId}
-                onPublished={() =>
-                  showToast("WordPress draft created · ready to view")
+                onPublished={(status) =>
+                  showToast(status === "publish" ? "Live on WordPress · ready to view" : "WordPress draft saved · ready to view")
                 }
               />
               <DownloadMenu

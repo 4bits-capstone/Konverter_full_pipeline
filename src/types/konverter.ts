@@ -117,7 +117,7 @@ export interface PublicationPayload {
 export interface WordPressPublication {
   success: true
   pageId: number
-  status: 'draft'
+  status: 'draft' | 'publish'
   editUrl: string
   previewUrl: string
   publishedAt: string

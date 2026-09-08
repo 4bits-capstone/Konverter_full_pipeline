@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+from dataclasses import replace
 
 import httpx
 import pytest
@@ -254,16 +255,16 @@ class _FakeWordPressPublisher:
     def __init__(self) -> None:
         self.calls: list[dict[str, str]] = []
 
-    async def publish(self, *, title: str, html: str, idempotency_key: str):
+    async def publish(self, *, title: str, html: str, idempotency_key: str, status="draft"):
         self.calls.append(
-            {"title": title, "html": html, "idempotency_key": idempotency_key}
+            {"title": title, "html": html, "idempotency_key": idempotency_key, "status": status}
         )
         return WordPressPublicationResult(
             success=True,
-            page_id=26036,
-            status="draft",
+            page_id=26036 if status == "draft" else 26037,
+            status=status,
             edit_url="https://vlrc.komosion.com/wp-admin/post.php?post=26036&action=edit",
-            preview_url="https://vlrc.komosion.com/?page_id=26036&preview=true",
+            preview_url="https://vlrc.komosion.com/?page_id=26036&preview=true" if status == "draft" else "https://vlrc.komosion.com/?page_id=26037",
             published_at="2026-09-06T10:00:00+00:00",
         )
 
@@ -398,3 +399,63 @@ def test_wordpress_cache_is_scoped_to_target_endpoint(monkeypatch):
     monkeypatch.setattr(app_main, "settings", load_settings())
     second = app_main._wordpress_source_signature(record, "<main>Report</main>")
     assert first != second
+
+
+def test_client_sends_live_status_and_returns_a_live_view_link(monkeypatch):
+    calls = []
+    def handler(request):
+        calls.append(json.loads(request.content))
+        return httpx.Response(201, json={"data": {"id": 26037, "status": "publish"}})
+    publisher = WordPressPublisher(_configured_settings(monkeypatch), transport=httpx.MockTransport(handler))
+    result = asyncio.run(publisher.publish(title="Report", html="<main>Report</main>", idempotency_key="live-test", status="publish"))
+    assert calls[0] == {"title": "Report", "html": "<main>Report</main>", "status": "publish"}
+    assert result.status == "publish"
+    assert result.preview_url == "https://vlrc.komosion.com/?page_id=26037"
+
+
+def test_client_does_not_claim_live_when_wordpress_returns_draft(monkeypatch):
+    publisher = WordPressPublisher(_configured_settings(monkeypatch), transport=httpx.MockTransport(
+        lambda request: httpx.Response(201, json={"id": 26036, "status": "draft"}),
+    ))
+    with pytest.raises(WordPressPublishingError):
+        asyncio.run(publisher.publish(title="Report", html="Report", idempotency_key="live-test", status="publish"))
+
+
+def test_publishing_flow_supports_draft_then_live_and_no_draft_after_live(tmp_path, monkeypatch):
+    with load_client(tmp_path) as client:
+        doc = _approved_document(client)
+        fake = _FakeWordPressPublisher()
+        monkeypatch.setattr(app_main, "wordpress", fake)
+        path = f"/api/documents/{doc}/wordpress-publication"
+        draft = client.post(path, json={"status": "draft"})
+        assert draft.status_code == 200
+        assert draft.json()["status"] == "draft"
+        live = client.post(path, json={"status": "publish"})
+        assert live.status_code == 200
+        assert live.json()["status"] == "publish"
+        assert client.get(path).json() == live.json()
+        assert client.post(path, json={"status": "draft"}).status_code == 409
+        assert [call["status"] for call in fake.calls] == ["draft", "publish"]
+        assert fake.calls[0]["idempotency_key"] != fake.calls[1]["idempotency_key"]
+
+
+def test_publishing_uses_unchanged_approved_html_without_extra_chat_configuration(tmp_path, monkeypatch):
+    with load_client(tmp_path) as client:
+        doc = _approved_document(client)
+        original_html = app_main.store.artifact_path(doc, "accessible.html").read_text(encoding="utf-8")
+        fake = _FakeWordPressPublisher()
+        monkeypatch.setattr(app_main, "wordpress", fake)
+        monkeypatch.setattr(app_main, "settings", replace(app_main.settings, public_api_url=""))
+        assert client.post(f"/api/documents/{doc}/wordpress-publication", json={"status": "publish"}).status_code == 200
+        assert fake.calls[0]["html"] == original_html
+        assert not (app_main.settings.data_dir / "wordpress-publications.sqlite3").exists()
+
+
+@pytest.mark.parametrize("payload", [{"status": "private"}, {"status": None}, {"status": "publish", "token": "client-secret"}])
+def test_publish_rejects_unsupported_or_extra_client_fields(tmp_path, monkeypatch, payload):
+    with load_client(tmp_path) as client:
+        doc = _approved_document(client)
+        fake = _FakeWordPressPublisher()
+        monkeypatch.setattr(app_main, "wordpress", fake)
+        assert client.post(f"/api/documents/{doc}/wordpress-publication", json=payload).status_code == 422
+        assert not fake.calls
