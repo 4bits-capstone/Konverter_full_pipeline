@@ -198,3 +198,56 @@ def test_table_to_footnote_keeps_one_citation_per_line():
     assert lines[0] == "100 Wrongs Act 1958 (Vic) s 48."
     assert lines[1] == "101 Damage to property includes damage caused to anything."
     assert lines[2] == "102 Wrongs Act 1958 (Vic) s 51(1)(a)."
+
+
+def _numbered_paragraph_list_block(**overrides):
+    block = {
+        "id": "b1",
+        "label": "list",
+        "text": "2.39 People who have suffered significant injury.\n"
+        "2.40 The Transport Accident Commission has been running a pilot.",
+        "list_items": [
+            "People who have suffered significant injury.",
+            "The Transport Accident Commission has been running a pilot.",
+        ],
+        "list_entries": [
+            {
+                "text": "People who have suffered significant injury.",
+                "marker": "2.39",
+                "enumerated": True,
+                "level": 0,
+            },
+            {
+                "text": "The Transport Accident Commission has been running a pilot.",
+                "marker": "2.40",
+                "enumerated": True,
+                "level": 0,
+            },
+        ],
+    }
+    block.update(overrides)
+    return block
+
+
+def test_list_to_footnote_keeps_decimal_paragraph_number():
+    """A VLRC-style decimal paragraph number ("2.39") is the report's own
+    numbering, not a stray marker like the bullets the other tests in this
+    file guard against — Docling's own list parsing splits it into
+    entry["marker"] the same way it splits a bullet, so a naive "just read
+    entry['text']" (as _clean_source_text used to) silently drops it with
+    no marker left anywhere for the exporter to recover. Verified live:
+    13,205 numbered paragraphs across 12 real VLRC documents were affected
+    before this fix."""
+    block = _apply(_numbered_paragraph_list_block(), "footnote")
+    assert block["text"] == (
+        "2.39 People who have suffered significant injury.\n"
+        "2.40 The Transport Accident Commission has been running a pilot."
+    )
+
+
+def test_list_to_footnote_still_strips_ordinary_bullet_alongside_decimal_numbers():
+    """The decimal-paragraph-number carve-out must not resurrect the
+    original stray-marker bug this file exists to guard against."""
+    block = _apply(_list_block(), "footnote")
+    assert BULLET not in block["text"]
+    assert block["text"] == "114 Ibid 98.\n115 Tim Holding, Minister."

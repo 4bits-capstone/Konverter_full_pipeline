@@ -437,18 +437,18 @@ def test_bulk_review_update_changes_every_selected_block(tmp_path):
         assert all(item["label"] == "H3" and item["status"] == "edited" for item in changed)
 
 
-def test_upload_is_limited_to_five_documents(tmp_path):
+def test_upload_is_limited_to_ten_documents(tmp_path):
     with load_client(tmp_path) as client:
         response = client.post(
             "/api/documents",
             files=[
                 ("files", (f"report-{index}.pdf", make_pdf(), "application/pdf"))
-                for index in range(6)
+                for index in range(11)
             ],
         )
 
         assert response.status_code == 400
-        assert "at most 5 documents" in response.json()["detail"]
+        assert "at most 10 documents" in response.json()["detail"]
 
 
 def test_revoke_discards_output_and_reapproval_works(tmp_path):

@@ -16,7 +16,7 @@ import { documentService } from "../services";
 import { useKonverter } from "../state/KonverterContext";
 import type { DocumentProcessingJob } from "../types/konverter";
 
-const MAX_DOCUMENTS = 5;
+const MAX_DOCUMENTS = 10;
 
 function formatRemainingTime(totalSeconds: number): string {
   const seconds = Math.max(0, Math.round(totalSeconds));
@@ -192,7 +192,7 @@ export function UploadPage() {
             </p>
             <p className="dz-hint">
               <span className="mono">PDF only</span> · up to 200 MB per file ·
-              maximum 5 documents
+              maximum {MAX_DOCUMENTS} documents
             </p>
           </div>
         ) : (

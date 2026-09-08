@@ -119,11 +119,11 @@ describe('Konverter frontend', () => {
     expect(screen.getAllByText('second-report.pdf')).not.toHaveLength(0)
   })
 
-  it('limits the active queue to five documents', async () => {
+  it('limits the active queue to ten documents', async () => {
     const { container } = renderApp()
     await screen.findByRole('heading', { name: 'Upload documents' })
     const input = container.querySelector<HTMLInputElement>('input[type="file"]')
-    const files = Array.from({ length: 6 }, (_, index) => (
+    const files = Array.from({ length: 11 }, (_, index) => (
       new File([`${index}`], `report-${index + 1}.pdf`, {
         type: 'application/pdf',
         lastModified: index,
@@ -132,9 +132,9 @@ describe('Konverter frontend', () => {
 
     fireEvent.change(input!, { target: { files } })
 
-    expect(await screen.findAllByRole('radio')).toHaveLength(5)
-    expect(screen.queryByText('report-6.pdf')).not.toBeInTheDocument()
-    expect(screen.getByText(/Only 5 were added because the limit is 5/)).toBeInTheDocument()
+    expect(await screen.findAllByRole('radio')).toHaveLength(10)
+    expect(screen.queryByText('report-11.pdf')).not.toBeInTheDocument()
+    expect(screen.getByText(/Only 10 were added because the limit is 10/)).toBeInTheDocument()
   })
 
   it('processes an uploaded document and opens its review queue', async () => {

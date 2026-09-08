@@ -96,8 +96,9 @@ function PublishDialog({
             <span>
               <strong>Publish live</strong>
               <small>
-                Publish live on the staging site. Draft publishing will no
-                longer be offered.
+                {hasDraft
+                  ? "Publish live on the staging site. Draft publishing will no longer be offered."
+                  : "Publish live on the staging site, available to visitors immediately."}
               </small>
             </span>
           </label>

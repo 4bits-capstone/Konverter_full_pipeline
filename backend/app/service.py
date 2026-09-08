@@ -79,6 +79,9 @@ def _strip_list_marker(line: str) -> str:
     return str(entry.get("text", "")) if entry else ""
 
 
+_DECIMAL_PARAGRAPH_MARKER_RE = re.compile(r"\d+(?:\.\d+)+")
+
+
 def _clean_source_text(block: dict[str, Any]) -> str:
     """The single, marker-stripped source of truth for a block's own
     content — used whenever a structure-label change falls back to
@@ -89,10 +92,26 @@ def _clean_source_text(block: dict[str, Any]) -> str:
     inherited unstripped from its children. Reusing the already-clean
     list_entries (or box_section_blocks' own text) and stripping the same
     marker pattern from whatever's left avoids leaking it into whatever
-    type gets converted to next."""
+    type gets converted to next.
+
+    A VLRC-style decimal paragraph number ("2.39", "7.2") is not one of
+    those stray markers though — it's the report's own numbering system,
+    and Docling's own list parsing already splits it into entry["marker"]
+    the same way it splits a bullet, so simply reading entry["text"]
+    silently drops it here with no marker left in the text for anything
+    downstream to recover. Re-attaching it when it's this specific shape
+    keeps a structure-label change from permanently losing the number the
+    moment it falls back to this "whatever's already there" path."""
     list_entries = block.get("list_entries")
     if list_entries:
-        raw = "\n".join(str(entry.get("text", "")) for entry in list_entries)
+        raw = "\n".join(
+            f"{marker} {entry.get('text', '')}".strip()
+            if _DECIMAL_PARAGRAPH_MARKER_RE.fullmatch(
+                marker := str(entry.get("marker", "")).strip()
+            )
+            else str(entry.get("text", ""))
+            for entry in list_entries
+        )
     else:
         children = block.get("box_section_blocks")
         raw = (

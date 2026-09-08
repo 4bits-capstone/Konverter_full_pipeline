@@ -3,6 +3,7 @@ from __future__ import annotations
 import html
 import re
 import time
+from collections import Counter
 from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
@@ -130,6 +131,55 @@ def _normalize_for_text_comparison(value: str) -> str:
     return value
 
 
+_RECOMMENDATION_LANGUAGE_RE = re.compile(
+    r"\b(should be amended|should require|should state|should provide|"
+    r"should include|should be introduced|should establish|should be enacted|"
+    r"the (?:act|commission|government|new act) should)\b",
+    re.IGNORECASE,
+)
+# Genuine footnotes occasionally use "should" too (quoting a court's
+# reasoning, or reporting what a submission argued) — requiring the absence
+# of ordinary citation vocabulary is what separates a real citation ("Victoria
+# Legal Aid thought ... should ...", still describing a source) from the
+# report's own recommendation text, which cites nothing.
+_FOOTNOTE_CITATION_MARKERS_RE = re.compile(
+    r"\b(submissions?|consultations?|roundtables?|\(vic\)|\(cth\)|\(nsw\)|ibid|"
+    r"see also|see, eg|report no|discussion paper|vlrc|https?://|www\.)\b",
+    re.IGNORECASE,
+)
+# "The Commission [is asked to] examine whether X should be introduced" is
+# describing a question under consideration (often paraphrasing the terms
+# of reference), not asserting the report's own recommendation the way
+# "X should be introduced" alone would — verified directly against a real
+# footnote this flagged incorrectly. Requiring "whether" to appear shortly
+# before the matched phrase, not just anywhere in a long paragraph, keeps
+# this scoped to that specific construction rather than excluding any
+# recommendation that happens to mention "whether" somewhere else in it.
+_EXPLORATORY_FRAMING_RE = re.compile(
+    r"\bwhether\b(?:\W+\w+){0,15}?\W+should\b", re.IGNORECASE
+)
+
+
+def _looks_like_misclassified_recommendation(text: str) -> bool:
+    """A block labelled "footnote" whose own wording reads like the
+    report's own recommendation ("The Act should state...", "...should be
+    amended by...") rather than a citation. Verified directly against a
+    real 364-page VLRC report: three of its own numbered recommendations
+    had been labelled "footnote" instead of "list" — confidence 0.92, so
+    they never even reached the review queue at all, silently shipping
+    core recommendation content buried in the footnotes section instead
+    of the body. Docling's own confidence score doesn't catch this
+    (a wrong label can still be a "confident" one); nothing about
+    citation-text accuracy would catch it either, since the extracted
+    text itself was character-for-character correct — only the label was
+    wrong."""
+    if _EXPLORATORY_FRAMING_RE.search(text):
+        return False
+    return bool(_RECOMMENDATION_LANGUAGE_RE.search(text)) and not (
+        _FOOTNOTE_CITATION_MARKERS_RE.search(text)
+    )
+
+
 def _footnote_text_is_trustworthy(
     page_textpage: Any, bounds: dict[str, Any], docling_text: str
 ) -> bool:
@@ -168,6 +218,128 @@ def _footnote_text_is_trustworthy(
     # so a substring match either way, not exact equality, is the right
     # bar for "matches", verified against the real document above.
     return doc_norm in ind_norm or ind_norm in doc_norm
+
+
+def _effective_font_size(page: Any, bounds: dict[str, Any]) -> float | None:
+    """Best-effort rendered font size (in points) for whatever text sits
+    inside this block's own bounding region, read directly from the PDF's
+    text objects — Docling's own output carries no font-size info at all
+    for PDF-extracted text (the same underlying gap as the italics
+    finding: pdfium exposes real font metrics per text object, but
+    Docling's PDF backend never propagates them into TextItem). Majority
+    vote across every text object whose bounds overlap the region, rather
+    than the first one found — verified directly against a real document
+    that a tight crop can occasionally overlap a sliver of an adjacent,
+    differently-sized text run, and picking the first match alone turned
+    one in eighty genuine footnotes into a false outlier."""
+    page_height = float(bounds.get("page_height", 0))
+    if page_height <= 0:
+        return None
+    left = float(bounds.get("left", 0))
+    right = float(bounds.get("right", 0))
+    top_pdf = page_height - float(bounds.get("top", 0))
+    bottom_pdf = page_height - float(bounds.get("bottom", 0))
+    sizes: list[float] = []
+    try:
+        for obj in page.get_objects():
+            if obj.type != 1:  # 1 = text object
+                continue
+            object_left, object_bottom, object_right, object_top = obj.get_bounds()
+            if (
+                object_right < left
+                or object_left > right
+                or object_top < bottom_pdf
+                or object_bottom > top_pdf
+            ):
+                continue
+            try:
+                font_size = obj.get_font_size()
+                a, b, _c, _d, _e, _f = obj.get_matrix().get()
+                scale = (a * a + b * b) ** 0.5
+                sizes.append(round(font_size * scale, 1))
+            except Exception:
+                continue
+    except Exception:
+        return None
+    if not sizes:
+        return None
+    return Counter(sizes).most_common(1)[0][0]
+
+
+def _typical_body_text_font_size(
+    blocks: list[dict[str, Any]],
+    footnote_page: Callable[[int], Any],
+    footnote_baseline: float | None,
+) -> float | None:
+    """This document's own typical body-paragraph font size, for judging
+    whether an oversized footnote is genuinely body-sized rather than just
+    a second, still-small footnote convention elsewhere in the document
+    (a real, confirmed case: one report used 6.5pt for most footnotes and
+    8.6pt for an entire other chapter's — still clearly footnote-scaled,
+    not a misclassification). "text"-labelled blocks are the natural
+    source for this, but verified directly against two real reports:
+    "text" as a whole skews toward the *footnote* size, not the body
+    size — captions, run-overs, and other small print also end up
+    labelled "text" — so raw-moding all of it picks the wrong baseline.
+    Excluding anything close to the already-known footnote baseline
+    before taking the mode is what actually recovers the true body size
+    (confirmed: 10.5pt in both reports checked, exactly matching where
+    the real bug's mislabelled recommendations rendered)."""
+    sizes: list[float] = []
+    for block in blocks:
+        if block.get("label") != "text":
+            continue
+        bounds = block.get("source_bounds")
+        if not bounds:
+            continue
+        page = footnote_page(int(block.get("page", 1)))
+        if page is None:
+            continue
+        size = _effective_font_size(page, bounds)
+        if size is None:
+            continue
+        if footnote_baseline is not None and abs(size - footnote_baseline) <= 1.0:
+            continue
+        sizes.append(size)
+    if not sizes:
+        return None
+    return Counter(sizes).most_common(1)[0][0]
+
+
+def _footnote_font_size_outlier(
+    block_font_size: float | None,
+    baseline_footnote_font_size: float | None,
+    body_text_font_size: float | None,
+) -> bool:
+    """Whether a footnote-labelled block's own font size looks like this
+    document's *body* text rather than its own footnotes — verified
+    directly against real documents: genuine footnotes hold one
+    consistent size document-wide (6.5pt across 80/80 samples in one
+    report, 7.0pt across 80/80 in another), while three of a report's own
+    numbered recommendations mislabelled as footnotes rendered at the
+    same size as that document's body text, 10.5pt — a 62% jump from its
+    6.5pt footnote baseline. Being meaningfully bigger than the footnote
+    baseline alone isn't enough to call it a misclassification, though —
+    a real report was found using two legitimate footnote sizes for
+    different chapters (6.5pt and 8.6pt, both clearly footnote-scaled),
+    which a baseline-only check would wrongly flag 86 times over. Only
+    when the size is *also* close to the document's own body-text size is
+    it actually the body-sized content the check exists to catch."""
+    if block_font_size is None or baseline_footnote_font_size is None or (
+        baseline_footnote_font_size <= 0
+    ):
+        return False
+    meaningfully_larger_than_footnotes = (
+        block_font_size >= baseline_footnote_font_size * 1.2
+        and block_font_size - baseline_footnote_font_size >= 1.0
+    )
+    if not meaningfully_larger_than_footnotes:
+        return False
+    if body_text_font_size is None:
+        # No reliable body-text baseline to confirm against — fall back
+        # to the baseline-only signal rather than staying silent.
+        return True
+    return abs(block_font_size - body_text_font_size) <= 1.0
 
 
 @dataclass
@@ -712,16 +884,104 @@ class KonverterPipeline:
             ordered.extend(sorted(unbounded, key=lambda item: original_order[id(item)]))
         return ordered
 
-    @staticmethod
+    @classmethod
+    def _column_aware_text_ranks(cls, document: dict[str, Any]) -> dict[str, float]:
+        """Docling's own top-level reading order (the position of each item
+        in document["texts"]) already gets used as-is for ordinary
+        single-column pages, but on a genuine side-by-side layout — a
+        front-matter page pairing "Terms of Reference" with an
+        "Acknowledgements" contributor list, or a two-column Bibliography —
+        it interleaves the two columns by raw vertical position instead of
+        reading one column fully before the other. _ordered_list_items
+        (below) already solves exactly this problem for a single list
+        group's own children; this applies the same column-clustering
+        approach to top-level page content generally.
+
+        Deliberately conservative: a page is only reordered when at least
+        two clusters carry more than one item each — a lone off-column
+        element (a caption, a pull-quote, a stray page number) must never
+        register as a second column on its own. Column *count* rather
+        than share, since a genuine column can legitimately be a handful
+        of dense, multi-line blocks against dozens of short ones in the
+        other column — that imbalance is normal, not a sign the split is
+        spurious. Most pages have no genuine second column and pass
+        through with their original order completely untouched."""
+        texts = document.get("texts", [])
+        original_index = {
+            str(item.get("self_ref", "")): index
+            for index, item in enumerate(texts)
+            if str(item.get("self_ref", ""))
+        }
+        pages: dict[int, list[tuple[int, str, dict[str, float]]]] = {}
+        for index, item in enumerate(texts):
+            reference = str(item.get("self_ref", ""))
+            if not reference or _raw_label(item) in {"page_header", "page_footer"}:
+                continue
+            provenance = item.get("prov") or []
+            raw_box = provenance[0].get("bbox") if provenance else None
+            if not raw_box:
+                continue
+            page = _first_page(item)
+            page_meta = document.get("pages", {}).get(
+                str(page), document.get("pages", {}).get(page, {})
+            )
+            page_height = float(page_meta.get("size", {}).get("height", 0))
+            page_width = float(page_meta.get("size", {}).get("width", 0))
+            if page_width <= 0:
+                continue
+            bounds = cls._top_left_bbox(raw_box, page_height)
+            pages.setdefault(page, []).append((index, reference, bounds))
+
+        ranks = dict(original_index)
+        for page, entries in pages.items():
+            if len(entries) < 4:
+                continue
+            page_meta = document.get("pages", {}).get(
+                str(page), document.get("pages", {}).get(page, {})
+            )
+            page_width = float(page_meta.get("size", {}).get("width", 0))
+            threshold = max(page_width * 0.35, 150.0)
+            lefts = sorted({round(bounds["l"]) for _, _, bounds in entries})
+            clusters: list[list[float]] = []
+            for left in lefts:
+                if not clusters or left - clusters[-1][-1] > threshold:
+                    clusters.append([left])
+                else:
+                    clusters[-1].append(left)
+            if len(clusters) < 2:
+                continue
+
+            def column_of(left: float) -> int:
+                return min(
+                    range(len(clusters)),
+                    key=lambda cluster_index: min(
+                        abs(left - value) for value in clusters[cluster_index]
+                    ),
+                )
+
+            columned = [
+                (index, reference, bounds, column_of(bounds["l"]))
+                for index, reference, bounds in entries
+            ]
+            column_counts = Counter(column for *_, column in columned)
+            if any(count < 2 for count in column_counts.values()):
+                continue
+
+            columned.sort(
+                key=lambda value: (value[3], value[2]["t"], value[2]["l"], value[0])
+            )
+            base = min(index for index, *_ in entries)
+            for offset, (_, reference, _, _) in enumerate(columned):
+                ranks[reference] = base + offset * 0.001
+        return ranks
+
+    @classmethod
     def _ordered_document_references(
+        cls,
         document: dict[str, Any],
         all_items: dict[str, dict[str, Any]],
     ) -> list[str]:
-        text_ranks = {
-            str(item.get("self_ref", "")): index
-            for index, item in enumerate(document.get("texts", []))
-            if str(item.get("self_ref", ""))
-        }
+        text_ranks = cls._column_aware_text_ranks(document)
         rank_cache: dict[str, float] = {}
 
         def earliest_rank(reference: str, active: set[str] | None = None) -> float:
@@ -889,6 +1149,7 @@ class KonverterPipeline:
             return self._build_review_items_with_textpages(blocks, None)
 
         textpage_cache: dict[int, Any] = {}
+        page_cache: dict[int, Any] = {}
 
         def footnote_textpage(page_number: int) -> Any:
             if page_number not in textpage_cache:
@@ -900,8 +1161,18 @@ class KonverterPipeline:
                     textpage_cache[page_number] = None
             return textpage_cache[page_number]
 
+        def footnote_page(page_number: int) -> Any:
+            if page_number not in page_cache:
+                try:
+                    page_cache[page_number] = pdf_document[page_number - 1]
+                except Exception:
+                    page_cache[page_number] = None
+            return page_cache[page_number]
+
         try:
-            return self._build_review_items_with_textpages(blocks, footnote_textpage)
+            return self._build_review_items_with_textpages(
+                blocks, footnote_textpage, footnote_page
+            )
         finally:
             pdf_document.close()
 
@@ -909,7 +1180,39 @@ class KonverterPipeline:
         self,
         blocks: list[dict[str, Any]],
         footnote_textpage: Callable[[int], Any] | None,
+        footnote_page: Callable[[int], Any] | None = None,
     ) -> list[dict[str, Any]]:
+        # A footnote's font size only means something relative to this
+        # document's *own* typical footnote size — different reports use
+        # different point sizes for their own footnotes — so the baseline
+        # has to be calibrated per document, from whichever footnotes look
+        # ordinary, before any individual block can be judged an outlier.
+        footnote_font_sizes: dict[str, float] = {}
+        baseline_footnote_font_size: float | None = None
+        if footnote_page is not None:
+            sizes_seen: list[float] = []
+            for block in blocks:
+                if block.get("label") != "footnote":
+                    continue
+                bounds = block.get("source_bounds")
+                if not bounds:
+                    continue
+                page_number = int(block.get("page", 1))
+                page = footnote_page(page_number)
+                if page is None:
+                    continue
+                size = _effective_font_size(page, bounds)
+                if size is not None:
+                    footnote_font_sizes[str(block.get("id"))] = size
+                    sizes_seen.append(size)
+            if sizes_seen:
+                baseline_footnote_font_size = Counter(sizes_seen).most_common(1)[0][0]
+        body_text_font_size = (
+            _typical_body_text_font_size(blocks, footnote_page, baseline_footnote_font_size)
+            if footnote_page is not None
+            else None
+        )
+
         items: list[dict[str, Any]] = []
         for block in blocks:
             label = str(block.get("label", "unspecified"))
@@ -917,10 +1220,38 @@ class KonverterPipeline:
                 continue
             raw_confidence = block.get("confidence")
             confidence = float(raw_confidence) if raw_confidence is not None else 0.5
-            if confidence >= self.settings.high_confidence_threshold:
+            # A footnote whose own wording reads like the report's own
+            # recommendation, not a citation, must reach the review queue
+            # regardless of how confident Docling was about the label —
+            # a real case of this carried confidence 0.92, comfortably
+            # above the threshold that would otherwise skip it entirely.
+            suspected_misclassified_recommendation = label == "footnote" and (
+                _looks_like_misclassified_recommendation(str(block.get("text", "")))
+            )
+            # Same idea, but content-agnostic: a footnote rendered at this
+            # document's own body-text size rather than its footnote size
+            # is suspicious regardless of what it says — this is what
+            # actually caught the real recommendation-mislabelling case
+            # above, independent of its wording.
+            suspected_font_size_outlier = label == "footnote" and (
+                _footnote_font_size_outlier(
+                    footnote_font_sizes.get(str(block.get("id"))),
+                    baseline_footnote_font_size,
+                    body_text_font_size,
+                )
+            )
+            suspected_misclassified_footnote = (
+                suspected_misclassified_recommendation or suspected_font_size_outlier
+            )
+            if (
+                confidence >= self.settings.high_confidence_threshold
+                and not suspected_misclassified_footnote
+            ):
                 continue
             band = (
-                "med"
+                "high"
+                if confidence >= self.settings.high_confidence_threshold
+                else "med"
                 if confidence >= self.settings.medium_confidence_threshold
                 else "low"
             )
@@ -935,6 +1266,7 @@ class KonverterPipeline:
                 continue
             source_text = html.escape(text[:1800]).replace("\n", "<br>")
             list_items = block.get("list_items")
+            list_entries = block.get("list_entries")
             box_children = block.get("box_section_blocks")
             # The evidence preview above (source_text) should show exactly
             # what was extracted, bullets and all — but the *editable*
@@ -951,7 +1283,35 @@ class KonverterPipeline:
             # characters through the box_section path instead — falling
             # back to each child's own list_items (when it has one) fixes
             # that case the same way.
-            if list_items:
+            #
+            # One marker shape is not stray decoration though: a VLRC-style
+            # decimal paragraph number ("2.39", "7.2") is the report's own
+            # numbering system, and the exporter (_list_publication_blocks)
+            # specifically detects and preserves it in the final output.
+            # Stripping it here — the same way a bullet or "(a)" gets
+            # stripped — would show the reviewer text that doesn't match
+            # what actually gets published, and would silently drop the
+            # number for good the moment they save any text edit (a
+            # corrected_text edit is re-parsed from scratch and never sees
+            # the original marker to recover it from).
+            def _decimal_paragraph_marker(entry: dict[str, Any]) -> str:
+                marker = str(entry.get("marker", "")).strip()
+                return marker if re.fullmatch(r"\d+(?:\.\d+)+", marker) else ""
+
+            if list_entries and any(
+                _decimal_paragraph_marker(entry) for entry in list_entries
+            ):
+                extracted_lines = []
+                for entry in list_entries:
+                    entry_text = str(entry.get("text", "")).strip()
+                    if not entry_text:
+                        continue
+                    marker = _decimal_paragraph_marker(entry)
+                    extracted_lines.append(
+                        f"{marker} {entry_text}" if marker else entry_text
+                    )
+                extracted_text = "\n".join(extracted_lines)
+            elif list_items:
                 extracted_text = "\n".join(
                     str(item).strip() for item in list_items if str(item).strip()
                 )
@@ -982,6 +1342,12 @@ class KonverterPipeline:
             # One that fails cross-validation goes to the ordinary
             # "pending" queue instead, same as everything else.
             if label != "footnote":
+                footnote_verified = False
+            elif suspected_misclassified_footnote:
+                # The text itself can be character-for-character correct —
+                # this isn't a content problem, it's a label problem, so
+                # passing the text cross-check below wouldn't make it any
+                # more trustworthy as a *footnote*.
                 footnote_verified = False
             elif footnote_textpage is None:
                 # No PDF available to check against at all (e.g. these
@@ -1029,7 +1395,15 @@ class KonverterPipeline:
                     "extracted_text": None if kind == "table" else extracted_text,
                     "corrected_text": None,
                     "note": (
-                        "Confirm the structure label and extracted content against the original PDF. "
+                        "This reads like one of the report's own recommendations, not a "
+                        "citation — check whether the structure label should be changed "
+                        "(e.g. to List)."
+                        if suspected_misclassified_recommendation
+                        else "This is printed at the same size as body text, not this "
+                        "document's usual (smaller) footnote size — check whether it's "
+                        "really a footnote or should have a different structure label."
+                        if suspected_font_size_outlier
+                        else "Confirm the structure label and extracted content against the original PDF. "
                         "Changing the structure also changes the correction editor and generated output."
                     ),
                     "table_data": table_data if kind == "table" else None,
