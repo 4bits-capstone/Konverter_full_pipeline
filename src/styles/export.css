@@ -409,6 +409,27 @@
 }
 
 .converter-app .wordpress-publish-error { margin: 0; }
+
+.converter-app .wordpress-duplicate-dialog .wordpress-dialog-content h3 {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  color: var(--danger);
+}
+
+.converter-app .wordpress-duplicate-dialog .wordpress-dialog-content h3 svg {
+  width: 22px;
+  height: 22px;
+  flex: none;
+}
+
+.converter-app .wordpress-duplicate-dialog .wordpress-dialog-content a {
+  display: inline-block;
+  margin-top: -8px;
+  color: var(--blue-dark);
+  font-weight: 600;
+}
+
 .converter-app .wordpress-publish-dialog {
   width: min(540px, calc(100vw - 32px));
   max-height: calc(100dvh - 32px);

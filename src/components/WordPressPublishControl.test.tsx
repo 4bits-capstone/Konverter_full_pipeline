@@ -2,7 +2,8 @@ import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { publicationService, resetTestServices } from '../test/serviceMocks'
-import type { WordPressPublication } from '../types/konverter'
+import { ApiError } from '../services/httpClient'
+import type { WordPressDuplicateRisk, WordPressPublication } from '../types/konverter'
 import { WordPressPublishControl } from './WordPressPublishControl'
 
 vi.mock('../services', () => import('../test/serviceMocks'))
@@ -106,6 +107,60 @@ describe('WordPress publishing choices', () => {
     renderControl()
     fireEvent.click(within(await openChoices()).getByRole('button', { name: 'Save draft' }))
     expect(await screen.findByRole('link', { name: 'View draft' })).toBeInTheDocument()
+    expect(publish).toHaveBeenCalledTimes(1)
+  })
+
+  it('warns before creating a second WordPress page for an already-published document, then allows confirming', async () => {
+    const risk: WordPressDuplicateRisk = {
+      code: 'wordpress_duplicate_risk',
+      message: 'This document was already published to WordPress as page 26036 (draft) on 2026-09-01T00:00:00Z.',
+      existing: {
+        pageId: 26036,
+        status: 'draft',
+        publishedAt: '2026-09-01T00:00:00Z',
+        editUrl: 'https://vlrc.komosion.com/wp-admin/post.php?post=26036&action=edit',
+        previewUrl: 'https://vlrc.komosion.com/?page_id=26036&preview=true',
+      },
+    }
+    const publish = vi
+      .spyOn(publicationService, 'publishToWordPress')
+      .mockRejectedValueOnce(new ApiError('Conflict', 409, { detail: risk }))
+    renderControl()
+    fireEvent.click(within(await openChoices()).getByRole('button', { name: 'Save draft' }))
+    expect(await screen.findByText(risk.message)).toBeInTheDocument()
+    expect(screen.getByRole('link', { name: 'View the existing page' })).toHaveAttribute(
+      'href',
+      risk.existing.previewUrl,
+    )
+    expect(publish).toHaveBeenCalledExactlyOnceWith('test-document', 'draft')
+
+    fireEvent.click(screen.getByRole('button', { name: 'Publish anyway' }))
+    expect(await screen.findByRole('link', { name: 'View draft' })).toBeInTheDocument()
+    expect(publish).toHaveBeenNthCalledWith(2, 'test-document', 'draft', true)
+    expect(screen.queryByText(risk.message)).not.toBeInTheDocument()
+  })
+
+  it('lets a duplicate-risk warning be dismissed without publishing', async () => {
+    const risk: WordPressDuplicateRisk = {
+      code: 'wordpress_duplicate_risk',
+      message: 'Already published elsewhere.',
+      existing: {
+        pageId: 26036,
+        status: 'draft',
+        publishedAt: '2026-09-01T00:00:00Z',
+        editUrl: null,
+        previewUrl: null,
+      },
+    }
+    const publish = vi
+      .spyOn(publicationService, 'publishToWordPress')
+      .mockRejectedValueOnce(new ApiError('Conflict', 409, { detail: risk }))
+    renderControl()
+    fireEvent.click(within(await openChoices()).getByRole('button', { name: 'Save draft' }))
+    expect(await screen.findByText(risk.message)).toBeInTheDocument()
+    fireEvent.click(screen.getByRole('button', { name: 'Cancel' }))
+    await waitFor(() => expect(screen.queryByText(risk.message)).not.toBeInTheDocument())
+    expect(screen.getByRole('button', { name: 'Publish to WordPress' })).toBeInTheDocument()
     expect(publish).toHaveBeenCalledTimes(1)
   })
 

@@ -68,5 +68,9 @@ export interface PublicationService {
   coverUrl(documentId: string): string
   exportUrl(documentId: string, type: 'html' | 'jsonld' | 'structured'): string
   getWordPressPublication(documentId: string): Promise<WordPressPublication | null>
-  publishToWordPress(documentId: string, status: 'draft' | 'publish'): Promise<WordPressPublication>
+  publishToWordPress(
+    documentId: string,
+    status: 'draft' | 'publish',
+    confirmDuplicate?: boolean,
+  ): Promise<WordPressPublication>
 }

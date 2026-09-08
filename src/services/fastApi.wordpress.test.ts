@@ -14,7 +14,18 @@ describe('WordPress backend-only transport', () => {
       .resolves.toEqual(response)
     expect(apiRequest).toHaveBeenCalledExactlyOnceWith(
       '/documents/document%2Fwith%20spaces/wordpress-publication',
-      { method: 'POST', body: JSON.stringify({ status }), timeoutMs: 150_000 },
+      { method: 'POST', body: JSON.stringify({ status, confirmDuplicate: false }), timeoutMs: 150_000 },
+    )
+  })
+
+  it('sends confirmDuplicate when explicitly confirming a re-publish', async () => {
+    const response = { pageId: 26037, status: 'publish' }
+    vi.mocked(apiRequest).mockResolvedValue(response)
+    await expect(fastApiPublicationService.publishToWordPress('test-document', 'publish', true))
+      .resolves.toEqual(response)
+    expect(apiRequest).toHaveBeenCalledExactlyOnceWith(
+      '/documents/test-document/wordpress-publication',
+      { method: 'POST', body: JSON.stringify({ status: 'publish', confirmDuplicate: true }), timeoutMs: 150_000 },
     )
   })
 

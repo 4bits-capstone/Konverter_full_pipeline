@@ -21,7 +21,7 @@ from .config import load_settings  # noqa: I001 (must import first: loads .env
 # before audit/auth capture SUPABASE_* into module-level constants at import
 # time, so a variable already exported blank in the shell doesn't shadow it)
 
-from . import audit
+from . import audit, wordpress_registry
 from .auth import get_current_user, require_admin
 from .chat import (
     OpenAINotConfiguredError,
@@ -213,6 +213,14 @@ def _wordpress_source_signature(record: dict, html: str) -> str:
             html,
         )
     )
+    return hashlib.sha256(material.encode("utf-8")).hexdigest()
+
+
+def _wordpress_content_hash(title: str, html: str) -> str:
+    """Identify what would actually be sent to WordPress, independent of
+    document_id/approved_at. Used to compare against the durable publish
+    registry, which survives edits that wipe the local per-document cache."""
+    material = "\0".join((title, html))
     return hashlib.sha256(material.encode("utf-8")).hexdigest()
 
 
@@ -726,6 +734,9 @@ async def publish_to_wordpress(
         )
     html = path.read_text(encoding="utf-8")
     source_signature = _wordpress_source_signature(record, html)
+    metadata = workflow.get_metadata(document_id).get("metadata") or {}
+    title = str(metadata.get("title") or record.get("title") or "Document").strip()
+    content_hash = _wordpress_content_hash(title, html)
 
     # Serialise the local check-and-publish operation. The same stable key is
     # also sent to WordPress, but remote idempotency support is not confirmed.
@@ -737,10 +748,39 @@ async def publish_to_wordpress(
                 return cached
             if cached.status == "publish":
                 raise HTTPException(status_code=409, detail="This document is already live. Draft publishing is no longer available.")
+        else:
+            # The local per-document cache misses whenever the document was
+            # edited and re-approved since its last publish (edits wipe it).
+            # That alone doesn't mean WordPress has no page for it — check
+            # the durable registry, which edits never touch, so a stale
+            # local cache can't lead to a silent duplicate page.
+            previous = await wordpress_registry.find_latest(document_id)
+            if previous is not None and not payload.confirm_duplicate:
+                raise HTTPException(
+                    status_code=409,
+                    detail={
+                        "code": "wordpress_duplicate_risk",
+                        "message": (
+                            "This document was already published to WordPress "
+                            f"as page {previous['page_id']} ({previous['status']}) "
+                            "on " + str(previous.get("published_at", "")) + ". "
+                            "The document has changed since then, and WordPress "
+                            "has no way to update that page from here — "
+                            "publishing again will create a separate, additional "
+                            "page. Confirm to continue."
+                        ),
+                        "existing": {
+                            "pageId": previous["page_id"],
+                            "status": previous["status"],
+                            "publishedAt": previous.get("published_at"),
+                            "editUrl": previous.get("edit_url"),
+                            "previewUrl": previous.get("preview_url"),
+                        },
+                    },
+                )
         try:
-            metadata = workflow.get_metadata(document_id).get("metadata") or {}
             result = await wordpress.publish(
-                title=str(metadata.get("title") or record.get("title") or "Document").strip(),
+                title=title,
                 html=html,
                 idempotency_key=f"konverter-{source_signature}-{payload.status}",
                 status=payload.status,
@@ -767,6 +807,18 @@ async def publish_to_wordpress(
                 **result.model_dump(by_alias=True),
                 "source_signature": source_signature,
             },
+        )
+        await wordpress_registry.record_publication(
+            document_id=document_id,
+            page_id=result.page_id,
+            status=result.status,
+            content_hash=content_hash,
+            title=title,
+            edit_url=result.edit_url,
+            preview_url=result.preview_url,
+            published_at=result.published_at,
+            actor_id=user.get("id"),
+            actor_email=user.get("email"),
         )
 
     await audit.record_audit(

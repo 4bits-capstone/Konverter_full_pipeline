@@ -451,6 +451,87 @@ def test_publishing_uses_unchanged_approved_html_without_extra_chat_configuratio
         assert not (app_main.settings.data_dir / "wordpress-publications.sqlite3").exists()
 
 
+class _FakeWordPressRegistry:
+    """Stands in for the durable Supabase-backed registry (wordpress_registry.py).
+
+    The local per-document cache (wordpress-publication.json) is wiped by any
+    edit that unapproves the document, so it alone can't stop a re-approve +
+    re-publish from silently creating a second WordPress page. The registry
+    is the safeguard: it is never touched by edits, so it still remembers a
+    document was already published even after its local cache is gone.
+    """
+
+    def __init__(self) -> None:
+        self.rows: dict[str, list[dict]] = {}
+
+    async def record_publication(self, *, document_id: str, **fields) -> None:
+        self.rows.setdefault(document_id, []).append({"document_id": document_id, **fields})
+
+    async def find_latest(self, document_id: str) -> dict | None:
+        rows = self.rows.get(document_id)
+        return rows[-1] if rows else None
+
+
+def test_editing_after_publish_warns_before_creating_a_duplicate_page(tmp_path, monkeypatch):
+    with load_client(tmp_path) as client:
+        document_id = _approved_document(client)
+        fake_wp = _FakeWordPressPublisher()
+        fake_registry = _FakeWordPressRegistry()
+        monkeypatch.setattr(app_main, "wordpress", fake_wp)
+        monkeypatch.setattr(app_main, "wordpress_registry", fake_registry)
+        path = f"/api/documents/{document_id}/wordpress-publication"
+
+        first = client.post(path, json={"status": "draft"})
+        assert first.status_code == 200
+        assert first.json()["pageId"] == 26036
+        assert len(fake_wp.calls) == 1
+        assert fake_registry.rows[document_id][-1]["page_id"] == 26036
+
+        item_id = client.get(f"/api/documents/{document_id}/review-items").json()[0]["id"]
+        assert client.patch(
+            f"/api/documents/{document_id}/review-items/{item_id}", json={"label": "Corrected label"}
+        ).status_code == 200
+        assert client.get(path).json() is None  # local cache + approval wiped by the edit
+        assert client.post(f"/api/documents/{document_id}/approval").status_code == 200
+
+        blocked = client.post(path, json={"status": "publish"})
+        assert blocked.status_code == 409
+        detail = blocked.json()["detail"]
+        assert detail["code"] == "wordpress_duplicate_risk"
+        assert detail["existing"]["pageId"] == 26036
+        assert len(fake_wp.calls) == 1  # never called WordPress again without confirmation
+
+        confirmed = client.post(path, json={"status": "publish", "confirmDuplicate": True})
+        assert confirmed.status_code == 200
+        assert confirmed.json()["pageId"] == 26037
+        assert len(fake_wp.calls) == 2
+        assert [row["page_id"] for row in fake_registry.rows[document_id]] == [26036, 26037]
+
+
+def test_duplicate_safeguard_is_a_no_op_when_the_registry_is_unavailable(tmp_path, monkeypatch):
+    """Matches existing behaviour when Supabase isn't configured (the default
+    in this test suite, see app.config's pytest guard): publishing after an
+    edit still succeeds without requiring confirmation. The registry itself
+    already degrades gracefully (see wordpress_registry.find_latest); this
+    just documents that publish_to_wordpress doesn't hard-depend on it."""
+    with load_client(tmp_path) as client:
+        document_id = _approved_document(client)
+        fake_wp = _FakeWordPressPublisher()
+        monkeypatch.setattr(app_main, "wordpress", fake_wp)
+        path = f"/api/documents/{document_id}/wordpress-publication"
+
+        assert client.post(path, json={"status": "draft"}).status_code == 200
+        item_id = client.get(f"/api/documents/{document_id}/review-items").json()[0]["id"]
+        assert client.patch(
+            f"/api/documents/{document_id}/review-items/{item_id}", json={"label": "Corrected label"}
+        ).status_code == 200
+        assert client.post(f"/api/documents/{document_id}/approval").status_code == 200
+
+        again = client.post(path, json={"status": "draft"})
+        assert again.status_code == 200
+        assert len(fake_wp.calls) == 2
+
+
 @pytest.mark.parametrize("payload", [{"status": "private"}, {"status": None}, {"status": "publish", "token": "client-secret"}])
 def test_publish_rejects_unsupported_or_extra_client_fields(tmp_path, monkeypatch, payload):
     with load_client(tmp_path) as client:

@@ -183,10 +183,10 @@ export const fastApiPublicationService: PublicationService = {
   getWordPressPublication(documentId) {
     return apiRequest(`/documents/${encodeURIComponent(documentId)}/wordpress-publication`)
   },
-  publishToWordPress(documentId, status) {
+  publishToWordPress(documentId, status, confirmDuplicate) {
     return apiRequest(`/documents/${encodeURIComponent(documentId)}/wordpress-publication`, {
       method: 'POST',
-      body: JSON.stringify({ status }),
+      body: JSON.stringify({ status, confirmDuplicate: confirmDuplicate ?? false }),
       // Allow FastAPI's maximum 120-second WordPress timeout to finish and
       // return a safe error before the browser gives up on the request.
       timeoutMs: 150_000,

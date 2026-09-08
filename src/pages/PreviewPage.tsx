@@ -20,7 +20,8 @@ import { WordPressPublishControl } from "../components/WordPressPublishControl";
 import { emptyMetadata } from "../config/workflow";
 import { converterStagePath } from "../lib/converterRoutes";
 import { formatPublicationDate } from "../lib/publicationFormatting";
-import { publicationService } from "../services";
+import { approvalService, publicationService } from "../services";
+import { ApiError } from "../services/httpClient";
 import { useKonverter } from "../state/KonverterContext";
 
 const formats = [
@@ -127,8 +128,15 @@ function DownloadMenu({ documentId }: { documentId: string }) {
 
 export function PreviewPage() {
   const navigate = useNavigate();
-  const { activeDocument, activeDocumentId, resetWorkflow, showToast } =
-    useKonverter();
+  const {
+    activeDocument,
+    activeDocumentId,
+    resetWorkflow,
+    showToast,
+    setApprovedAt,
+    unlock,
+    markDone,
+  } = useKonverter();
   const query = useQuery({
     queryKey: ["publication", activeDocumentId ?? "none"],
     queryFn: () => publicationService.get(activeDocumentId!),
@@ -137,6 +145,28 @@ export function PreviewPage() {
   const metadata = query.data?.metadata ?? emptyMetadata;
   const publication = query.data?.publication;
   const reportPath = `/report/${encodeURIComponent(activeDocumentId ?? "")}`;
+  const [approving, setApproving] = useState(false);
+  const needsApproval =
+    query.error instanceof ApiError && query.error.status === 409;
+
+  const approveAndRetry = async () => {
+    if (!activeDocumentId || approving) return;
+    setApproving(true);
+    try {
+      const result = await approvalService.approve(activeDocumentId);
+      setApprovedAt(result.approvedAt);
+      unlock("preview");
+      markDone("approval");
+      await query.refetch();
+      showToast("Document approved · accessible output generated");
+    } catch (error) {
+      showToast(
+        error instanceof Error ? error.message : "Approval failed. Try again.",
+      );
+    } finally {
+      setApproving(false);
+    }
+  };
 
   return (
     <section
@@ -168,6 +198,21 @@ export function PreviewPage() {
         <div className="panel panel-pad workflow-loading" role="status">
           <span className="spinner" />
           Loading reviewed document…
+        </div>
+      ) : needsApproval ? (
+        <div className="banner banner-warn banner-centered" role="alert">
+          <span className="banner-centered-message">
+            <Info aria-hidden="true" />
+            This document was edited since it was last approved, so its
+            accessible preview needs to be regenerated.
+          </span>
+          <button
+            className="btn btn-outline"
+            disabled={approving}
+            onClick={approveAndRetry}
+          >
+            {approving ? "Approving…" : "Approve and preview"}
+          </button>
         </div>
       ) : query.isError || !publication ? (
         <div className="banner banner-warn" role="alert">

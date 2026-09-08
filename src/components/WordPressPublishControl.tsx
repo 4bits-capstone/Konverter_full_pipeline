@@ -1,10 +1,19 @@
-import { Check, Eye, FileCheck2, Globe, Send, X } from "lucide-react";
+import { AlertTriangle, Check, Eye, FileCheck2, Globe, Send, X } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { publicationService } from "../services";
-import type { WordPressPublication } from "../types/konverter";
+import { ApiError } from "../services/httpClient";
+import type { WordPressDuplicateRisk, WordPressPublication } from "../types/konverter";
 
 type PublishStatus = WordPressPublication["status"];
+
+function duplicateRiskFrom(error: unknown): WordPressDuplicateRisk | null {
+  if (!(error instanceof ApiError) || error.status !== 409) return null;
+  const detail = (error.details as { detail?: unknown } | null)?.detail;
+  return detail && typeof detail === "object" && (detail as { code?: unknown }).code === "wordpress_duplicate_risk"
+    ? (detail as WordPressDuplicateRisk)
+    : null;
+}
 
 function PublishDialog({
   hasDraft,
@@ -120,6 +129,83 @@ function PublishDialog({
   );
 }
 
+function DuplicateRiskDialog({
+  risk,
+  onCancel,
+  onConfirm,
+}: {
+  risk: WordPressDuplicateRisk;
+  onCancel: () => void;
+  onConfirm: () => void;
+}) {
+  const dialog = useRef<HTMLDialogElement>(null);
+  useEffect(() => {
+    const previous = document.activeElement as HTMLElement | null;
+    const node = dialog.current!;
+    node.showModal();
+    return () => {
+      node.close();
+      previous?.focus();
+    };
+  }, []);
+
+  return (
+    <dialog
+      ref={dialog}
+      className="wordpress-publish-dialog wordpress-duplicate-dialog"
+      aria-labelledby="wordpress-duplicate-dialog-title"
+      aria-describedby="wordpress-duplicate-dialog-description"
+      onCancel={(event) => {
+        event.preventDefault();
+        onCancel();
+      }}
+      onClick={(event) => {
+        if (event.target === event.currentTarget) onCancel();
+      }}
+    >
+      <div className="wordpress-dialog-content">
+        <div className="wordpress-dialog-heading">
+          <span className="eyebrow">WordPress staging</span>
+          <button
+            className="wordpress-dialog-close"
+            type="button"
+            aria-label="Close"
+            onClick={onCancel}
+          >
+            <X aria-hidden="true" />
+          </button>
+        </div>
+        <h3 id="wordpress-duplicate-dialog-title">
+          <AlertTriangle aria-hidden="true" />
+          Already published to WordPress
+        </h3>
+        <p id="wordpress-duplicate-dialog-description">{risk.message}</p>
+        {risk.existing.previewUrl && (
+          <a
+            href={risk.existing.previewUrl}
+            target="_blank"
+            rel="noopener noreferrer"
+          >
+            View the existing page
+          </a>
+        )}
+        <div className="wordpress-dialog-actions">
+          <button className="btn btn-outline" type="button" onClick={onCancel}>
+            Cancel
+          </button>
+          <button
+            className="btn btn-primary"
+            type="button"
+            onClick={onConfirm}
+          >
+            Publish anyway
+          </button>
+        </div>
+      </div>
+    </dialog>
+  );
+}
+
 export function WordPressPublishControl({
   documentId,
   onPublished,
@@ -137,8 +223,10 @@ export function WordPressPublishControl({
     retry: false,
   });
   const publish = useMutation({
-    mutationFn: (choice: PublishStatus) =>
-      publicationService.publishToWordPress(documentId, choice),
+    mutationFn: (vars: { status: PublishStatus; confirmDuplicate?: boolean }) =>
+      vars.confirmDuplicate
+        ? publicationService.publishToWordPress(documentId, vars.status, true)
+        : publicationService.publishToWordPress(documentId, vars.status),
     retry: false,
     onSuccess: (result) => {
       client.setQueryData(queryKey, result);
@@ -154,12 +242,19 @@ export function WordPressPublishControl({
   const disabled =
     busy || status.isPending || status.isFetching || status.isError;
   const live = result?.status === "publish";
+  const duplicateRisk = duplicateRiskFrom(publish.error);
 
   const confirm = (choice: PublishStatus) => {
     if (submitting.current || disabled || live) return;
     submitting.current = true;
     setDialogOpen(false);
-    publish.mutate(choice);
+    publish.mutate({ status: choice });
+  };
+
+  const publishAnyway = () => {
+    if (submitting.current || busy || !publish.variables) return;
+    submitting.current = true;
+    publish.mutate({ status: publish.variables.status, confirmDuplicate: true });
   };
 
   return (
@@ -226,7 +321,14 @@ export function WordPressPublishControl({
           Could not load WordPress publishing status.
         </p>
       )}
-      {publish.isError && result?.status !== publish.variables && (
+      {duplicateRisk && !busy && (
+        <DuplicateRiskDialog
+          risk={duplicateRisk}
+          onCancel={() => publish.reset()}
+          onConfirm={publishAnyway}
+        />
+      )}
+      {publish.isError && !duplicateRisk && result?.status !== publish.variables?.status && (
         <p className="wordpress-publish-error" role="alert">
           {publish.error instanceof Error
             ? publish.error.message

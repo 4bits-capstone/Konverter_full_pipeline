@@ -106,6 +106,17 @@ Process and approve a document, then select **Publish to WordPress** on Preview.
 Choose **Save draft** or **Publish live**, then confirm. The body above uses
 `"status": "publish"` when live publishing is selected.
 
+The Nam Builder endpoint can only create pages — there is no update/upsert
+call — so publishing the same document twice always creates a second,
+separate page. To guard against this, every successful publish is also
+recorded in a `wordpress_publications` table in Supabase (create it with
+`backend/wordpress_publications.sql`; requires `SUPABASE_URL` and
+`SUPABASE_SERVICE_ROLE_KEY`). If you edit and re-approve a document that was
+already published, the next publish attempt is blocked with a warning
+naming the existing page instead of silently creating a duplicate — the UI
+requires an explicit "Publish anyway" confirmation to proceed. Without
+Supabase configured, this safeguard is skipped (same as `audit_log`).
+
 ### Remote Docling settings
 
 ```dotenv

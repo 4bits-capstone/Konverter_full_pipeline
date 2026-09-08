@@ -123,6 +123,18 @@ export interface WordPressPublication {
   publishedAt: string
 }
 
+export interface WordPressDuplicateRisk {
+  code: 'wordpress_duplicate_risk'
+  message: string
+  existing: {
+    pageId: number
+    status: 'draft' | 'publish'
+    publishedAt: string | null
+    editUrl: string | null
+    previewUrl: string | null
+  }
+}
+
 export interface ReviewUpdate {
   status?: ReviewStatus
   type?: ReviewType

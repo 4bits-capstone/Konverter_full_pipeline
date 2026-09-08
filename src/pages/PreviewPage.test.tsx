@@ -3,9 +3,10 @@ import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-li
 import { useEffect } from 'react'
 import { MemoryRouter, Route, Routes } from 'react-router-dom'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+import { ApiError } from '../services/httpClient'
 import { KonverterProvider, useKonverter } from '../state/KonverterContext'
 import { testDocument } from '../test/fixtures'
-import { publicationService, resetTestServices } from '../test/serviceMocks'
+import { approvalService, publicationService, resetTestServices } from '../test/serviceMocks'
 import { PreviewPage } from './PreviewPage'
 import { ReportPage } from './ReportPage'
 
@@ -123,6 +124,27 @@ describe('Preview and report pages', () => {
     expect(screen.getByRole('button', { name: 'Download files' })).toBeEnabled()
     fireEvent.click(screen.getByRole('button', { name: 'Try again' }))
     expect(await screen.findByTitle('Accessible publication preview: Accessibility Standards Report')).toBeInTheDocument()
+  })
+
+  it('offers to re-approve when the document was edited since it was last approved', async () => {
+    vi.spyOn(publicationService, 'get').mockRejectedValueOnce(
+      new ApiError('Approve the document before opening the publication preview', 409),
+    )
+    const approve = vi.spyOn(approvalService, 'approve')
+    renderPreview()
+    expect(await screen.findByRole('alert')).toHaveTextContent('edited since it was last approved')
+    expect(screen.queryByRole('button', { name: 'Try again' })).not.toBeInTheDocument()
+    fireEvent.click(screen.getByRole('button', { name: 'Approve and preview' }))
+    expect(await screen.findByText('Conversion complete')).toBeInTheDocument()
+    expect(approve).toHaveBeenCalledExactlyOnceWith('test-document')
+  })
+
+  it('keeps the generic retry banner for errors unrelated to approval', async () => {
+    vi.spyOn(publicationService, 'get').mockRejectedValueOnce(new Error('Network down'))
+    renderPreview()
+    expect(await screen.findByRole('alert')).toHaveTextContent('The reviewed document could not be loaded')
+    fireEvent.click(screen.getByRole('button', { name: 'Try again' }))
+    expect(await screen.findByText('Conversion complete')).toBeInTheDocument()
   })
 
   it('starts a new upload from the preview page', async () => {

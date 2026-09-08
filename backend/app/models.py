@@ -185,6 +185,12 @@ class ApprovalResult(ApiModel):
 class WordPressPublishRequest(ApiModel):
     model_config = ConfigDict(extra="forbid")
     status: Literal["draft", "publish"] = "draft"
+    # Explicit acknowledgement that this document was already published
+    # before and this call will create an ADDITIONAL WordPress page (the
+    # Nam Builder API has no update/upsert endpoint). Required whenever the
+    # backend finds a prior publish for this document that the local cache
+    # no longer matches (e.g. the document was edited and re-approved).
+    confirm_duplicate: bool = False
 
 
 class WordPressPublicationResult(ApiModel):
