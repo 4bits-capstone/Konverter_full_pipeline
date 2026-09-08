@@ -4,8 +4,9 @@ import { useEffect } from 'react'
 import { MemoryRouter } from 'react-router-dom'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { KonverterProvider, useKonverter } from '../state/KonverterContext'
-import { testDocument } from '../test/fixtures'
+import { testDocument, testReviewItems } from '../test/fixtures'
 import { resetTestServices, reviewService } from '../test/serviceMocks'
+import type { ReviewItem } from '../types/konverter'
 import { ReviewPage } from './ReviewPage'
 
 vi.mock('../services', () => import('../test/serviceMocks'))
@@ -139,6 +140,26 @@ describe('ReviewPage', () => {
     expect(field).toHaveValue('Updated purpose')
     expect(field).toHaveAttribute('readonly')
     expect(save).not.toHaveBeenCalled()
+  })
+
+  it('ignores a repeated click on Save changes while the edit is still saving', async () => {
+    let resolveSave!: (item: ReviewItem) => void
+    const save = vi.spyOn(reviewService, 'saveItem').mockImplementationOnce(
+      () => new Promise((resolve) => { resolveSave = resolve }),
+    )
+    renderReview()
+    await screen.findAllByText('Section heading needs confirmation')
+    fireEvent.click(screen.getByRole('button', { name: /Section heading needs confirmation/ }))
+    const field = screen.getByRole('textbox', { name: 'Extracted text' })
+    fireEvent.click(screen.getByRole('button', { name: 'Edit flagged item' }))
+    fireEvent.change(field, { target: { value: 'Updated purpose' } })
+    const button = screen.getByRole('button', { name: 'Save changes' })
+    fireEvent.click(button)
+    await waitFor(() => expect(button).toBeDisabled())
+    fireEvent.click(button)
+    resolveSave({ ...testReviewItems[0], correctedText: 'Updated purpose', status: 'edited' })
+    await waitFor(() => expect(field).toHaveAttribute('readonly'))
+    expect(save).toHaveBeenCalledTimes(1)
   })
 
   it('loads a uniquely versioned original-PDF crop for each selected flag', async () => {

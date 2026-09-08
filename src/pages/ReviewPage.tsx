@@ -1341,22 +1341,28 @@ export function ReviewPage() {
   };
 
   const saveEdit = async (item: ReviewItem) => {
-    const label =
-      structureLabels.find((entry) => entry.value === editType)?.label ??
-      editType;
-    await saveReviewItem(item.id, {
-      type: editType,
-      label,
-      status: "edited",
-      ...(editType === "box_section"
-        ? {}
-        : usesTableEditor(editType)
-          ? { correctedTable: editTable }
-          : { correctedText: editText }),
-    });
-    preserveQueueScroll();
-    setEditing(false);
-    showToast("Review changes saved");
+    if (actingItemId === item.id) return;
+    setActingItemId(item.id);
+    try {
+      const label =
+        structureLabels.find((entry) => entry.value === editType)?.label ??
+        editType;
+      await saveReviewItem(item.id, {
+        type: editType,
+        label,
+        status: "edited",
+        ...(editType === "box_section"
+          ? {}
+          : usesTableEditor(editType)
+            ? { correctedTable: editTable }
+            : { correctedText: editText }),
+      });
+      preserveQueueScroll();
+      setEditing(false);
+      showToast("Review changes saved");
+    } finally {
+      setActingItemId(null);
+    }
   };
 
   const changeEditType = (nextType: ReviewType) => {
@@ -2243,6 +2249,7 @@ export function ReviewPage() {
                   <>
                     <button
                       className="btn btn-primary review-save-action"
+                      disabled={actingItemId === selected.id}
                       onClick={() => saveEdit(selected)}
                     >
                       <Check />
