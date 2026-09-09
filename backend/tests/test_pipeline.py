@@ -1661,3 +1661,63 @@ def test_an_unrecognised_raw_docling_label_falls_back_to_text_not_unspecified():
     matching = [block for block in blocks if "Advan Investments" in block.get("text", "")]
     assert len(matching) == 1
     assert matching[0]["label"] == "text"
+
+
+def test_bare_number_nested_under_a_chart_is_not_promoted_to_a_floating_paragraph():
+    """Reproduces a real bug found live in "Review of the Bail Act": a bar
+    chart's own y-axis ("10", "20", "30", "50", "60") was extracted by
+    Docling as text items structurally nested *under* the chart's own
+    picture item -- Docling's own document tree already knows they belong
+    to the chart, not the body -- but _blocks_from_document previously
+    promoted every one of them to its own independent, floating "text"
+    paragraph anyway, reading as a run of disconnected bare numbers
+    sitting right next to the chart's own rendered image, which already
+    shows that same axis visually.
+
+    Scoped tightly to a *bare* number specifically, not any text nested
+    under a picture: a cover page's contact details (a phone number, a
+    web address) are also structurally nested under that page's own
+    background graphic in this same corpus, and are genuine, standalone
+    content a reader needs -- only a number with nothing else to it is
+    unambiguous chart noise either way."""
+    pipe = KonverterPipeline(_settings())
+    document = {
+        "texts": [
+            {
+                "self_ref": "#/texts/0",
+                "label": "text",
+                "text": "10",
+                "parent": {"$ref": "#/pictures/0"},
+                "prov": [{"page_no": 1, "bbox": {"l": 50, "t": 100, "r": 60, "b": 90, "coord_origin": "TOPLEFT"}}],
+            },
+            {
+                "self_ref": "#/texts/1",
+                "label": "text",
+                "text": "1300 666 555 (within Victoria)",
+                "parent": {"$ref": "#/pictures/1"},
+                "prov": [{"page_no": 1, "bbox": {"l": 300, "t": 700, "r": 450, "b": 690, "coord_origin": "TOPLEFT"}}],
+            },
+        ],
+        "pictures": [
+            {
+                "self_ref": "#/pictures/0",
+                "label": "picture",
+                "captions": [],
+                "prov": [{"page_no": 1, "bbox": {"l": 40, "t": 80, "r": 250, "b": 200, "coord_origin": "TOPLEFT"}}],
+            },
+            {
+                "self_ref": "#/pictures/1",
+                "label": "picture",
+                "captions": [],
+                "prov": [{"page_no": 1, "bbox": {"l": 0, "t": 0, "r": 595, "b": 800, "coord_origin": "TOPLEFT"}}],
+            },
+        ],
+        "pages": {"1": {"size": {"width": 600, "height": 800}}},
+    }
+
+    blocks, warnings = pipe._blocks_from_document(document, {}, None)
+
+    bare_number_blocks = [b for b in blocks if b.get("text") == "10"]
+    assert bare_number_blocks == []
+    contact_blocks = [b for b in blocks if "1300 666 555" in b.get("text", "")]
+    assert len(contact_blocks) == 1

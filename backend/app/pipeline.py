@@ -1290,6 +1290,9 @@ class KonverterPipeline:
                 if reference:
                     all_items[reference] = item
 
+        picture_refs = {
+            str(item.get("self_ref", "")) for item in document.get("pictures", [])
+        }
         ordered_references = self._ordered_document_references(document, all_items)
         source_path = pdf_path or Path("__missing_source__.pdf")
         resolver = TocHierarchyResolver(
@@ -1314,6 +1317,29 @@ class KonverterPipeline:
                 return
 
             raw_label = _raw_label(item)
+            # A bare number nested under a picture is a chart's own axis
+            # tick or data label, not standalone content — verified
+            # directly against a real VLRC report: a bar chart's y-axis
+            # ("10", "20", "30"...) got extracted as Docling children of
+            # the chart's own picture item, then promoted here to
+            # independent floating body paragraphs reading as a run of
+            # disconnected numbers with no context, right next to the
+            # chart's own rendered image already showing that same axis.
+            # Scoped tightly to a *bare* number specifically (not any text
+            # nested under a picture) — a cover page's contact details
+            # (a phone number, a web address) are also structurally
+            # nested under that page's own background graphic in this
+            # same corpus, and are genuine, standalone content a reader
+            # needs, not chart noise; only a number with nothing else to
+            # it is unambiguous either way.
+            if (
+                raw_label == "text"
+                and str(item.get("parent", {}).get("$ref", "")) in picture_refs
+                and _BARE_PAGE_NUMBER_RE.match(
+                    _normalise_furniture_text(str(item.get("text", "")))
+                )
+            ):
+                return
             children = [
                 str(child.get("$ref", "")) for child in item.get("children", [])
             ]
