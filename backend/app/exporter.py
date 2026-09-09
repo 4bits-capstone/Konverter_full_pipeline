@@ -1,16 +1,16 @@
 from __future__ import annotations
 
-import base64
 import html
 import json
-import mimetypes
 import re
 from collections import Counter
 from datetime import datetime
-from pathlib import Path
 from typing import Any
 
 from .footnote_numbering import FOOTNOTE_LEADING_NUMBER_RE
+from .preview_html import build_accessible_html
+
+__all__ = ["build_accessible_html", "build_json_ld", "build_publication"]
 
 
 def _slug(value: str) -> str:
@@ -432,7 +432,15 @@ def promote_bare_number_markers(
     coincidental run of leading numbers is unlikely to do by chance.
     Requiring that is what pipeline.py's own bare-number heuristic
     (_is_footnote_list_block) achieves via a content-vocabulary check —
-    this achieves the same rejection with a structural one instead."""
+    this achieves the same rejection with a structural one instead.
+
+    Deliberately requires *every* entry to match, not just most of them —
+    a list where bare-numbered top-level items are interleaved with
+    already-marked lettered/roman sub-clauses ("(a) allows...", "(i)
+    unlawful or") is a different, more common shape handled separately by
+    _interleaved_recommendation_numbers below; merging that shape into one
+    shared <ol> here would number the sub-clauses as if they were siblings
+    of the top-level items instead of their children."""
     if len(entries) < 2:
         return entries
     texts = [str(entry.get("text", "")) for entry in entries]
@@ -458,6 +466,183 @@ def promote_bare_number_markers(
     return promoted
 
 
+_DECIMAL_TOP_LEVEL_MARKER_RE = re.compile(r"\(?(\d+)[.)]")
+
+
+def _interleaved_recommendation_numbers(
+    entries: list[dict[str, Any]],
+) -> dict[int, tuple[str, str]]:
+    """A top-level recommendation number ("1 Victoria should...", or
+    already-marked "12.") sitting between its own lettered/roman
+    sub-clauses ("(a) allows...", "(i) unlawful or") is not a member of
+    one continuous ordered list, even though Docling gives every one of
+    these items the same flat level with no nesting signal at all — this
+    happens whether the number arrives bare in the entry's own text (no
+    marker at all) or already split into a proper marker field, both seen
+    across different lists in the same real document. Merging either shape
+    into the same <ol> as its sub-items produces an incoherent,
+    backwards-jumping visible count: three unvalued sub-items after "13."
+    auto-continue the browser's counter to 16, then the next explicit
+    "value=14" on the following top-level item snaps it back down —
+    exactly the sort of jump a client reviewing "Recommendation 14" right
+    after visibly seeing "16" would flag as broken.
+
+    Detected the same way promote_bare_number_markers finds a pure
+    bare-number list — a strictly consecutive 1, 2, 3, ... run among
+    candidates — except here a candidate can be either an unmarked bare
+    number or an already-marked plain decimal marker ("12.", "(12)"; a
+    decimal *paragraph* marker like "2.6" never matches this pattern, so
+    those keep going through the separate numbered-paragraph path below
+    unaffected), and the candidates are expected to sit apart, with
+    unrelated sub-clause entries between at least one consecutive pair,
+    rather than running as one uninterrupted block ("7." immediately
+    followed by "8." is a normal two-item ordered list, not this shape).
+    Returns each match's own number and remaining text so the caller can
+    render it standalone — the same reader-numbered-paragraph treatment
+    already used for decimal paragraph numbers ("2.39 ...") elsewhere in
+    this module — instead of forcing it into a shared list counter it was
+    never really part of."""
+    texts = [str(entry.get("text", "")) for entry in entries]
+    markers = [str(entry.get("marker", "")).strip() for entry in entries]
+    candidates: dict[int, tuple[str, str]] = {}
+    for index, (text, marker) in enumerate(zip(texts, markers)):
+        if marker:
+            decimal = _DECIMAL_TOP_LEVEL_MARKER_RE.fullmatch(marker)
+            if decimal:
+                candidates[index] = (decimal.group(1), text.strip())
+            continue
+        bare = _BARE_NUM_RE.match(text)
+        if bare:
+            candidates[index] = (text[: bare.end()].strip(), text[bare.end() :].strip())
+    if len(candidates) < 2 or len(candidates) == len(entries):
+        return {}
+    ordered_indexes = sorted(candidates)
+    numbers = [int(candidates[index][0]) for index in ordered_indexes]
+    if any(later != earlier + 1 for earlier, later in zip(numbers, numbers[1:])):
+        return {}
+    if all(b - a == 1 for a, b in zip(ordered_indexes, ordered_indexes[1:])):
+        return {}
+    return dict(candidates)
+
+
+_ROMAN_NUMERAL_TABLE = (
+    (1000, "m"), (900, "cm"), (500, "d"), (400, "cd"),
+    (100, "c"), (90, "xc"), (50, "l"), (40, "xl"),
+    (10, "x"), (9, "ix"), (5, "v"), (4, "iv"), (1, "i"),
+)
+_ROMAN_NUMERAL_CHARS_RE = re.compile(r"^[ivxlcdm]+$")
+
+
+def _int_to_roman(value: int) -> str:
+    parts = []
+    for amount, numeral in _ROMAN_NUMERAL_TABLE:
+        count, value = divmod(value, amount)
+        parts.append(numeral * count)
+    return "".join(parts)
+
+
+def _roman_to_int(text: str) -> int | None:
+    """Only a canonical roman numeral round-trips through _int_to_roman —
+    rejects malformed sequences like "iiii" or "vx" that would otherwise
+    misread as a valid, if unusual, value."""
+    text = text.lower()
+    if not text or not _ROMAN_NUMERAL_CHARS_RE.match(text):
+        return None
+    values = {"i": 1, "v": 5, "x": 10, "l": 50, "c": 100, "d": 500, "m": 1000}
+    total = 0
+    previous = 0
+    for char in reversed(text):
+        value = values[char]
+        total += -value if value < previous else value
+        previous = max(previous, value)
+    if not 0 < total <= 3999 or _int_to_roman(total) != text:
+        return None
+    return total
+
+
+_MARKER_CORE_RE = re.compile(r"^\(?([A-Za-z]+|\d+)[.)]?$")
+
+
+def _marker_candidates(marker: str) -> list[tuple[str, int]]:
+    """A marker's own shape can be genuinely ambiguous — "(i)" reads as
+    either the letter after "h" in an alpha sequence, or the roman
+    numeral 1 starting a fresh sequence — so this returns every valid
+    reading rather than picking one; the caller's stack-based sequence
+    matching in _next_nesting_level is what actually resolves it, using
+    whichever candidate continues (or starts) a real sequence in context."""
+    match = _MARKER_CORE_RE.match(marker.strip())
+    if not match:
+        return []
+    core = match.group(1)
+    if core.isdigit():
+        return [("decimal", int(core))]
+    candidates: list[tuple[str, int]] = []
+    if len(core) == 1:
+        candidates.append(("alpha", ord(core.lower()) - ord("a") + 1))
+    roman_value = _roman_to_int(core)
+    if roman_value is not None:
+        candidates.append(("roman", roman_value))
+    return candidates
+
+
+def _next_nesting_level(
+    stack: list[dict[str, Any]],
+    marker: str,
+) -> tuple[int, str | None, int | None]:
+    """Docling gives every sub-clause in a recommendation list the same
+    flat level, with no indentation data at all — "1", "(a)", "(b)", "(i)",
+    "(ii)" all arrive at level 0. The marker's own shape and its sequence
+    relative to markers already seen is the only signal available for
+    reconstructing the source document's real outline depth (numeric ->
+    lettered -> roman is the standard legal-drafting convention this
+    corpus follows throughout).
+
+    `stack` holds one frame per currently open level — its kind (decimal,
+    alpha, roman) and last value — and is mutated in place so each call
+    sees where the previous marker left off. A marker that continues the
+    current top frame's sequence (value + 1, same kind) stays at that
+    depth; one that continues an *ancestor* frame's sequence pops back up
+    to it (e.g. "(b)" resuming after a nested "(i)(ii)" run under "(a)");
+    one that starts fresh at value 1 opens a new, deeper frame as a child
+    of whatever was current. Returns (level, kind, value) — kind and value
+    are None for an unmatched marker (a bullet, or one this heuristic
+    can't place), left at the current depth as a same-level sibling rather
+    than guessed at."""
+    candidates = _marker_candidates(marker)
+    if not candidates:
+        return max(0, len(stack) - 1), None, None
+    if stack:
+        top = stack[-1]
+        for kind, value in candidates:
+            if kind == top["kind"] and value == top["value"] + 1:
+                top["value"] = value
+                return len(stack) - 1, kind, value
+        for depth in range(len(stack) - 2, -1, -1):
+            frame = stack[depth]
+            match = next(
+                (
+                    (kind, value)
+                    for kind, value in candidates
+                    if kind == frame["kind"] and value == frame["value"] + 1
+                ),
+                None,
+            )
+            if match is not None:
+                frame["value"] = match[1]
+                del stack[depth + 1 :]
+                return depth, match[0], match[1]
+    start = next((pair for pair in candidates if pair[1] == 1), None)
+    if start is not None:
+        kind, value = start
+        stack.append({"kind": kind, "value": value})
+        return len(stack) - 1, kind, value
+    if stack:
+        return len(stack) - 1, None, None
+    kind, value = candidates[0]
+    stack.append({"kind": kind, "value": value})
+    return 0, kind, value
+
+
 def _list_publication_blocks(
     block: dict[str, Any],
     page: int,
@@ -474,10 +659,15 @@ def _list_publication_blocks(
             if (entry := _parsed_list_entry(value)) is not None
         ]
     entries = promote_bare_number_markers(entries)
+    interleaved_numbers = _interleaved_recommendation_numbers(entries)
     output: list[dict[str, Any]] = []
     pending: list[dict[str, Any]] = []
     pending_style: str | None = None
     pending_start: int | None = None
+    # Reset at every flush so unrelated sub-lists (a fresh recommendation's
+    # own "(a)(b)..." run, say) never inherit the previous group's nesting
+    # state — each pending group starts its outline fresh.
+    nesting_stack: list[dict[str, Any]] = []
 
     def flush() -> None:
         nonlocal pending_style, pending_start
@@ -495,8 +685,21 @@ def _list_publication_blocks(
         pending.clear()
         pending_style = None
         pending_start = None
+        nesting_stack.clear()
 
-    for entry in entries:
+    for index, entry in enumerate(entries):
+        if index in interleaved_numbers:
+            flush()
+            number, remaining_text = interleaved_numbers[index]
+            output.append(
+                {
+                    "type": "paragraph",
+                    "text": remaining_text,
+                    "number": number,
+                    "page": page,
+                }
+            )
+            continue
         parsed_text = _parsed_list_entry(str(entry.get("text", "")))
         marker = str(entry.get("marker", "")).strip()
         if marker:
@@ -545,7 +748,17 @@ def _list_publication_blocks(
             )
             continue
         style = "ordered" if enumerated else "unordered"
-        level = max(0, int(entry.get("level", 0) or 0))
+        raw_level = max(0, int(entry.get("level", 0) or 0))
+        marker_kind: str | None = None
+        if style == "ordered" and raw_level == 0:
+            # Docling gave no real nesting data (every item flat at level
+            # 0) — infer outline depth from the marker's own shape instead
+            # of trusting a level value that was never meaningful here.
+            level, marker_kind, inferred_value = _next_nesting_level(nesting_stack, marker)
+            if marker_value is None:
+                marker_value = inferred_value
+        else:
+            level = raw_level
         if pending and level == 0 and pending_style != style:
             flush()
         if pending_style is None:
@@ -560,6 +773,7 @@ def _list_publication_blocks(
                     "level": level,
                     "ordered": enumerated,
                     "value": marker_value,
+                    "kind": marker_kind,
                 }
             )
     flush()
@@ -616,12 +830,51 @@ def _table_publication_block(
     }
 
 
+def _lone_bare_numbered_recommendation(
+    child: dict[str, Any], box_section_kind: str
+) -> tuple[str, str] | None:
+    """A recommendations box_section almost always contains exactly one
+    list with exactly one item — the panel *is* the single recommendation,
+    unlike the document-level "Recommendations" chapter list where many
+    numbered items sit consecutively and _interleaved_recommendation_numbers
+    can use that run to confirm a bare leading number is really the
+    recommendation's own number rather than a coincidence. With only one
+    item there's no sequence to compare against, so that check can never
+    fire here — and did not, on 96 real instances across 6 documents,
+    leaving them to render as a bullet with the number stuck in the text,
+    the exact bug already fixed for the document-level case.
+
+    The box's own kind is the substitute signal, and the reason this is
+    scoped to "recommendations" specifically rather than every box_section:
+    a "case study" or "information" panel's sole bullet could coincidentally
+    start with a number ("5 people were interviewed") without being a
+    recommendation's own numbering at all — box_section/callout grouping
+    (visual_structure.py) only assigns kind "recommendations" when the
+    panel's own heading says so (see _callout_kind), so only there is a
+    bare leading number on the sole list item reliably that recommendation's
+    own number, not a coincidence."""
+    if box_section_kind != "recommendations":
+        return None
+    entries = child.get("list_entries") or []
+    if len(entries) != 1:
+        return None
+    entry = entries[0]
+    if entry.get("marker"):
+        return None
+    text = str(entry.get("text", ""))
+    match = _BARE_NUM_RE.match(text)
+    if not match:
+        return None
+    return text[: match.end()].strip(), text[match.end() :].strip()
+
+
 def _box_section_publication_content(
     block: dict[str, Any],
     page: int,
     counts: Counter[str],
 ) -> list[dict[str, Any]]:
     output: list[dict[str, Any]] = []
+    box_section_kind = str(block.get("box_section_kind") or "")
     children = block.get("box_section_blocks") or block.get("callout_blocks") or []
     if not children:
         text = str(block.get("text", ""))
@@ -644,6 +897,18 @@ def _box_section_publication_content(
         child_page = int(child.get("page", page))
         text = str(child.get("text", "")).strip()
         if label in {"list", "list_item"}:
+            lone_number = _lone_bare_numbered_recommendation(child, box_section_kind)
+            if lone_number is not None:
+                number, remaining_text = lone_number
+                output.append(
+                    {
+                        "type": "paragraph",
+                        "text": remaining_text,
+                        "number": number,
+                        "page": child_page,
+                    }
+                )
+                continue
             output.extend(_list_publication_blocks(child, child_page))
         elif label == "table":
             output.append(_table_publication_block(child, child_page, counts))
@@ -719,10 +984,22 @@ def build_publication(
     title_blocks = [
         block for block in blocks if block.get("label") == "title" and block.get("text")
     ]
+    # record["title"] is reliably populated throughout the whole workflow —
+    # the upload-time filename stem before metadata is confirmed, the
+    # human-confirmed metadata title after (required before a document can
+    # even be approved) — and is what the rest of the app already shows the
+    # user everywhere else. Docling's own "title" detection on the page,
+    # by contrast, sits right next to a cover page's other large-type
+    # elements and picks the wrong one more often than not in this corpus:
+    # a National Library CIP catalogue notice, a copyright disclaimer
+    # sentence, even a stray contact phone number block, all outrank the
+    # real title purely by matching whatever heuristic (font size,
+    # position) Docling's layout model used to guess "this looks titular".
+    # Preferred here only as a last resort, for the (in practice, never
+    # happens) case record["title"] is somehow unset.
+    record_title = str(record.get("title") or "").strip()
     source_name = (
-        str(title_blocks[0]["text"])
-        if title_blocks
-        else str(record.get("title", "Document"))
+        record_title if record_title else str(title_blocks[0]["text"]) if title_blocks else "Document"
     )
 
     current: dict[str, Any] = {
@@ -835,10 +1112,18 @@ def build_publication(
             current["blocks"].append(heading)
             continue
 
-        if label == "document_index":
-            continue
-
-        if label == "table":
+        if label in {"table", "document_index"}:
+            # "document_index" is Docling's own label for any reference-style
+            # table (a glossary, a back-of-book alphabetical index, a list
+            # of submissions/consultees), not specifically a printed table
+            # of contents — a genuine printed TOC is already excluded
+            # earlier and more precisely, via is_toc_item()'s page-region
+            # matching against the parsed contents pages, before this block
+            # even reaches build_publication. Verified directly: every
+            # document_index block across all 15 real documents in this
+            # project is genuine content (a glossary, an index, a
+            # submitter list) — none are an undetected TOC that would
+            # duplicate the generated navigation if rendered here too.
             current["blocks"].append(_table_publication_block(block, page, counts))
             continue
 
@@ -1382,616 +1667,3 @@ def build_json_ld(
     return {"@context": "https://schema.org", "@graph": graph}
 
 
-def _data_uri(path: Path) -> str:
-    if not path.is_file():
-        return ""
-    mime_type = mimetypes.guess_type(path.name)[0] or "application/octet-stream"
-    encoded = base64.b64encode(path.read_bytes()).decode("ascii")
-    return f"data:{mime_type};base64,{encoded}"
-
-
-def _render_table_cell(cell: dict[str, Any]) -> str:
-    tag = "th" if cell.get("columnHeader") or cell.get("rowHeader") else "td"
-    scope = (
-        ' scope="col"'
-        if cell.get("columnHeader")
-        else ' scope="row"'
-        if cell.get("rowHeader")
-        else ""
-    )
-    return f"<{tag}{scope}>{html.escape(str(cell.get('text', '')))}</{tag}>"
-
-
-def _nested_list_tree(
-    items: list[dict[str, Any]],
-    default_ordered: bool,
-) -> list[dict[str, Any]]:
-    if not items:
-        return []
-    levels = [max(0, int(item.get("level", 0) or 0)) for item in items]
-    base_level = min(levels)
-    roots: list[dict[str, Any]] = []
-    stack: list[tuple[int, list[dict[str, Any]]]] = [(-1, roots)]
-    for raw, raw_level in zip(items, levels, strict=False):
-        level = raw_level - base_level
-        while stack[-1][0] >= level:
-            stack.pop()
-        if level > stack[-1][0] + 1:
-            level = stack[-1][0] + 1
-        node = {
-            **raw,
-            "ordered": bool(raw.get("ordered", default_ordered)),
-            "children": [],
-        }
-        stack[-1][1].append(node)
-        stack.append((level, node["children"]))
-    return roots
-
-
-def _render_list_items(
-    nodes: list[dict[str, Any]],
-    start: int | None = None,
-) -> str:
-    output: list[str] = []
-    index = 0
-    while index < len(nodes):
-        ordered = bool(nodes[index].get("ordered"))
-        group: list[dict[str, Any]] = []
-        while index < len(nodes) and bool(nodes[index].get("ordered")) == ordered:
-            group.append(nodes[index])
-            index += 1
-        tag = "ol" if ordered else "ul"
-        start_attribute = (
-            f' start="{max(1, int(start or 1))}"'
-            if ordered and start not in (None, 1) and not output
-            else ""
-        )
-        list_items = ""
-        for item in group:
-            value_attribute = (
-                f' value="{int(item["value"])}"'
-                if ordered and item.get("value") is not None
-                else ""
-            )
-            list_items += (
-                f"<li{value_attribute}>{html.escape(str(item.get('text', '')))}"
-                f"{_render_list_items(item.get('children', []))}</li>"
-            )
-        output.append(
-            f'<{tag} class="source-list"{start_attribute}>{list_items}</{tag}>'
-        )
-    return "".join(output)
-
-
-def _render_block(
-    block: dict[str, Any],
-    figure_directory: Path | None = None,
-) -> str:
-    block_type = block.get("type")
-    if block_type == "heading":
-        level = min(6, max(2, int(block.get("level", 2))))
-        return f'<h{level} id="{html.escape(str(block["id"]))}">{html.escape(str(block["text"]))}</h{level}>'
-    if block_type == "paragraph":
-        text = html.escape(str(block.get("text", "")))
-        number = block.get("number")
-        if number:
-            safe_number = html.escape(str(number))
-            return (
-                f'<div class="numbered-paragraph"><span aria-hidden="true">{safe_number}</span>'
-                f'<p><span class="sr-only">Paragraph {safe_number}. </span>{text}</p></div>'
-            )
-        return f"<p>{text}</p>"
-    if block_type == "quote":
-        paragraphs = re.split(r"\n\s*\n", str(block.get("text", "")))
-        content = "".join(
-            f"<p>{html.escape(paragraph.strip())}</p>"
-            for paragraph in paragraphs
-            if paragraph.strip()
-        )
-        return f'<blockquote class="document-quote">{content}</blockquote>'
-    if block_type == "list":
-        if block.get("style") == "numbered-paragraphs":
-            return "".join(
-                (
-                    f'<div class="numbered-paragraph"><span aria-hidden="true">'
-                    f"{html.escape(str(item.get('marker', '')))}</span><p>"
-                    f'<span class="sr-only">Paragraph {html.escape(str(item.get("marker", "")))}. </span>'
-                    f"{html.escape(str(item.get('text', '')))}</p></div>"
-                )
-                for item in block.get("items", [])
-            )
-        ordered = block.get("style") == "ordered"
-        raw_start = block.get("start", 1)
-        try:
-            start_value = max(1, int(raw_start if raw_start is not None else 1))
-        except (TypeError, ValueError):
-            start_value = 1
-        tree = _nested_list_tree(
-            [dict(item) for item in block.get("items", [])],
-            ordered,
-        )
-        return _render_list_items(tree, start_value)
-    if block_type in {"box_section", "callout"}:
-        box_id = html.escape(str(block.get("id", "box-section")))
-        title = html.escape(str(block.get("title", "Box Section")))
-        variant = re.sub(
-            r"[^a-z-]",
-            "",
-            str(block.get("variant", "information")).lower(),
-        ) or "information"
-        content = "".join(
-            _render_block(child, figure_directory)
-            for child in block.get("blocks", [])
-        )
-        return (
-            f'<section class="document-box-section document-box-section--{variant}" '
-            f'aria-labelledby="{box_id}-title">'
-            f'<h3 id="{box_id}-title">{title}</h3>'
-            f'<div class="document-box-section-content">{content}</div></section>'
-        )
-    if block_type == "table":
-        raw_caption = str(block.get("caption", "")).strip()
-        caption = html.escape(raw_caption)
-        rows = block.get("rows", [])
-        header_rows = [
-            row for row in rows if row and all(cell.get("columnHeader") for cell in row)
-        ][:1]
-        body_rows = [row for row in rows if row not in header_rows]
-        head_html = (
-            "<thead>"
-            + "".join(
-                f"<tr>{''.join(_render_table_cell(cell) for cell in row)}</tr>"
-                for row in header_rows
-            )
-            + "</thead>"
-            if header_rows
-            else ""
-        )
-        body_html = "".join(
-            f"<tr>{''.join(_render_table_cell(cell) for cell in row)}</tr>"
-            for row in body_rows
-        )
-        caption_html = f"<caption>{caption}</caption>" if caption else ""
-        aria_label = caption or "Table"
-        return (
-            f'<div class="table-scroll" tabindex="0" role="region" aria-label="{aria_label}; scroll horizontally when needed">'
-            f'<table id="{html.escape(str(block.get("id", "")))}">{caption_html}{head_html}<tbody>{body_html}</tbody></table></div>'
-        )
-    if block_type == "footnote":
-        return (
-            f'<p class="document-footnote" role="doc-footnote" '
-            f'id="{html.escape(str(block.get("id", "")))}">'
-            f'{html.escape(str(block.get("text", "")))}</p>'
-        )
-    if block_type == "figure":
-        caption = html.escape(str(block.get("caption", "Figure")))
-        image_key = str(block.get("imageKey", ""))
-        image_path = (
-            figure_directory / f"figure-{image_key}.png"
-            if figure_directory is not None and image_key
-            else None
-        )
-        image_uri = _data_uri(image_path) if image_path is not None else ""
-        visual = (
-            f'<img class="document-figure-image" src="{image_uri}" alt="{caption}">'
-            if image_uri
-            else f'<div class="figure-unavailable" role="img" aria-label="{caption}">'
-            "The original figure image is unavailable.</div>"
-        )
-        return (
-            f'<figure id="{html.escape(str(block.get("id", "")))}">'
-            f"{visual}"
-            f"<figcaption>{caption}</figcaption></figure>"
-        )
-    if block_type == "caption":
-        return f'<p class="caption">{html.escape(str(block.get("text", "")))}</p>'
-    if block_type == "formula":
-        formula = html.escape(str(block.get("text", "")))
-        return f'<div class="document-formula" role="math" aria-label="Formula">{formula}</div>'
-    if block_type == "group":
-        legend = html.escape(str(block.get("label", "Document details")))
-        items = "".join(
-            f"<p>{html.escape(str(item.get('text', '')))}</p>"
-            for item in block.get("items", [])
-        )
-        return f"<fieldset><legend>{legend}</legend>{items}</fieldset>"
-    return ""
-
-
-def build_accessible_html(
-    document_id: str,
-    publication: dict[str, Any],
-    metadata: dict[str, Any],
-    json_ld: dict[str, Any],
-    cover_path: Path,
-    logo_path: Path,
-    figure_directory: Path | None = None,
-) -> str:
-    sections = publication.get("sections", [])
-
-    def render_footnotes(section: dict[str, Any]) -> str:
-        footnotes = section.get("footnotes", [])
-        if not footnotes:
-            return ""
-        section_id = html.escape(str(section["id"]))
-        return (
-            f'<section class="reader-footnotes" aria-labelledby="footnotes-{section_id}">'
-            f'<h2 id="footnotes-{section_id}">References and footnotes</h2><ol>'
-            + "".join(
-                f'<li id="{html.escape(str(note["id"]))}">{html.escape(str(note["text"]))}</li>'
-                for note in footnotes
-            )
-            + "</ol></section>"
-        )
-
-    def render_contents_list(
-        list_class: str,
-        current_section_id: str | None = None,
-    ) -> str:
-        items: list[str] = []
-        for section in sections:
-            section_id = html.escape(str(section["id"]))
-            section_title = html.escape(str(section["displayTitle"]))
-            is_current = str(section["id"]) == current_section_id
-            current_class = " is-active" if is_current else ""
-            current_attribute = ' aria-current="page"' if is_current else ""
-            major_headings = [
-                heading
-                for heading in section.get("headings", [])
-                if int(heading.get("level", 2)) == 2
-            ]
-            major_headings.sort(
-                key=lambda heading: (
-                    int(heading["tocSequence"])
-                    if isinstance(heading.get("tocSequence"), int)
-                    else 1_000_000,
-                    int(heading.get("page", 0)),
-                )
-            )
-            child_items = "".join(
-                f'<li class="toc-h3"><a href="#reader-{section_id}" '
-                f'data-open-section="{section_id}" '
-                f'data-heading="{html.escape(str(heading["id"]))}">'
-                f'{html.escape(str(heading["text"]))}</a></li>'
-                for heading in major_headings
-            )
-            child_list = f"<ul>{child_items}</ul>" if child_items else ""
-            items.append(
-                f'<li class="toc-h2{current_class}"><a href="#reader-{section_id}" '
-                f'data-open-section="{section_id}"{current_attribute}>'
-                f"{section_title}</a>{child_list}</li>"
-            )
-        return f'<ul class="{html.escape(list_class)}">{"".join(items)}</ul>'
-
-    def render_landing_contents() -> str:
-        items: list[str] = []
-        for section in sections:
-            section_id = html.escape(str(section["id"]))
-            section_title = html.escape(str(section["displayTitle"]))
-            major_headings = [
-                heading
-                for heading in section.get("headings", [])
-                if int(heading.get("level", 2)) == 2
-            ]
-            major_headings.sort(
-                key=lambda heading: (
-                    int(heading["tocSequence"])
-                    if isinstance(heading.get("tocSequence"), int)
-                    else 1_000_000,
-                    int(heading.get("page", 0)),
-                )
-            )
-            if not major_headings:
-                items.append(
-                    '<div class="publication-contents-item publication-contents-direct toc-h2">'
-                    f'<a href="#reader-{section_id}" data-open-section="{section_id}">'
-                    f"<span>{section_title}</span></a></div>"
-                )
-                continue
-
-            child_items = (
-                f'<li class="read-full"><a href="#reader-{section_id}" '
-                f'data-open-section="{section_id}">Read full section</a></li>'
-                + "".join(
-                    f'<li class="toc-h3"><a href="#reader-{section_id}" '
-                    f'data-open-section="{section_id}" '
-                    f'data-heading="{html.escape(str(heading["id"]))}">'
-                    f'{html.escape(str(heading["text"]))}</a></li>'
-                    for heading in major_headings
-                )
-            )
-            items.append(
-                '<details class="publication-contents-item toc-h2">'
-                f'<summary><span>{section_title}</span>'
-                '<span class="publication-contents-chevron" aria-hidden="true"></span>'
-                '</summary>'
-                f'<div class="publication-contents-submenu"><ul>{child_items}</ul></div>'
-                '</details>'
-            )
-        return f'<div class="konverter-page-menu">{"".join(items)}</div>'
-
-    def render_reader(section: dict[str, Any], index: int) -> str:
-        section_id = html.escape(str(section["id"]))
-        previous_link = (
-            f'<a href="#reader-{html.escape(str(sections[index - 1]["id"]))}" '
-            f'data-open-section="{html.escape(str(sections[index - 1]["id"]))}"><span>Previous</span>'
-            f"{html.escape(str(sections[index - 1]['displayTitle']))}</a>"
-            if index > 0
-            else '<span class="pagination-disabled"><span>Previous</span>Beginning of document</span>'
-        )
-        next_link = (
-            f'<a href="#reader-{html.escape(str(sections[index + 1]["id"]))}" '
-            f'data-open-section="{html.escape(str(sections[index + 1]["id"]))}"><span>Next</span>'
-            f"{html.escape(str(sections[index + 1]['displayTitle']))}</a>"
-            if index + 1 < len(sections)
-            else '<span class="pagination-disabled"><span>Next</span>End of document</span>'
-        )
-        return (
-            f'<section class="vlrc-reader body-content has-sidebar-left" id="reader-{section_id}" '
-            f'data-reader="{section_id}" tabindex="-1" aria-labelledby="reader-title-{section_id}">'
-            '<div class="inner-body-content">'
-            '<aside class="sidebar primary-sidebar" aria-label="Publication contents">'
-            '<div class="sidebar-widget-element sidebar-menu-widget publication-page-menu">'
-            '<div class="sidebar-title"><h2 class="h2-title-toc">Contents</h2></div>'
-            f'<nav class="sidebar-body" aria-label="Publication chapters">'
-            f'{render_contents_list("menu", str(section["id"]))}</nav></div></aside>'
-            '<div class="main-content"><article class="publication" role="article">'
-            '<div class="article-header">'
-            f'<a class="publication-parent-link" href="#publication-landing" data-close-reader>{title}</a>'
-            f'<h1 class="entry-title single-title" id="reader-title-{section_id}" tabindex="-1">'
-            f'{html.escape(str(section["displayTitle"]))}</h1></div>'
-            '<section class="entry-content" aria-label="Section content">'
-            f'<div class="docling-content-blocks">'
-            f'{"".join(_render_block(block, figure_directory) for block in section.get("blocks", []))}'
-            f'</div>{render_footnotes(section)}</section>'
-            f'<nav class="reader-pagination" aria-label="Document section pagination">'
-            f'{previous_link}{next_link}</nav>'
-            "</article></div></div></section>"
-        )
-
-    raw_title = str(
-        metadata.get("title")
-        or publication.get("sourceName")
-        or "Accessible document"
-    )
-    title = html.escape(raw_title)
-    published_date = html.escape(
-        _format_published_date(metadata.get("published_date", ""))
-    )
-    configured_project_url = str(
-        metadata.get("project_url") or metadata.get("projectUrl") or ""
-    ).strip()
-    if (
-        configured_project_url.startswith("/")
-        and not configured_project_url.startswith("//")
-    ) or re.match(r"^https?://", configured_project_url, re.IGNORECASE):
-        project_url = configured_project_url
-    else:
-        project_url = f"/project/{_project_slug(raw_title)}/"
-    project_url = html.escape(project_url, quote=True)
-    safe_json_ld = (
-        json.dumps(json_ld, ensure_ascii=False)
-        .replace("&", "\\u0026")
-        .replace("<", "\\u003c")
-        .replace(">", "\\u003e")
-        .replace("\u2028", "\\u2028")
-        .replace("\u2029", "\\u2029")
-    )
-    cover_uri = _data_uri(cover_path)
-    summaries = publication.get("summary", [])
-    summary_html = "".join(
-        f'<p class="vlrc-summary publication-summary">{html.escape(str(value))}</p>'
-        for value in summaries
-    )
-    cover_html = (
-        f'<img class="image-link-pub publication-cover" src="{cover_uri}" alt="Cover of {title}">'
-        if cover_uri
-        else ""
-    )
-    landing_sections = render_landing_contents()
-    reader_sections = "".join(
-        render_reader(section, index) for index, section in enumerate(sections)
-    )
-
-    return f"""<!doctype html>
-<html lang="en-AU">
-<head>
-<meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1">
-<title>{title}</title>
-<script type="application/ld+json">{safe_json_ld}</script>
-<style>
-.vlrc-publication-embed,.vlrc-publication-embed *{{box-sizing:border-box}}
-.vlrc-publication-embed{{--vlrc-content-gutter:clamp(1rem,2.75vw,3.5rem);width:100%;max-width:none;color:#262626;background:#fff;font-family:Raleway,"Segoe UI",Arial,sans-serif;font-size:16px;line-height:1.65}}
-.vlrc-publication-embed a{{color:#064d82;overflow-wrap:anywhere}}
-.vlrc-publication-embed a:focus-visible,.vlrc-publication-embed summary:focus-visible,.vlrc-publication-embed [tabindex="-1"]:focus-visible{{outline:3px solid #064d82;outline-offset:3px}}
-.vlrc-publication-embed .skip-link{{position:absolute;left:1rem;top:-6rem;z-index:10;padding:.75rem 1rem;background:#fff;color:#064d82;font-weight:700}}
-.vlrc-publication-embed .skip-link:focus{{top:1rem}}
-.vlrc-publication-embed .vlrc-site-publication{{width:100%;max-width:none;margin:0;padding:2rem var(--vlrc-content-gutter) 3rem}}
-.vlrc-publication-embed .article-header{{margin-bottom:1.75rem}}
-.vlrc-publication-embed .entry-title{{margin:0 0 1rem;color:#111;font-size:clamp(2rem,4vw,3.15rem);font-weight:700;line-height:1.14}}
-.vlrc-publication-embed .no-bullet{{margin:0;padding:0;list-style:none}}
-.vlrc-publication-embed .published-date{{color:#4d4d4d;font-size:.94rem}}
-.vlrc-publication-embed .published-date span{{font-weight:700}}
-.vlrc-publication-embed .main-column-pub{{display:flex;width:100%;align-items:flex-start;justify-content:space-between;gap:clamp(2rem,4vw,5rem);margin:0;flex-wrap:wrap}}
-.vlrc-publication-embed .main-content-pub-inner{{min-width:0;flex:1 1 0;max-width:none}}
-.vlrc-publication-embed .publication-summary{{max-width:74ch;margin:0 0 1rem}}
-.vlrc-publication-embed .publication-contents-heading{{margin:2.5rem 0 1rem;color:#064d82;font-size:1.65rem;line-height:1.25}}
-.vlrc-publication-embed .konverter-page-menu{{margin:0;padding:0;border-top:1px solid #9b9b9b}}
-.vlrc-publication-embed .publication-contents-item{{margin:0;border:0;border-bottom:1px solid #9b9b9b;background:#fff}}
-.vlrc-publication-embed .publication-contents-item>summary,.vlrc-publication-embed .publication-contents-direct>a{{display:flex;min-height:3.15rem;align-items:center;justify-content:space-between;gap:1.25rem;padding:.72rem .8rem;color:#1d1d1d;font-weight:700;line-height:1.35;text-decoration:none}}
-.vlrc-publication-embed .publication-contents-item>summary{{cursor:pointer;list-style:none}}
-.vlrc-publication-embed .publication-contents-item>summary::-webkit-details-marker{{display:none}}
-.vlrc-publication-embed .publication-contents-item>summary:hover,.vlrc-publication-embed .publication-contents-direct>a:hover{{background:#f4f7f9;color:#064d82}}
-.vlrc-publication-embed .publication-contents-chevron{{width:.55rem;height:.55rem;flex:0 0 .55rem;margin-right:.25rem;border-right:2px solid #1770a6;border-bottom:2px solid #1770a6;transform:rotate(45deg) translateY(-2px);transform-origin:center;transition:transform .16s ease}}
-.vlrc-publication-embed .publication-contents-item[open] .publication-contents-chevron{{transform:rotate(225deg) translate(-1px,-1px)}}
-.vlrc-publication-embed .publication-contents-submenu{{border-top:1px solid #e1e1e1;background:#f8fafb}}
-.vlrc-publication-embed .publication-contents-submenu ul{{margin:0;padding:0;list-style:none}}
-.vlrc-publication-embed .publication-contents-submenu li+li{{border-top:1px solid #e5e5e5}}
-.vlrc-publication-embed .publication-contents-submenu a{{display:block;padding:.64rem 1rem .64rem 2rem;color:#333;font-size:.92rem;text-decoration:none}}
-.vlrc-publication-embed .publication-contents-submenu .read-full a{{padding-left:1rem;color:#064d82;font-weight:700}}
-.vlrc-publication-embed .publication-contents-submenu a:hover,.vlrc-publication-embed .publication-contents-submenu a:focus-visible{{background:#edf3f7;color:#064d82;text-decoration:underline}}
-.vlrc-publication-embed .publication-page-menu .menu{{margin:1.25rem 0 0;padding:0;list-style:none}}
-.vlrc-publication-embed .publication-page-menu .menu ul{{margin:0;padding:0;list-style:none}}
-.vlrc-publication-embed .publication-page-menu .toc-h2>a{{display:block;padding:.78rem .9rem;border-bottom:1px solid #d8d8d8;color:#064d82;font-weight:700;text-decoration:none}}
-.vlrc-publication-embed .publication-page-menu .toc-h3>a{{display:block;padding:.56rem .9rem .56rem 2rem;border-bottom:1px solid #e7e7e7;color:#333;font-size:.92rem;text-decoration:none}}
-.vlrc-publication-embed .publication-page-menu .toc-h2>a:hover,.vlrc-publication-embed .publication-page-menu .toc-h2>a:focus-visible,.vlrc-publication-embed .publication-page-menu .toc-h3>a:hover,.vlrc-publication-embed .publication-page-menu .toc-h3>a:focus-visible{{background:#f2f2f2;color:#be1e2b;text-decoration:underline}}
-.vlrc-publication-embed .publication-page-menu .toc-h2.is-active>a{{border-left:4px solid #be1e2b;background:#eef4f8}}
-.vlrc-publication-embed .btns-pub{{display:flex;flex:0 1 clamp(16rem,22vw,22rem);width:min(100%,22rem);max-width:22rem;min-width:16rem;flex-direction:column;gap:.75rem;text-align:center}}
-.vlrc-publication-embed .image-link-pub{{display:block;width:100%;height:auto;margin:0 0 .2rem;border:1px solid #ddd}}
-.vlrc-publication-embed .btn-blue,.vlrc-publication-embed .btn-red{{display:flex;min-height:4.5rem;align-items:center;justify-content:space-between;gap:1rem;padding:.9rem 1.25rem;border-radius:.25rem;color:#fff;font-size:clamp(1.15rem,1.55vw,1.5rem);font-weight:700;line-height:1.2;text-decoration:none}}
-.vlrc-publication-embed .btn-blue{{background:#064d82}}
-.vlrc-publication-embed .btn-red{{background:#b33139}}
-.vlrc-publication-embed .btn-blue:hover,.vlrc-publication-embed .btn-blue:focus-visible{{background:#04395f;color:#fff}}
-.vlrc-publication-embed .btn-red:hover,.vlrc-publication-embed .btn-red:focus-visible{{background:#92272e;color:#fff}}
-.vlrc-publication-embed .btn-icon-pub{{display:block;width:2.7rem;height:2.7rem;flex:0 0 2.7rem;color:currentColor}}
-.vlrc-publication-embed .vlrc-reader{{display:none;width:100%;max-width:none;min-height:38rem;margin:0;padding:2rem var(--vlrc-content-gutter) 3rem}}
-.vlrc-publication-embed .vlrc-reader:target,.vlrc-publication-embed .vlrc-reader.is-active{{display:block}}
-.vlrc-publication-embed.reader-open #publication-landing{{display:none}}
-.vlrc-publication-embed .inner-body-content{{display:grid;grid-template-columns:minmax(15rem,18rem) minmax(0,1fr);align-items:start;gap:3rem}}
-.vlrc-publication-embed .primary-sidebar{{position:sticky;top:2rem;border:1px solid #ddd;background:#fff}}
-.vlrc-publication-embed .sidebar-title{{padding:1rem 1.1rem;background:#064d82;color:#fff}}
-.vlrc-publication-embed .h2-title-toc{{margin:0;color:#fff;font-size:1.35rem}}
-.vlrc-publication-embed .publication-page-menu .menu{{margin:0}}
-.vlrc-publication-embed .publication-page-menu .toc-h2>a{{padding:.66rem .75rem;font-size:.88rem}}
-.vlrc-publication-embed .publication-page-menu .toc-h3>a{{padding:.5rem .75rem .5rem 1.45rem;font-size:.8rem}}
-.vlrc-publication-embed .main-content{{min-width:0}}
-.vlrc-publication-embed .publication-parent-link{{display:inline-block;margin-bottom:.65rem;font-weight:700;text-decoration:none}}
-.vlrc-publication-embed .entry-content p{{margin:0 0 1.15rem}}
-.vlrc-publication-embed .docling-content-blocks h2{{margin:2.3rem 0 .85rem;color:#064d82;font-size:1.75rem;line-height:1.25}}
-.vlrc-publication-embed .docling-content-blocks h3{{margin:1.9rem 0 .7rem;font-size:1.4rem;line-height:1.3}}
-.vlrc-publication-embed .docling-content-blocks h4{{margin:1.6rem 0 .6rem;font-size:1.18rem;line-height:1.35}}
-.vlrc-publication-embed .docling-content-blocks h5,.vlrc-publication-embed .docling-content-blocks h6{{margin:1.4rem 0 .5rem;font-size:1rem;line-height:1.4}}
-.vlrc-publication-embed .document-quote{{margin:1.75rem 0;padding:1.25rem 1.5rem;border-left:5px solid #064d82;background:#eef4f8;color:#252b33;font-size:1.08rem;line-height:1.65}}
-.vlrc-publication-embed .document-quote p{{margin:0 0 .75rem}}.vlrc-publication-embed .document-quote p:last-child{{margin-bottom:0}}
-.vlrc-publication-embed .document-box-section{{margin:1.75rem 0;border:1px solid #c7c9cc;background:#efedef}}
-.vlrc-publication-embed .document-box-section>h3{{margin:0;padding:.7rem 1.1rem;background:#c8c8c8;color:#111;font-size:1.08rem}}
-.vlrc-publication-embed .document-box-section-content{{padding:1.1rem 1.35rem .5rem}}
-.vlrc-publication-embed .document-box-section-content>p:first-child{{margin-top:0}}
-.vlrc-publication-embed .document-box-section--case-study>h3{{background:transparent;color:#666;font-style:italic}}
-.vlrc-publication-embed .document-box-section--recommendations{{border-color:#111;background:#efefef}}
-.vlrc-publication-embed .document-box-section--recommendations>h3{{background:#050505;color:#fff;text-transform:uppercase}}
-.vlrc-publication-embed .source-list{{margin:.5rem 0 1.1rem 2rem;padding-left:1.25rem}}
-.vlrc-publication-embed ul.source-list{{list-style:disc outside}}
-.vlrc-publication-embed ol.source-list{{list-style:decimal outside}}
-.vlrc-publication-embed .source-list .source-list{{margin:.35rem 0 .25rem}}
-.vlrc-publication-embed .document-box-section-content .source-list{{margin-left:0;padding-left:1.5rem}}
-.vlrc-publication-embed .document-footnote{{padding-left:.75rem;border-left:3px solid #8c929a;color:#505965;font-size:.92em}}
-.vlrc-publication-embed .numbered-paragraph{{display:grid;grid-template-columns:minmax(3.5rem,max-content) minmax(0,1fr);gap:.625rem;margin:0 0 1rem}}
-.vlrc-publication-embed .numbered-paragraph>span{{color:#be1e2b;font:700 .78rem/1.9 monospace}}
-.vlrc-publication-embed .numbered-paragraph p{{margin:0}}
-.vlrc-publication-embed .table-scroll{{max-width:100%;overflow-x:auto;margin:1.5rem 0;border:1px solid #ccd1d8}}
-.vlrc-publication-embed table{{width:100%;border-collapse:collapse;font-size:.86rem}}
-.vlrc-publication-embed caption{{padding:.75rem;background:#e8eef4;text-align:left;font-weight:700}}
-.vlrc-publication-embed th,.vlrc-publication-embed td{{min-width:5.6rem;padding:.55rem;border:1px solid #b9c0c9;text-align:left;vertical-align:top}}
-.vlrc-publication-embed th{{background:#f2f5f8}}
-.vlrc-publication-embed .document-figure-image{{display:block;max-width:100%;width:auto;height:auto;margin:0 auto;border:1px solid #d8dce1}}
-.vlrc-publication-embed .figure-unavailable{{min-height:10rem;display:grid;place-items:center;border:.15rem dashed #87919f;background:#f4f6f8;color:#5b6573}}
-.vlrc-publication-embed .caption,.vlrc-publication-embed figcaption{{color:#596270;font-size:.85rem}}
-.vlrc-publication-embed .document-formula{{margin:1.25rem 0;padding:1rem;border:1px solid #ccd1d8;background:#f7f8f9;font-family:monospace;white-space:pre-wrap;overflow-wrap:anywhere}}
-.vlrc-publication-embed .reader-footnotes{{margin-top:2.2rem;padding-top:1rem;border-top:1px solid #c9cdd4}}
-.vlrc-publication-embed .reader-footnotes h2{{color:#064d82;font-size:1.4rem}}
-.vlrc-publication-embed .reader-footnotes ol{{padding-left:1.75rem}}
-.vlrc-publication-embed .reader-pagination{{display:grid;grid-template-columns:1fr 1fr;gap:.75rem;margin-top:2.8rem;padding-top:1.25rem;border-top:1px solid #d8dce1}}
-.vlrc-publication-embed .reader-pagination>a,.vlrc-publication-embed .pagination-disabled{{display:flex;flex-direction:column;padding:.75rem;border:1px solid #d8dce1;color:#1d2733;font-size:.84rem;text-decoration:none}}
-.vlrc-publication-embed .reader-pagination>a:last-child,.vlrc-publication-embed .pagination-disabled:last-child{{text-align:right}}
-.vlrc-publication-embed .reader-pagination span{{color:#6d7482;font-size:.7rem;text-transform:uppercase}}
-.vlrc-publication-embed .pagination-disabled{{opacity:.55}}
-.vlrc-publication-embed .sr-only{{position:absolute;width:1px;height:1px;padding:0;margin:-1px;overflow:hidden;clip:rect(0,0,0,0);white-space:nowrap;border:0}}
-@media(max-width:55rem){{.vlrc-publication-embed .main-column-pub{{gap:2rem}}.vlrc-publication-embed .btns-pub{{width:min(100%,19.3rem);max-width:19.3rem}}.vlrc-publication-embed .inner-body-content{{grid-template-columns:1fr}}.vlrc-publication-embed .primary-sidebar{{position:static}}}}
-@media(max-width:36rem){{.vlrc-publication-embed{{--vlrc-content-gutter:1rem}}.vlrc-publication-embed .vlrc-site-publication,.vlrc-publication-embed .vlrc-reader{{padding-top:1.5rem;padding-bottom:2.25rem}}.vlrc-publication-embed .btns-pub{{min-width:0;width:100%;max-width:none;margin:0 auto}}.vlrc-publication-embed .reader-pagination{{grid-template-columns:1fr}}.vlrc-publication-embed .numbered-paragraph{{grid-template-columns:minmax(3rem,max-content) minmax(0,1fr)}}}}
-@media(prefers-reduced-motion:reduce){{.vlrc-publication-embed{{scroll-behavior:auto}}}}
-@media print{{.vlrc-publication-embed #publication-landing{{display:block!important}}.vlrc-publication-embed .vlrc-reader{{display:block!important;break-before:page}}.vlrc-publication-embed .btns-pub,.vlrc-publication-embed .primary-sidebar,.vlrc-publication-embed .reader-pagination{{display:none}}.vlrc-publication-embed .inner-body-content{{display:block}}.vlrc-publication-embed .table-scroll{{overflow:visible}}}}
-</style>
-</head>
-<body>
-<div class="vlrc-publication-embed" data-konverter-publication>
-  <a class="skip-link" href="#publication-title">Skip to publication content</a>
-  <section class="vlrc-site-publication" id="publication-landing" aria-labelledby="publication-title">
-    <article class="publication" role="article" itemscope itemtype="https://schema.org/Report">
-      <div class="article-header">
-        <h1 class="entry-title single-title" id="publication-title" itemprop="headline" tabindex="-1">{title}</h1>
-        <ul class="no-bullet post-byline"><li class="published-date"><span>Published on </span>{published_date}</li></ul>
-      </div>
-      <div class="main-column-pub">
-        <div class="main-content-pub-inner" itemprop="text">
-          {summary_html}
-          <nav aria-labelledby="publication-contents-heading">
-            <h2 class="publication-contents-heading" id="publication-contents-heading">Contents</h2>
-            {landing_sections}
-          </nav>
-        </div>
-        <aside class="btns-pub btns-pub-desktop" aria-label="Publication files">
-          {cover_html}
-          <a class="btn-blue" href="/api/documents/{document_id}/source">
-            <span>Download PDF</span>
-            <svg class="btn-icon-pub" viewBox="0 0 48 48" role="img" aria-label="PDF document">
-              <path d="M11 3h19l8 8v34H11zM30 3v9h8M17 34h14M24 19v12m-5-5 5 5 5-5" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"/>
-              <path d="M15 15h12" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"/>
-            </svg>
-          </a>
-          <a class="btn-red" href="{project_url}">
-            <span>Go to Project</span>
-            <svg class="btn-icon-pub" viewBox="0 0 48 48" role="img" aria-label="Project link">
-              <path d="m20.5 29.5 7-7m-12.2 12.2-2 2a7.5 7.5 0 0 1-10.6-10.6l7.4-7.4a7.5 7.5 0 0 1 10.6 0m12-5.4 2-2a7.5 7.5 0 1 1 10.6 10.6l-7.4 7.4a7.5 7.5 0 0 1-10.6 0" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"/>
-            </svg>
-          </a>
-        </aside>
-      </div>
-    </article>
-  </section>
-  {reader_sections}
-</div>
-<script>
-(() => {{
-  const root = document.querySelector('[data-konverter-publication]');
-  const landing = document.getElementById('publication-landing');
-  const readers = Array.from(document.querySelectorAll('[data-reader]'));
-  const showLanding = (updateHistory = true, moveFocus = true) => {{
-    root?.classList.remove('reader-open');
-    readers.forEach((reader) => reader.classList.remove('is-active'));
-    if (updateHistory && window.location.hash !== '#publication-landing') {{
-      window.history.pushState(null, '', '#publication-landing');
-    }}
-    if (moveFocus) landing?.querySelector('h1')?.focus({{ preventScroll: true }});
-  }};
-  const openReader = (sectionId, headingId, updateHistory = true) => {{
-    const reader = document.querySelector(`[data-reader="${{CSS.escape(sectionId)}}"]`);
-    if (!reader) return;
-    root?.classList.add('reader-open');
-    readers.forEach((candidate) => candidate.classList.toggle('is-active', candidate === reader));
-    if (updateHistory && window.location.hash !== `#reader-${{sectionId}}`) {{
-      window.history.pushState({{ sectionId, headingId }}, '', `#reader-${{sectionId}}`);
-    }}
-    reader.focus({{ preventScroll: true }});
-    if (headingId) {{
-      const heading = document.getElementById(headingId);
-      heading?.scrollIntoView({{ behavior: 'smooth', block: 'start' }});
-    }} else reader.scrollIntoView({{ behavior: 'smooth', block: 'start' }});
-  }};
-  document.querySelectorAll('[data-open-section]').forEach((link) => link.addEventListener('click', (event) => {{
-    event.preventDefault();
-    openReader(link.getAttribute('data-open-section'), link.getAttribute('data-heading'));
-  }}));
-  document.querySelectorAll('[data-close-reader]').forEach((link) => link.addEventListener('click', (event) => {{
-    event.preventDefault();
-    showLanding();
-    landing?.scrollIntoView({{ behavior: 'smooth', block: 'start' }});
-  }}));
-  const syncFromLocation = () => {{
-    const match = window.location.hash.match(/^#reader-(.+)$/);
-    if (match) openReader(decodeURIComponent(match[1]), window.history.state?.headingId, false);
-    else showLanding(false, false);
-  }};
-  window.addEventListener('popstate', syncFromLocation);
-  syncFromLocation();
-}})();
-</script>
-</body>
-</html>"""
-
-
-# The reviewer preview's report-card design is the publishing contract for the
-# downloadable HTML. This late binding keeps the publication/JSON-LD builders
-# in this module while the sizeable HTML template remains isolated and testable.
-from .preview_html import build_accessible_html as build_accessible_html

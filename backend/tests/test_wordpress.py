@@ -508,6 +508,83 @@ def test_editing_after_publish_warns_before_creating_a_duplicate_page(tmp_path, 
         assert [row["page_id"] for row in fake_registry.rows[document_id]] == [26036, 26037]
 
 
+def test_stale_approval_race_still_records_the_page_that_was_actually_created(tmp_path, monkeypatch):
+    """wordpress.publish() below has already created a real WordPress page
+    by the time the stale-approval check runs — if that check used to raise
+    before the durable registry write, a race where someone edits/re-
+    approves the document while the publish call is still in flight would
+    leave a real WordPress page with zero record of it anywhere in
+    Konverter, silently defeating the very duplicate-publish protection
+    this registry exists to provide (the next publish attempt's
+    find_latest() would see nothing and publish straight through again)."""
+    with load_client(tmp_path) as client:
+        document_id = _approved_document(client)
+        fake_registry = _FakeWordPressRegistry()
+        monkeypatch.setattr(app_main, "wordpress_registry", fake_registry)
+
+        original_approved_at = app_main.store.get_record(document_id)["approved_at"]
+
+        class _RaceyPublisher:
+            def __init__(self) -> None:
+                self.calls: list[dict] = []
+
+            async def publish(self, *, title, html, idempotency_key, status="draft"):
+                self.calls.append({"title": title})
+                # Simulate another request re-approving the document while
+                # this publish call is still in flight.
+                app_main.store.update_record(document_id, approved_at="2026-09-09T00:00:00+00:00")
+                return WordPressPublicationResult(
+                    success=True,
+                    page_id=99001,
+                    status=status,
+                    edit_url="https://vlrc.komosion.com/wp-admin/post.php?post=99001&action=edit",
+                    preview_url="https://vlrc.komosion.com/?page_id=99001&preview=true",
+                    published_at="2026-09-06T10:00:00+00:00",
+                )
+
+        monkeypatch.setattr(app_main, "wordpress", _RaceyPublisher())
+
+        response = client.post(f"/api/documents/{document_id}/wordpress-publication")
+        assert response.status_code == 409
+        assert "99001" in response.json()["detail"]
+
+        # The page WAS created — it must be durably recorded despite the 409.
+        assert fake_registry.rows[document_id][-1]["page_id"] == 99001
+        cached = app_main.store.read_artifact(document_id, app_main.WORDPRESS_PUBLICATION_ARTIFACT)
+        assert cached["pageId"] == 99001
+
+        app_main.store.update_record(document_id, approved_at=original_approved_at)
+
+
+def test_registry_lookup_failure_blocks_publish_instead_of_publishing_blind(tmp_path, monkeypatch):
+    """A transient Supabase error must never be treated the same as
+    "confirmed no prior publish" — that would silently disable the
+    duplicate-publish safeguard for exactly the kind of hiccup it needs to
+    be resilient to. The endpoint must fail closed (503), not publish."""
+    with load_client(tmp_path) as client:
+        document_id = _approved_document(client)
+        fake_wp = _FakeWordPressPublisher()
+        monkeypatch.setattr(app_main, "wordpress", fake_wp)
+
+        # Force the local cache to miss (as it would after an edit) so the
+        # endpoint falls through to the durable-registry lookup.
+        app_main.store.delete_artifacts(document_id, app_main.WORDPRESS_PUBLICATION_ARTIFACT)
+
+        from app.wordpress_registry import RegistryUnavailableError as _RealRegistryUnavailableError
+
+        class _BrokenRegistry:
+            RegistryUnavailableError = _RealRegistryUnavailableError
+
+            async def find_latest(self, document_id: str):
+                raise _RealRegistryUnavailableError("boom")
+
+        monkeypatch.setattr(app_main, "wordpress_registry", _BrokenRegistry())
+
+        response = client.post(f"/api/documents/{document_id}/wordpress-publication")
+        assert response.status_code == 503
+        assert fake_wp.calls == []
+
+
 def test_duplicate_safeguard_is_a_no_op_when_the_registry_is_unavailable(tmp_path, monkeypatch):
     """Matches existing behaviour when Supabase isn't configured (the default
     in this test suite, see app.config's pytest guard): publishing after an

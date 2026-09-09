@@ -233,6 +233,151 @@ def test_normal_body_text_is_not_an_artifact():
     )
 
 
+def _text_item(ref: str, text: str, bbox: tuple[float, float, float, float], page: int = 1) -> dict:
+    return {
+        "self_ref": ref,
+        "label": "text",
+        "text": text,
+        "prov": [
+            {
+                "page_no": page,
+                "bbox": {
+                    "l": bbox[0],
+                    "t": bbox[1],
+                    "r": bbox[2],
+                    "b": bbox[3],
+                    "coord_origin": "TOPLEFT",
+                },
+            }
+        ],
+    }
+
+
+def test_watermark_exclusion_does_not_swallow_a_real_paragraph_that_merely_contains_the_same_word(tmp_path):
+    """Reproduces a real false-positive class: a large "DRAFT" stamp is a
+    genuine watermark and should be excluded, but a normal paragraph that
+    happens to use the word "draft" in its own prose ("...reviews the draft
+    recommendations...") sitting near it on the page is real content, not
+    decoration. The old matching rule treated any paragraph that merely
+    *contained* the watermark's short span as text a substring match,
+    combined with only a bbox-overlap check — a legitimate paragraph
+    positioned anywhere near a large diagonal/stamped watermark satisfies
+    both and gets silently deleted from the accessible output."""
+    import fitz
+
+    from app.visual_structure import annotate_pdf_artifacts
+
+    path = tmp_path / "watermark.pdf"
+    with fitz.open() as pdf:
+        page = pdf.new_page(width=595, height=842)
+        page.insert_text((80, 450), "DRAFT", fontsize=120)
+        page.insert_text(
+            (85, 400),
+            "The committee reviews the draft recommendations submitted by stakeholders.",
+            fontsize=9,
+        )
+        pdf.save(path)
+
+    document = {
+        "texts": [
+            _text_item("#/texts/0", "DRAFT", (80.0, 321.0, 479.96, 485.88)),
+            _text_item(
+                "#/texts/1",
+                "The committee reviews the draft recommendations submitted by stakeholders.",
+                (85.0, 390.33, 396.62, 402.69),
+            ),
+        ],
+        "pages": {"1": {"size": {"width": 595, "height": 842}}},
+    }
+
+    warnings = annotate_pdf_artifacts(document, path)
+    assert not warnings
+
+    watermark_item, paragraph_item = document["texts"]
+    assert watermark_item.get("meta", {}).get("konverter_exclude_from_output") is True
+    assert "meta" not in paragraph_item or not paragraph_item["meta"].get(
+        "konverter_exclude_from_output"
+    )
+
+
+def test_repeated_short_answers_on_one_page_are_not_treated_as_a_watermark(tmp_path):
+    """A checklist/table with the same short answer repeated several times
+    on a single page ("Not applicable" appearing 3+ times) is completely
+    ordinary real content, not a running header/footer or watermark — those
+    repeat across *many pages* at a consistent position, not merely several
+    times within one page's own table or list. The old rule flagged any
+    text seen 3+ times on the same page (length <= 60) with no such
+    positional/cross-page requirement at all."""
+    import fitz
+
+    from app.visual_structure import annotate_pdf_artifacts
+
+    path = tmp_path / "checklist.pdf"
+    with fitz.open() as pdf:
+        page = pdf.new_page(width=595, height=842)
+        for index in range(3):
+            page.insert_text((80, 100 + index * 30), "Not applicable", fontsize=11)
+        pdf.save(path)
+
+    document = {
+        "texts": [
+            _text_item(f"#/texts/{index}", "Not applicable", (80.0, 90.0 + index * 30, 200.0, 105.0 + index * 30))
+            for index in range(3)
+        ],
+        "pages": {"1": {"size": {"width": 595, "height": 842}}},
+    }
+
+    warnings = annotate_pdf_artifacts(document, path)
+    assert not warnings
+    assert all(
+        not item.get("meta", {}).get("konverter_exclude_from_output")
+        for item in document["texts"]
+    )
+
+
+def test_running_header_repeated_at_same_top_position_across_pages_is_still_excluded(tmp_path):
+    """The positive case for the fix above: a genuine running header
+    ("Confidential Draft") printed at the same top-margin position on every
+    page of a real multi-page document must still be recognised and
+    excluded — only same-page repetition and position-inconsistent
+    cross-page repetition should be let through as real content."""
+    import fitz
+
+    from app.visual_structure import annotate_pdf_artifacts
+
+    path = tmp_path / "running-header.pdf"
+    with fitz.open() as pdf:
+        for index in range(4):
+            page = pdf.new_page(width=595, height=842)
+            page.insert_text((80, 40), "Confidential Draft", fontsize=10)
+            page.insert_text((80, 200), f"Body paragraph {index} with real content.", fontsize=10)
+        pdf.save(path)
+
+    document = {
+        "texts": [
+            _text_item(f"#/header-{index}", "Confidential Draft", (80.0, 30.0, 220.0, 45.0), page=index + 1)
+            for index in range(4)
+        ]
+        + [
+            _text_item(
+                f"#/body-{index}",
+                f"Body paragraph {index} with real content.",
+                (80.0, 190.0, 400.0, 205.0),
+                page=index + 1,
+            )
+            for index in range(4)
+        ],
+        "pages": {str(index + 1): {"size": {"width": 595, "height": 842}} for index in range(4)},
+    }
+
+    warnings = annotate_pdf_artifacts(document, path)
+    assert not warnings
+    headers = document["texts"][:4]
+    bodies = document["texts"][4:]
+    assert all(item.get("meta", {}).get("konverter_exclude_from_output") for item in headers)
+    assert all(not item.get("meta", {}).get("konverter_exclude_from_output") for item in bodies)
+
+
 def test_quote_detection_handles_ruled_indented_and_speech_bubble_panels(tmp_path):
     import fitz
     from app.visual_structure import detect_quote_regions

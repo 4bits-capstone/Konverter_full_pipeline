@@ -562,8 +562,6 @@ def _normalise_outline_levels(entries: list[TocEntry]) -> list[TocEntry]:
             entry.level = 1
             body_started = True
             current_top_indent = entry.indent
-        elif body_started and re.match(r"^recommendations?\b", entry.title, re.IGNORECASE):
-            entry.level = 2
         elif (
             body_started
             and entry.level == 1
@@ -571,6 +569,17 @@ def _normalise_outline_levels(entries: list[TocEntry]) -> list[TocEntry]:
             and entry.indent > current_top_indent + 7
             and not _ALWAYS_TOP_LEVEL.fullmatch(entry.title)
         ):
+            # "Recommendations" is deliberately *not* in _ALWAYS_TOP_LEVEL
+            # above (unlike glossary/bibliography/index, which are always
+            # standalone back matter): it commonly appears both as its own
+            # dedicated chapter — often the single most important one in a
+            # legal/government report — and as an indented sub-heading at
+            # the end of some other chapter. The same indentation test
+            # every other subsection title is judged by is what tells
+            # these two shapes apart; a title-only match here would demote
+            # a genuine top-level "Recommendations" chapter unconditionally,
+            # silently nesting its entire content under whatever chapter
+            # happened to precede it in the navigation.
             entry.level = 2
         if _APPENDIX_ENTRY.match(entry.title):
             if not has_appendices and not appendix_run:
@@ -1740,6 +1749,13 @@ class TocHierarchyResolver:
             return f"section_header_{min(5, max(3, level + 2))}"
         if raw == "title":
             return "text"
+        # "unspecified" is no longer a label the product surfaces: any raw
+        # Docling label this mapping doesn't recognise (a rare, oddly
+        # classified item — verified directly against real documents, e.g.
+        # a Table of Cases list Docling tagged "code") falls back to "text"
+        # instead, since that's exactly how it already renders (a plain
+        # paragraph) and is a real, reviewable structure label rather than
+        # a dead-end category with no assignable meaning.
         return {
             "box_section": "box_section",
             "caption": "caption",
@@ -1756,8 +1772,7 @@ class TocHierarchyResolver:
             "picture": "picture",
             "table": "table",
             "text": "text",
-            "unspecified": "unspecified",
-        }.get(raw, "unspecified")
+        }.get(raw, "text")
 
     def output_text(self, item: dict[str, Any]) -> str:
         reference = str(item.get("self_ref", ""))

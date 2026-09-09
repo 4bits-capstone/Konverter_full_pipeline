@@ -90,7 +90,16 @@ def annotate_pdf_artifacts(
         return ["PyMuPDF unavailable; decorative PDF artifact filtering was skipped."]
 
     suspicious: dict[int, list[dict[str, Any]]] = defaultdict(list)
-    repeated: Counter[tuple[int, str]] = Counter()
+    # A real running header/footer or tiled watermark repeats across *many
+    # pages* at roughly the *same vertical position* — a short answer
+    # repeated a few times within one page's own table or checklist ("Not
+    # applicable" x3), or a short phrase a large document's prose happens
+    # to reuse a few times across scattered pages, is ordinary content and
+    # must never trip this on page count alone. Only track occurrences
+    # sitting near the very top or bottom margin (the same 15%-of-page-height
+    # band toc_hierarchy.py's own running-furniture heuristic uses), then
+    # additionally require that position stay consistent across pages.
+    repeated_margin_positions: dict[str, list[tuple[int, float]]] = defaultdict(list)
     try:
         pdf = fitz.open(pdf_path)
         for page_index, page in enumerate(pdf):
@@ -104,11 +113,21 @@ def annotate_pdf_artifacts(
                         text = re.sub(r"\s+", " ", span.get("text", "")).strip()
                         if not text:
                             continue
-                        repeated[(page_number, _normalise_text(text))] += 1
                         color = _rgb(int(span.get("color", 0)))
                         alpha = float(span.get("alpha", 255)) / 255
                         size = float(span.get("size", 0))
                         bbox = tuple(float(value) for value in span.get("bbox", (0, 0, 0, 0)))
+                        if page_height > 0:
+                            top_ratio = bbox[1] / page_height
+                            bottom_ratio = bbox[3] / page_height
+                            if top_ratio <= 0.15:
+                                repeated_margin_positions[_normalise_text(text)].append(
+                                    (page_number, top_ratio)
+                                )
+                            elif bottom_ratio >= 0.85:
+                                repeated_margin_positions[_normalise_text(text)].append(
+                                    (page_number, bottom_ratio)
+                                )
                         if _span_is_artifact(
                             text,
                             size,
@@ -132,6 +151,25 @@ def annotate_pdf_artifacts(
                             )
     except Exception as exc:
         return [f"Decorative PDF artifact filtering failed ({exc})."]
+
+    # A margin occurrence only counts as running furniture once it recurs on
+    # enough pages, at a consistent position, within a dense enough page
+    # span — the same three conditions toc_hierarchy.py's own running-header
+    # detector requires, so a heading like "Conclusion" that legitimately
+    # recurs once per chapter (sparse, and each chapter is pages apart)
+    # isn't mistaken for a footer repeated on every consecutive page.
+    running_fragment_texts: set[str] = set()
+    for normalised_text, occurrences in repeated_margin_positions.items():
+        if len(normalised_text) > 60:
+            continue
+        pages = sorted({page for page, _ in occurrences})
+        ratios = [ratio for _, ratio in occurrences]
+        if (
+            len(pages) >= 3
+            and pages[-1] - pages[0] <= len(pages) * 3
+            and max(ratios, default=0) - min(ratios, default=0) <= 0.03
+        ):
+            running_fragment_texts.add(normalised_text)
 
     page_sizes = document.get("pages", {})
     for item in document.get("texts", []):
@@ -162,14 +200,29 @@ def annotate_pdf_artifacts(
                     or bounds["bottom"] > page_height + 3
                 )
             )
-            repeated_fragment = repeated_fragment or bool(
-                repeated[(page_number, text)] >= 3 and len(text) <= 60
-            )
+            repeated_fragment = repeated_fragment or text in running_fragment_texts
             matched_span = matched_span or any(
                 (
                     candidate["text"] == text
-                    or candidate["text"] in text
+                    # The item's own full text sitting entirely inside one
+                    # short suspicious span is safe — Docling occasionally
+                    # fragments a watermark into several small text items,
+                    # each no bigger than the span that flagged it.
                     or text in candidate["text"]
+                    # The reverse direction is the dangerous one: a short
+                    # candidate (the watermark's own span, e.g. "draft")
+                    # being *contained in* the item's text would also match
+                    # an ordinary full-length paragraph that merely uses
+                    # that word once ("...reviews the draft
+                    # recommendations..."). Requiring the candidate to cover
+                    # most of the item's own length limits this to items
+                    # that essentially *are* the watermark text (plus
+                    # trivial extra whitespace/punctuation), not real prose
+                    # that happens to contain it.
+                    or (
+                        candidate["text"] in text
+                        and len(candidate["text"]) >= len(text) * 0.6
+                    )
                 )
                 and _bbox_overlap_ratio(bounds, candidate["bounds"]) >= 0.45
                 for candidate in suspicious.get(page_number, [])
@@ -557,7 +610,7 @@ def group_quote_blocks(blocks: list[dict[str, Any]], regions: list[dict[str, Any
         for block in output:
             raw = str(block.get("text", ""))
             bounds = block.get("source_bounds")
-            if region_text and bounds and block.get("label") in {"text", "paragraph", "unspecified"} and int(block.get("page", 1)) == int(region["page"]) and bounds["top"] < region["bottom"] and bounds["bottom"] > region["top"]:
+            if region_text and bounds and block.get("label") in {"text", "paragraph"} and int(block.get("page", 1)) == int(region["page"]) and bounds["top"] < region["bottom"] and bounds["bottom"] > region["top"]:
                 folded = [(i, char) for i, original in enumerate(raw) if not original.isspace() for char in original.casefold()]
                 positions = [i for i, _ in folded]
                 compact = "".join(char for _, char in folded)

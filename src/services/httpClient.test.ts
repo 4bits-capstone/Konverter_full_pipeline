@@ -121,3 +121,21 @@ it('loads report HTML with the same authentication and retry policy as JSON requ
   expect(fetchMock.mock.calls[0][1].headers.get('Authorization')).toBe('Bearer stale-token')
   expect(fetchMock.mock.calls[0][1]).not.toHaveProperty('responseType')
 })
+
+it('carries the same bearer token on a blob request as on a JSON request', async () => {
+  // Real bug found live: /review-items/{id}/evidence.png and /source both
+  // started requiring this same bearer auth, but the frontend was still
+  // loading them as a plain <img src>/<a href> -- neither can ever carry
+  // a custom header, so every evidence crop and "open original page" link
+  // 401'd, always, for every document. The fix routes them through
+  // apiRequest with responseType: 'blob' instead (see
+  // src/lib/useAuthenticatedObjectUrl.ts) specifically so this same
+  // header-attaching logic applies to them too.
+  const evidencePng = new Blob(['png-bytes'], { type: 'image/png' })
+  const fetchMock = vi.fn().mockResolvedValue({ ok: true, status: 200, blob: async () => evidencePng })
+  vi.stubGlobal('fetch', fetchMock)
+  await expect(
+    apiRequest('/documents/doc-1/review-items/review-1/evidence.png', { responseType: 'blob' }),
+  ).resolves.toBe(evidencePng)
+  expect(fetchMock.mock.calls[0][1].headers.get('Authorization')).toBe('Bearer stale-token')
+})

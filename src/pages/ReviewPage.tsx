@@ -4,7 +4,6 @@ import {
   CircleHelp,
   ExternalLink,
   FileText,
-  ImageUp,
   LoaderCircle,
   Pencil,
   Plus,
@@ -31,6 +30,10 @@ import { StatusTag } from "../components/StatusTag";
 import { documentService, publicationService } from "../services";
 import { useKonverter } from "../state/KonverterContext";
 import { converterStagePath } from "../lib/converterRoutes";
+import {
+  openAuthenticatedDocument,
+  useAuthenticatedObjectUrl,
+} from "../lib/useAuthenticatedObjectUrl";
 import type {
   ReviewItem,
   ReviewStatus,
@@ -126,8 +129,8 @@ const structureLabels: Array<{
     value: "document_index",
     label: "Document index",
     description:
-      "Use this for a table of contents or a list that helps readers find topics or sections.",
-    shortMeaning: "Contents or index listing.",
+      "Use this for a glossary, back-of-book index, or submitter/consultee list shown as a table — not the document's own table of contents, which is detected and hidden automatically and doesn't need this label.",
+    shortMeaning: "Glossary, index, or submitter list (not the table of contents).",
   },
   {
     value: "footnote",
@@ -199,9 +202,26 @@ const structureLabels: Array<{
       "Use this for words quoted from a person or source, including a testimonial.",
     shortMeaning: "Quoted content or testimonial.",
   },
+  {
+    value: "unspecified",
+    label: "Unspecified",
+    description:
+      "The extraction couldn't confidently classify this content — it's shown as a normal paragraph. Choose a more specific label above if one fits.",
+    shortMeaning: "Not yet classified; shown as plain text.",
+  },
 ];
 
-const ASSIGNABLE_STRUCTURE_LABELS = structureLabels;
+// "Unspecified" is a real value a block can already have (the extraction
+// couldn't confidently classify it), and the trigger/description lookups
+// below need an entry for it so they show that honestly instead of
+// silently falling back to whatever happens to be first in the list
+// ("Title") when .findIndex() finds no match. But it must stay out of the
+// dropdown a reviewer actively picks from — nothing should let a reviewer
+// regress an already-classified item back to "not classified"; "Quote" is
+// offered instead as the catch-all for genuinely ambiguous content.
+const ASSIGNABLE_STRUCTURE_LABELS = structureLabels.filter(
+  (item) => item.value !== "unspecified",
+);
 
 function StructureChip({ item }: { item: Pick<ReviewItem, "type" | "label"> }) {
   const description = structureLabels.find(
@@ -1118,10 +1138,7 @@ export function ReviewPage() {
   const [editText, setEditText] = useState("");
   const [editType, setEditType] = useState<ReviewType>("text");
   const [editTable, setEditTable] = useState<ReviewTableData>(emptyTable);
-  const [uploadedPicture, setUploadedPicture] = useState<string | null>(null);
   const [showDetailMobile, setShowDetailMobile] = useState(false);
-  const [evidenceFailed, setEvidenceFailed] = useState(false);
-  const [evidenceLoading, setEvidenceLoading] = useState(true);
   const previousFilteredIds = useRef<string[]>([]);
   const queueListRef = useRef<HTMLDivElement | null>(null);
   const selectionAnchorRef = useRef("");
@@ -1233,6 +1250,15 @@ export function ReviewPage() {
   const selectedPosition = selected
     ? filteredItems.findIndex((item) => item.id === selected.id) + 1
     : 0;
+  const evidence = useAuthenticatedObjectUrl(
+    selected
+      ? publicationService.evidenceUrl(
+          activeDocumentId ?? "",
+          selected.id,
+          evidenceVersion(selected),
+        )
+      : undefined,
+  );
 
   useLayoutEffect(() => {
     const nextIds = filteredItems.map((item) => item.id);
@@ -1301,11 +1327,6 @@ export function ReviewPage() {
     };
   }, []);
 
-  useEffect(() => {
-    setEvidenceFailed(false);
-    setEvidenceLoading(true);
-  }, [activeDocumentId, selected?.id]);
-
   const preserveQueueScroll = () => {
     const scrollTop = queueListRef.current?.scrollTop ?? 0;
     window.requestAnimationFrame(() => {
@@ -1325,6 +1346,8 @@ export function ReviewPage() {
           : "Item removed from generated output",
       );
       setEditing(false);
+    } catch {
+      showToast("This change could not be saved. Please try again.");
     } finally {
       setActingItemId(null);
     }
@@ -1360,6 +1383,8 @@ export function ReviewPage() {
       preserveQueueScroll();
       setEditing(false);
       showToast("Review changes saved");
+    } catch {
+      showToast("This change could not be saved. Please try again.");
     } finally {
       setActingItemId(null);
     }
@@ -1392,6 +1417,8 @@ export function ReviewPage() {
       await setReviewStatus(item.id, "accepted");
       preserveQueueScroll();
       showToast("Item restored to generated output");
+    } catch {
+      showToast("This change could not be saved. Please try again.");
     } finally {
       setActingItemId(null);
     }
@@ -1420,9 +1447,6 @@ export function ReviewPage() {
   const openReviewItem = (item: ReviewItem) => {
     setSelectedId(item.id);
     setEditing(false);
-    setUploadedPicture(null);
-    setEvidenceFailed(false);
-    setEvidenceLoading(true);
     setShowDetailMobile(true);
   };
 
@@ -1515,8 +1539,6 @@ export function ReviewPage() {
     setEditing(false);
     setSelectedId("");
     setShowDetailMobile(false);
-    setEvidenceFailed(false);
-    setEvidenceLoading(true);
     selectDocument(nextId);
     showToast(
       `Now reviewing ${nextDocument?.fileName ?? "the selected document"}`,
@@ -1554,13 +1576,6 @@ export function ReviewPage() {
     } finally {
       setConfirmationApplying(false);
     }
-  };
-
-  const uploadPicture = async (item: ReviewItem, file?: File) => {
-    if (!file) return;
-    setUploadedPicture(file.name);
-    await setReviewStatus(item.id, "edited");
-    showToast("Replacement picture uploaded");
   };
 
   const continueToMetadata = () => {
@@ -2063,25 +2078,32 @@ export function ReviewPage() {
                   <div className="detail-source-head">
                     <FileText />
                     Original PDF evidence
-                    <a
-                      className="source-page-link"
-                      href={publicationService.sourceUrl(
-                        activeDocumentId ?? "",
-                        selected.source.page,
-                      )}
-                      target="_blank"
-                      rel="noreferrer"
+                    <button
+                      type="button"
+                      className="source-page-link link-button"
+                      onClick={() =>
+                        openAuthenticatedDocument(
+                          publicationService.sourceUrl(
+                            activeDocumentId ?? "",
+                            selected.source.page,
+                          ),
+                        ).catch(() =>
+                          showToast(
+                            "The original page could not be opened. Please try again.",
+                          ),
+                        )
+                      }
                     >
                       Open original page <ExternalLink aria-hidden="true" />
-                    </a>
+                    </button>
                     <span className="mono">p.{selected.source.page}</span>
                   </div>
                   <div
-                    className={`page-doc source-evidence-preview${evidenceLoading && !evidenceFailed ? " is-loading" : ""}`}
+                    className={`page-doc source-evidence-preview${evidence.loading && !evidence.failed ? " is-loading" : ""}`}
                   >
-                    {!evidenceFailed ? (
+                    {!evidence.failed ? (
                       <>
-                        {evidenceLoading && (
+                        {evidence.loading && (
                           <div
                             className="source-evidence-loading"
                             role="status"
@@ -2093,22 +2115,14 @@ export function ReviewPage() {
                             Loading the matching source crop…
                           </div>
                         )}
-                        <img
-                          key={`${activeDocumentId}-${selected.id}-${evidenceVersion(selected)}`}
-                          className={evidenceLoading ? "is-loading" : undefined}
-                          src={publicationService.evidenceUrl(
-                            activeDocumentId ?? "",
-                            selected.id,
-                            evidenceVersion(selected),
-                          )}
-                          alt={`Original PDF evidence for ${selected.label} on page ${selected.source.page}`}
-                          loading="eager"
-                          onLoad={() => setEvidenceLoading(false)}
-                          onError={() => {
-                            setEvidenceLoading(false);
-                            setEvidenceFailed(true);
-                          }}
-                        />
+                        {evidence.src && (
+                          <img
+                            key={`${activeDocumentId}-${selected.id}-${evidenceVersion(selected)}`}
+                            src={evidence.src}
+                            alt={`Original PDF evidence for ${selected.label} on page ${selected.source.page}`}
+                            loading="eager"
+                          />
+                        )}
                       </>
                     ) : (
                       <div className="source-evidence-fallback">
@@ -2120,7 +2134,7 @@ export function ReviewPage() {
                       </div>
                     )}
                   </div>
-                  {!selected.source.bounds && !evidenceFailed && (
+                  {!selected.source.bounds && !evidence.failed && (
                     <p className="source-evidence-note">
                       Precise coordinates were unavailable, so the complete
                       source page is shown.
@@ -2215,32 +2229,12 @@ export function ReviewPage() {
                 {selected.type === "picture" && (
                   <div className="manual-picture-upload">
                     <div>
-                      <strong>
-                        {uploadedPicture
-                          ? "Replacement picture ready"
-                          : "Picture extraction failed"}
-                      </strong>
+                      <strong>Picture extraction failed</strong>
                       <span>
-                        {uploadedPicture ??
-                          "Upload the picture manually if it is missing from the extracted result."}
+                        Manual picture replacement isn&apos;t available yet — reject
+                        this item and provide the correct figure separately.
                       </span>
                     </div>
-                    <label
-                      className="btn btn-outline btn-sm"
-                      aria-disabled={!editing}
-                    >
-                      <ImageUp />
-                      Upload picture
-                      <input
-                        className="sr-only"
-                        type="file"
-                        accept="image/*"
-                        disabled={!editing}
-                        onChange={(event) =>
-                          void uploadPicture(selected, event.target.files?.[0])
-                        }
-                      />
-                    </label>
                   </div>
                 )}
               </div>

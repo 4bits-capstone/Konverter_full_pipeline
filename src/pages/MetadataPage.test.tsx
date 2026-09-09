@@ -10,6 +10,18 @@ import { resetTestServices } from '../test/serviceMocks'
 import { MetadataPage, normaliseMetadataFields } from './MetadataPage'
 
 vi.mock('../services', () => import('../test/serviceMocks'))
+vi.mock('../services/httpClient', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../services/httpClient')>()
+  return {
+    ...actual,
+    // The metadata evidence crop loads through an authenticated blob fetch
+    // (see src/lib/useAuthenticatedObjectUrl.ts) rather than a plain
+    // <img src>, so a real Blob stands in for the network here.
+    apiRequest: vi.fn(async (path: string, init?: Parameters<typeof actual.apiRequest>[1]) =>
+      init?.responseType === 'blob' ? new Blob([path], { type: 'image/png' }) : actual.apiRequest(path, init),
+    ),
+  }
+})
 
 function SeedCompletedDocument() {
   const { addDocuments, resolveAllReviews, setUploaded } = useKonverter()
@@ -65,8 +77,8 @@ describe('MetadataPage', () => {
     expect(within(panel).getByText('Accessibility Standards Report')).toBeInTheDocument()
     expect(within(panel).getByText('18 June 2026')).toBeInTheDocument()
     expect(screen.queryByRole('textbox', { name: /Title/ })).not.toBeInTheDocument()
-    expect(screen.getByRole('link', { name: /Open original page/ })).toHaveAttribute('target', '_blank')
-    expect(screen.getByRole('img', { name: /Original PDF page .* evidence/ })).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: /Open original page/ })).toBeInTheDocument()
+    expect(await screen.findByRole('img', { name: /Original PDF page .* evidence/ })).toBeInTheDocument()
 
     fireEvent.click(screen.getAllByRole('button', { name: 'Edit' })[0])
 

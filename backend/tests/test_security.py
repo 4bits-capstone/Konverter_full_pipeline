@@ -261,3 +261,77 @@ def test_documents_all_rejects_non_admin(tmp_path):
     with load_client(tmp_path) as client:
         response = client.get("/api/documents/all")
         assert response.status_code == 403
+
+
+def test_unapproved_document_read_endpoints_are_scoped_to_their_uploader(tmp_path):
+    """The mutating endpoints (process/delete) were already scoped to their
+    uploader — see test_documents_are_scoped_to_their_uploader above — but
+    the read endpoints a reviewer actually spends their time on
+    (get_document, review-items, metadata, publication, processing-summary,
+    the raw docling.json export, review/metadata evidence images) had no
+    such check at all: a document's own detail page was fully public to
+    anyone with its id, with no owner/auth check whatsoever, even though
+    the very same id is already correctly hidden from a non-owner's list
+    view. Confirmed missing during a pre-production security sweep."""
+    with load_client(tmp_path) as client:
+        document_id = upload_and_process(client)
+        confirm_metadata(client, document_id)
+        evidence_item_id = client.get(
+            f"/api/documents/{document_id}/review-items"
+        ).json()[0]["id"]
+
+        _override_user(client, "other-user", "other@example.test")
+        assert client.get(f"/api/documents/{document_id}").status_code == 404
+        assert (
+            client.get(f"/api/documents/{document_id}/processing-summary").status_code
+            == 404
+        )
+        assert (
+            client.get(f"/api/documents/{document_id}/review-items").status_code == 404
+        )
+        assert client.get(f"/api/documents/{document_id}/metadata").status_code == 404
+        assert (
+            client.get(f"/api/documents/{document_id}/publication").status_code == 404
+        )
+        assert (
+            client.get(f"/api/documents/{document_id}/exports/docling.json").status_code
+            == 404
+        )
+        assert (
+            client.get(
+                f"/api/documents/{document_id}/review-items/{evidence_item_id}/evidence.png"
+            ).status_code
+            == 404
+        )
+        # /source has its own distinct pre/post-approval auth rules, covered
+        # separately by test_source_pdf_requires_auth_before_approval_but_is_public_once_approved.
+
+        # The original owner can still read everything about their own document.
+        _override_user(client, "test-user", "test-user@example.test")
+        assert client.get(f"/api/documents/{document_id}").status_code == 200
+        assert client.get(f"/api/documents/{document_id}/review-items").status_code == 200
+
+
+def test_source_pdf_requires_auth_before_approval_but_is_public_once_approved(tmp_path):
+    """The published, approved export embeds /source as a public "view
+    original source" citation link with no Supabase session — so unlike
+    every other read endpoint, /source must switch from owner-only to
+    fully public the moment the document is approved, not stay gated."""
+    with load_client(tmp_path) as client:
+        document_id = upload_and_process(client)
+
+        # No Authorization header at all (not even the test fixture's
+        # mocked user — OptionalUser reads the real header, so this
+        # exercises the actual dependency, not the test override).
+        client.app.dependency_overrides.pop(app_main.get_current_user, None)
+        response = client.get(f"/api/documents/{document_id}/source")
+        assert response.status_code == 401
+        _override_user(client, "test-user", "test-user@example.test")
+
+        client.post(f"/api/documents/{document_id}/review-items/resolve-all")
+        confirm_metadata(client, document_id)
+        assert client.post(f"/api/documents/{document_id}/approval").status_code == 200
+
+        client.app.dependency_overrides.pop(app_main.get_current_user, None)
+        response = client.get(f"/api/documents/{document_id}/source")
+        assert response.status_code == 200

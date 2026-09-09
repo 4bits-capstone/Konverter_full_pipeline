@@ -21,6 +21,10 @@ import { ConfidenceBadge } from "../components/ConfidenceBadge";
 import { emptyMetadata } from "../config/workflow";
 import { converterStagePath } from "../lib/converterRoutes";
 import {
+  openAuthenticatedDocument,
+  useAuthenticatedObjectUrl,
+} from "../lib/useAuthenticatedObjectUrl";
+import {
   approvalService,
   metadataService,
   publicationService,
@@ -164,7 +168,6 @@ export function MetadataPage() {
   const [snapshots, setSnapshots] = useState<
     Partial<Record<MetadataField, { value: string; extras: string[] }>>
   >({});
-  const [evidenceFailed, setEvidenceFailed] = useState(false);
   const [approvalModalOpen, setApprovalModalOpen] = useState(false);
   const [approving, setApproving] = useState(false);
   const [pendingApprovalMetadata, setPendingApprovalMetadata] =
@@ -416,10 +419,7 @@ export function MetadataPage() {
     activeDocumentId ?? "",
     activeEvidence,
   );
-
-  useEffect(() => {
-    setEvidenceFailed(false);
-  }, [activeDocumentId, activeEvidence, evidence.page]);
+  const evidenceCrop = useAuthenticatedObjectUrl(evidenceImageUrl);
 
   const renderField = (config: FieldConfig) => {
     const {
@@ -684,27 +684,36 @@ export function MetadataPage() {
             <div className="panel panel-pad">
               <div className="metadata-evidence-heading">
                 <div className="field-label">{evidenceLabel} evidence</div>
-                <a
-                  className="source-page-link"
-                  href={evidencePageUrl}
-                  target="_blank"
-                  rel="noreferrer"
+                <button
+                  type="button"
+                  className="source-page-link link-button"
+                  onClick={() =>
+                    openAuthenticatedDocument(evidencePageUrl).catch(() =>
+                      showToast(
+                        "The original page could not be opened. Please try again.",
+                      ),
+                    )
+                  }
                 >
                   Open original page <ExternalLink aria-hidden="true" />
-                </a>
+                </button>
               </div>
               <div className="evidence">
                 {evidence.evidence}
                 <span className="src">↳ {evidence.source}</span>
               </div>
               <div className="page-doc metadata-page-preview source-evidence-preview">
-                {!evidenceFailed ? (
+                {evidenceCrop.src ? (
                   <img
-                    src={evidenceImageUrl}
+                    src={evidenceCrop.src}
                     alt={`Original PDF page ${evidence.page} containing ${evidenceLabel.toLowerCase()} evidence`}
                     loading="lazy"
-                    onError={() => setEvidenceFailed(true)}
                   />
+                ) : evidenceCrop.loading ? (
+                  <div className="source-evidence-loading" role="status">
+                    <LoaderCircle className="spinner-icon" aria-hidden="true" />
+                    Loading the matching source crop…
+                  </div>
                 ) : (
                   <div className="source-evidence-fallback">
                     <TriangleAlert aria-hidden="true" />

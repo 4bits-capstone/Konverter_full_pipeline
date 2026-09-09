@@ -56,6 +56,20 @@ async def get_current_user(authorization: str | None = Header(default=None)) -> 
     return user
 
 
+async def get_current_user_optional(
+    authorization: str | None = Header(default=None),
+) -> dict | None:
+    """Like get_current_user, but returns None instead of 401 when no bearer
+    token is presented at all — for endpoints that serve a resource publicly
+    once it reaches some state (e.g. approved-for-publication) but must
+    still enforce ownership before that. An invalid/expired token is still
+    a hard 401, since presenting *a* token implies the caller expects it to
+    be honoured, not silently downgraded to anonymous."""
+    if not authorization:
+        return None
+    return await get_current_user(authorization)
+
+
 async def require_admin(user: dict = Depends(get_current_user)) -> dict:
     """Reuses get_current_user, then requires app_metadata.role == 'admin'.
 

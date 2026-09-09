@@ -2,7 +2,28 @@ from __future__ import annotations
 
 import re
 
-from app.exporter import _render_block, build_accessible_html, build_publication
+import html as html_module
+
+from app.exporter import build_accessible_html, build_publication
+from app.preview_html import _build_contents_accordion, _build_reader_sections, _render_block
+
+_escape = lambda value: html_module.escape(str(value), quote=True)
+
+# _render_block used to live in exporter.py too, with its own, older
+# rendering rules — but exporter.build_accessible_html was superseded by
+# preview_html's implementation via a shadowing import at the bottom of
+# exporter.py, leaving exporter.py's own copy dead (unreachable outside
+# these tests, which imported it directly). These tests were unknowingly
+# asserting on markup real users never receive: this file's quote test
+# expected `<blockquote class="document-quote">`, but the real output is
+# `<figure class="report-quote report-quote--inline">`. Both dead copies
+# (exporter._render_block and its private helpers) were deleted along with
+# this fix, and every direct _render_block call below now imports and
+# exercises the one function that actually ships.
+
+
+def _render(block: dict[str, object]) -> str:
+    return _render_block(block, None, {})
 
 
 def test_quote_reaches_publication_and_accessible_html_semantically():
@@ -17,8 +38,14 @@ def test_quote_reaches_publication_and_accessible_html_semantically():
 
     quote = publication["sections"][0]["blocks"][0]
     assert quote == {"type": "quote", "text": "Quoted statement.\n\nSpeaker", "page": 1}
-    rendered = _render_block(quote)
-    assert rendered == '<blockquote class="document-quote"><p>Quoted statement.</p><p>Speaker</p></blockquote>'
+    rendered = _render(quote)
+    assert rendered == (
+        '<figure class="report-quote report-quote--inline">'
+        '<blockquote class="docling-quote">'
+        '<p class="docling-paragraph">Quoted statement.</p>'
+        '<p class="docling-paragraph">Speaker</p>'
+        "</blockquote></figure>"
+    )
 
 
 def test_footnote_block_bundling_multiple_citations_splits_into_separate_entries():
@@ -375,7 +402,7 @@ def test_scope_of_report_is_used_before_introduction_for_description():
 
 
 def test_table_without_source_caption_has_no_generated_caption_heading():
-    rendered = _render_block(
+    rendered = _render(
         {
             "type": "table",
             "id": "table-1",
@@ -398,7 +425,7 @@ def test_table_without_source_caption_has_no_generated_caption_heading():
 
 
 def test_ordered_list_preserves_source_start_and_item_numbers():
-    rendered = _render_block(
+    rendered = _render(
         {
             "type": "list",
             "style": "ordered",
@@ -420,7 +447,7 @@ def test_ordered_list_preserves_source_start_and_item_numbers():
         }
     )
 
-    assert '<ol class="source-list" start="4">' in rendered
+    assert '<ol class="reader-source-list" start="4">' in rendered
     assert '<li value="4">Keep the original fourth recommendation.</li>' in rendered
     assert '<li value="6">Keep a deliberate numbering gap.</li>' in rendered
     assert "<ul" not in rendered
@@ -490,9 +517,204 @@ def test_box_section_uses_semantic_ordered_and_unordered_lists():
     assert box["blocks"][0]["items"][0]["value"] == 7
     assert box["blocks"][1]["style"] == "unordered"
 
-    rendered = _render_block(box)
-    assert '<ol class="source-list" start="7">' in rendered
-    assert '<ul class="source-list">' in rendered
+    rendered = _render(box)
+    assert '<ol class="reader-source-list" start="7">' in rendered
+    assert '<ul class="reader-source-list">' in rendered
+
+
+def test_lone_bare_number_in_a_recommendation_box_section_is_not_bulleted():
+    """Real shape found in 6 documents (96 instances corpus-wide), distinct
+    from the document-level "Recommendations" chapter list already fixed:
+    each recommendation gets its own dedicated box_section panel, so its
+    list has exactly one item — "1 For the purpose of ensuring clarity...".
+    _interleaved_recommendation_numbers needs a run of several numbers to
+    trust a bare leading digit isn't a coincidence, so it can never fire on
+    a single-item list — this box_section left it as a bare bullet with the
+    number stuck in the text, the same bug already fixed for the
+    many-items-in-one-list shape but never for this single-item one."""
+    publication = build_publication(
+        [
+            {"id": "title", "label": "title", "text": "Example report", "order": 0},
+            {
+                "id": "box",
+                "label": "box_section",
+                "text": "1 For the purpose of ensuring clarity, certainty and accessibility.",
+                "box_section_title": "Recommendation",
+                "box_section_kind": "recommendations",
+                "box_section_blocks": [
+                    {
+                        "label": "list",
+                        "text": "1 For the purpose of ensuring clarity, certainty and accessibility.",
+                        "list_entries": [
+                            {
+                                "text": "1 For the purpose of ensuring clarity, certainty and accessibility.",
+                                "marker": "",
+                                "enumerated": False,
+                                "level": 0,
+                            }
+                        ],
+                        "page": 2,
+                    }
+                ],
+                "order": 1,
+                "page": 2,
+            },
+        ],
+        {"title": "Example report", "pages": 2, "file_name": "example.pdf"},
+    )
+
+    box = publication["sections"][0]["blocks"][0]
+    assert box["blocks"] == [
+        {
+            "type": "paragraph",
+            "text": "For the purpose of ensuring clarity, certainty and accessibility.",
+            "number": "1",
+            "page": 2,
+        }
+    ]
+
+    rendered = _render(box)
+    assert "<ul" not in rendered
+    assert '<span class="reader-paragraph-number" aria-hidden="true">1</span>' in rendered
+
+
+def test_lone_bare_number_outside_a_recommendations_box_section_is_left_alone():
+    """The box's own kind is what makes the fix above safe — a "case
+    study"/"information" panel's sole bullet could coincidentally start
+    with a number without being a recommendation's own numbering at all
+    ("5 people were interviewed for this case study"), so this must stay
+    scoped to box_section_kind == "recommendations" specifically."""
+    publication = build_publication(
+        [
+            {"id": "title", "label": "title", "text": "Example report", "order": 0},
+            {
+                "id": "box",
+                "label": "box_section",
+                "text": "5 people were interviewed for this case study.",
+                "box_section_title": "Case study 1",
+                "box_section_kind": "case-study",
+                "box_section_blocks": [
+                    {
+                        "label": "list",
+                        "text": "5 people were interviewed for this case study.",
+                        "list_entries": [
+                            {
+                                "text": "5 people were interviewed for this case study.",
+                                "marker": "",
+                                "enumerated": False,
+                                "level": 0,
+                            }
+                        ],
+                        "page": 2,
+                    }
+                ],
+                "order": 1,
+                "page": 2,
+            },
+        ],
+        {"title": "Example report", "pages": 2, "file_name": "example.pdf"},
+    )
+
+    box = publication["sections"][0]["blocks"][0]
+    assert box["blocks"][0]["type"] == "list"
+    assert box["blocks"][0]["items"][0]["text"] == (
+        "5 people were interviewed for this case study."
+    )
+
+
+def test_bare_recommendation_numbers_interleaved_with_lettered_subclauses_are_not_bulleted():
+    """Real shape from "Funeral and Burial Instructions": Docling extracts
+    the whole Recommendations list flat, with the top-level recommendation
+    number sitting unmarked in each item's own text ("1 Victoria should
+    introduce an Act that:") and its lettered/roman sub-clauses ("(a)
+    allows...", "(i) unlawful or") also unmarked but already parseable.
+    Before the fix, every item here fell back to an unordered list, so
+    "1 Victoria should..." rendered as a bullet with the number stuck in
+    the visible text instead of a real ordered marker."""
+    publication = build_publication(
+        [
+            {"id": "title", "label": "title", "text": "Example report", "order": 0},
+            {
+                "id": "recommendations",
+                "label": "list",
+                "list_entries": [
+                    {"text": "1 Victoria should introduce an Act that:", "marker": "", "enumerated": False, "level": 0},
+                    {"text": "(a) allows people to leave binding instructions and", "marker": "", "enumerated": False, "level": 0},
+                    {"text": "(b) where no instructions have been left, allows any arrangements:", "marker": "", "enumerated": False, "level": 0},
+                    {"text": "(i) unlawful or", "marker": "", "enumerated": False, "level": 0},
+                    {"text": "(ii) inconsistent with known beliefs.", "marker": "", "enumerated": False, "level": 0},
+                    {"text": "2 The person with the right to control arrangements should be determined by priority:", "marker": "", "enumerated": False, "level": 0},
+                    {"text": "(a) a funeral and burial agent appointed by the deceased", "marker": "", "enumerated": False, "level": 0},
+                ],
+                "order": 1,
+            },
+        ],
+        {"title": "Example report", "pages": 1, "file_name": "example.pdf"},
+    )
+
+    blocks = publication["sections"][0]["blocks"]
+    numbered_paragraphs = [b for b in blocks if b.get("type") == "paragraph" and b.get("number")]
+    assert [b["number"] for b in numbered_paragraphs] == ["1", "2"]
+    assert numbered_paragraphs[0]["text"] == "Victoria should introduce an Act that:"
+    assert numbered_paragraphs[1]["text"] == (
+        "The person with the right to control arrangements should be determined by priority:"
+    )
+
+    rendered = "".join(_render(b) for b in blocks)
+    assert '<span class="reader-paragraph-number" aria-hidden="true">1</span>' in rendered
+    assert '<span class="reader-paragraph-number" aria-hidden="true">2</span>' in rendered
+    # No item should fall back to a bullet just because it sits next to
+    # unmarked lettered sub-clauses in the same flat Docling list.
+    assert "<ul" not in rendered
+
+
+def test_already_marked_recommendation_numbers_interleaved_with_subclauses_split_out():
+    """Real shape from "Funeral and Burial Instructions" recommendations
+    12-18: here Docling *does* give the top-level number its own marker
+    ("12.", "13.") and the lettered sub-clauses their own marker too
+    ("(a)", "(b)"), all at the same flat level with no nesting info.
+    Before the fix, these all merged into one <ol>: three unvalued
+    sub-items after "13." auto-continue the browser's count to 16, then
+    the next explicit value="14" on the real next recommendation snapped
+    the visible number backwards from 16 to 14."""
+    publication = build_publication(
+        [
+            {"id": "title", "label": "title", "text": "Example report", "order": 0},
+            {
+                "id": "recommendations",
+                "label": "list",
+                "list_entries": [
+                    {"text": "A funeral and burial agent should only resign in writing.", "marker": "12.", "enumerated": True, "level": 0},
+                    {"text": "A person may revoke the appointment:", "marker": "13.", "enumerated": True, "level": 0},
+                    {"text": "in writing, signed and dated", "marker": "(a)", "enumerated": True, "level": 0},
+                    {"text": "by a later appointment", "marker": "(b)", "enumerated": True, "level": 0},
+                    {"text": "in any other manner satisfying the court", "marker": "(c)", "enumerated": True, "level": 0},
+                    {"text": "A person's instructions should only be binding if recorded:", "marker": "14.", "enumerated": True, "level": 0},
+                    {"text": "in writing, signed and dated", "marker": "(a)", "enumerated": True, "level": 0},
+                ],
+                "order": 1,
+            },
+        ],
+        {"title": "Example report", "pages": 1, "file_name": "example.pdf"},
+    )
+
+    blocks = publication["sections"][0]["blocks"]
+    numbered_paragraphs = [b for b in blocks if b.get("type") == "paragraph" and b.get("number")]
+    assert [b["number"] for b in numbered_paragraphs] == ["12", "13", "14"]
+
+    # The sub-clause items never carry a real recommendation number, but
+    # do get their own inferred alpha value — 1, 2, 3 for (a)(b)(c) — kept
+    # separate from and never colliding with the parent recommendation's
+    # own number, and each new recommendation's sub-clauses start fresh.
+    lists = [b for b in blocks if b.get("type") == "list"]
+    assert [item.get("value") for item in lists[0]["items"]] == [1, 2, 3]
+    assert [item.get("kind") for item in lists[0]["items"]] == ["alpha"] * 3
+    assert [item.get("value") for item in lists[1]["items"]] == [1]
+
+    rendered = "".join(_render(b) for b in blocks)
+    # No <li value="14"> jumping backwards after auto-numbered sub-items.
+    assert 'value="14"' not in rendered
+    assert 'class="reader-source-list reader-source-list--alpha"' in rendered
 
 
 def test_accessible_html_uses_new_report_layout_without_site_shell(tmp_path):
@@ -908,3 +1130,154 @@ def test_reviewed_quote_does_not_restore_deleted_attribution():
     quote = publication['sections'][0]['blocks'][0]
     assert 'attribution' not in quote
     assert quote['text'] == 'The reviewer changed this text.'
+
+
+# _build_contents_accordion and _build_reader_sections used to be unreachable
+# in isolation -- both were nested closures inside build_accessible_html's
+# 143-line body, testable only by asserting on substrings of the full
+# generated document. Pulling them out to module level (same document-shape
+# contract build_accessible_html itself uses) lets the grouping and
+# pagination logic be pinned directly.
+
+
+def _sections_for(publication: dict[str, object]) -> list[dict[str, object]]:
+    return publication["sections"]  # type: ignore[return-value]
+
+
+def test_contents_accordion_groups_front_chapters_and_back_matter():
+    publication = build_publication(
+        [
+            {"id": "title", "label": "title", "text": "Report", "order": 0},
+            {"id": "preface", "label": "section_header_1", "text": "Preface", "order": 1},
+            {"id": "c1", "label": "section_header_1", "text": "1. First Findings", "order": 2},
+            {"id": "c2", "label": "section_header_1", "text": "2. Second Findings", "order": 3},
+            {"id": "appendix", "label": "section_header_1", "text": "Appendix A", "order": 4},
+        ],
+        {"title": "Report", "pages": 1, "file_name": "report.pdf"},
+    )
+    sections = _sections_for(publication)
+    view_ids = [f"view-{i}" for i in range(len(sections))]
+
+    accordion = _build_contents_accordion(sections, view_ids, _escape)
+
+    front_index = accordion.index("Front matter")
+    chapters_index = accordion.index("Chapters")
+    back_index = accordion.index("Back matter")
+    assert front_index < chapters_index < back_index
+    assert '<span class="toc-group-range">1–2</span>' in accordion
+    assert "Preface" in accordion
+    assert "Appendix A" in accordion
+
+
+def test_contents_accordion_uses_plain_sections_label_with_no_chapters():
+    """A report with no chapter-shaped headings at all (e.g. a short issues
+    paper) should group everything under a plain "Sections" heading, not
+    the front/chapters/back split that only makes sense once there's an
+    actual chapter to anchor "front" and "back" against."""
+    publication = build_publication(
+        [
+            {"id": "title", "label": "title", "text": "Issues Paper", "order": 0},
+            {"id": "overview", "label": "section_header_1", "text": "Overview", "order": 1},
+            {"id": "next", "label": "section_header_1", "text": "Next Steps", "order": 2},
+        ],
+        {"title": "Issues Paper", "pages": 1, "file_name": "issues.pdf"},
+    )
+    sections = _sections_for(publication)
+    view_ids = [f"view-{i}" for i in range(len(sections))]
+
+    accordion = _build_contents_accordion(sections, view_ids, _escape)
+
+    assert "Sections" in accordion
+    assert "Front matter" not in accordion
+    assert "Chapters" not in accordion
+    assert "Back matter" not in accordion
+
+
+def test_reader_sections_paginate_to_correct_neighbours():
+    publication = build_publication(
+        [
+            {"id": "title", "label": "title", "text": "Report", "order": 0},
+            {"id": "a", "label": "section_header_1", "text": "1. Alpha", "order": 1},
+            {"id": "b", "label": "section_header_1", "text": "2. Beta", "order": 2},
+            {"id": "c", "label": "section_header_1", "text": "3. Gamma", "order": 3},
+        ],
+        {"title": "Report", "pages": 1, "file_name": "report.pdf"},
+    )
+    sections = _sections_for(publication)
+    view_ids = [f"view-{i}" for i in range(len(sections))]
+
+    readers = _build_reader_sections(sections, view_ids, _escape, "Report", None, "")
+
+    assert len(readers) == len(sections)
+    assert "Beginning of document" in readers[0]
+    assert "Beta" in readers[0]  # first section's "next" link
+    assert "Alpha" in readers[1] and "Gamma" in readers[1]  # middle section links both ways
+    assert "End of document" in readers[-1]
+    assert "Beta" in readers[-1]  # last section's "previous" link
+
+
+def test_document_index_blocks_are_rendered_not_silently_dropped():
+    """Found live via a user screenshot: "Neighbourhood Tree Disputes"'s
+    entire Glossary section rendered as a bare heading with no content at
+    all. build_publication used to unconditionally skip every
+    "document_index"-labelled block -- Docling's own label for any
+    reference-style table (a glossary, a back-of-book alphabetical index,
+    a submitter list), not specifically a printed table of contents.
+    Genuine printed TOCs are already excluded earlier and far more
+    precisely, via is_toc_item()'s page-region matching against the parsed
+    contents pages, before a block like this ever reaches
+    build_publication -- verified directly that every document_index block
+    across all 15 real documents in this project is genuine content, none
+    an undetected TOC this exclusion was actually protecting against."""
+    publication = build_publication(
+        [
+            {"id": "title", "label": "title", "text": "Report", "order": 0},
+            {"id": "glossary", "label": "section_header_1", "text": "Glossary", "order": 1},
+            {
+                "id": "glossary-table",
+                "label": "document_index",
+                "text": "Column 1 | Column 2\nAbatement | A common law self-help remedy.",
+                "table_data": {
+                    "headers": ["Column 1", "Column 2"],
+                    "rows": [["Abatement", "A common law self-help remedy."]],
+                },
+                "order": 2,
+            },
+        ],
+        {"title": "Report", "pages": 1, "file_name": "report.pdf"},
+    )
+
+    glossary_blocks = publication["sections"][0]["blocks"]
+    assert len(glossary_blocks) == 1
+    assert glossary_blocks[0]["type"] == "table"
+    cell_texts = {cell["text"] for row in glossary_blocks[0]["rows"] for cell in row}
+    assert "Abatement" in cell_texts
+    assert "A common law self-help remedy." in cell_texts
+
+
+def test_source_name_prefers_the_confirmed_record_title_over_a_misdetected_title_block():
+    """Real bug found across the corpus: Docling's own "title" detection
+    on a cover/copyright page sits right next to other large-type
+    elements and picks the wrong one more often than not -- a National
+    Library CIP catalogue notice, a copyright disclaimer sentence, a
+    contact phone number block all out-scored the real title in real
+    documents. record["title"] is reliably populated throughout the whole
+    workflow (the upload-time filename before metadata is confirmed, the
+    human-confirmed metadata title after -- required before a document can
+    even be approved) and is what the rest of the app already shows the
+    user everywhere else, so it must win over a misdetected title block,
+    not lose to it."""
+    publication = build_publication(
+        [
+            {
+                "id": "title",
+                "label": "title",
+                "text": "National Library of Australia Cataloguing-in-Publication",
+                "order": 0,
+            },
+            {"id": "chapter", "label": "section_header_1", "text": "1. Introduction", "order": 1},
+        ],
+        {"title": "Review of the Bail Act", "pages": 1, "file_name": "report.pdf"},
+    )
+
+    assert publication["sourceName"] == "Review of the Bail Act"

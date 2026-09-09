@@ -10,11 +10,30 @@ import type { ReviewItem } from '../types/konverter'
 import { ReviewPage } from './ReviewPage'
 
 vi.mock('../services', () => import('../test/serviceMocks'))
+vi.mock('../services/httpClient', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../services/httpClient')>()
+  return {
+    ...actual,
+    // Evidence crops and the source PDF now load through an authenticated
+    // blob fetch (see src/lib/useAuthenticatedObjectUrl.ts) rather than a
+    // plain <img src>/<a href>, so a real Blob keyed by the requested path
+    // stands in for the network here — distinct paths must still yield
+    // distinct blob URLs for the "uniquely versioned crop" test below.
+    apiRequest: vi.fn(async (path: string, init?: Parameters<typeof actual.apiRequest>[1]) =>
+      init?.responseType === 'blob' ? new Blob([path], { type: 'image/png' }) : actual.apiRequest(path, init),
+    ),
+  }
+})
 
 function SeedCompletedDocument() {
   const { addDocuments } = useKonverter()
   useEffect(() => addDocuments([testDocument]), [addDocuments])
   return null
+}
+
+function ToastProbe() {
+  const { toastState } = useKonverter()
+  return <div data-testid="toast-probe">{toastState?.message ?? ''}</div>
 }
 
 function renderReview() {
@@ -24,6 +43,7 @@ function renderReview() {
       <MemoryRouter>
         <KonverterProvider>
           <SeedCompletedDocument />
+          <ToastProbe />
           <ReviewPage />
         </KonverterProvider>
       </MemoryRouter>
@@ -113,7 +133,7 @@ describe('ReviewPage', () => {
     expect(screen.getByRole('button', { name: 'Structure label: H2' })).toBeEnabled()
     expect(screen.getByText('Section within the current H1.')).toBeInTheDocument()
     expect(screen.getByRole('textbox', { name: 'Extracted text' })).toHaveValue('Purpose')
-    expect(screen.getByRole('link', { name: /Open original page/ })).toHaveAttribute('target', '_blank')
+    expect(screen.getByRole('button', { name: /Open original page/ })).toBeInTheDocument()
     expect(screen.getByRole('button', { name: 'Save changes' })).toHaveClass('btn-primary')
     expect(screen.queryByRole('button', { name: 'Accept' })).not.toBeInTheDocument()
   })
@@ -162,19 +182,57 @@ describe('ReviewPage', () => {
     expect(save).toHaveBeenCalledTimes(1)
   })
 
+  it('shows an error and keeps the edit open when saving a change fails', async () => {
+    vi.spyOn(reviewService, 'saveItem').mockRejectedValueOnce(new Error('network error'))
+    renderReview()
+    await screen.findAllByText('Section heading needs confirmation')
+    fireEvent.click(screen.getByRole('button', { name: /Section heading needs confirmation/ }))
+    const field = screen.getByRole('textbox', { name: 'Extracted text' })
+    fireEvent.click(screen.getByRole('button', { name: 'Edit flagged item' }))
+    fireEvent.change(field, { target: { value: 'Updated purpose' } })
+    fireEvent.click(screen.getByRole('button', { name: 'Save changes' }))
+
+    await waitFor(() =>
+      expect(screen.getByTestId('toast-probe')).toHaveTextContent(
+        'This change could not be saved. Please try again.',
+      ),
+    )
+    // The edit was not silently discarded — the field stays open and
+    // editable with the reviewer's in-progress change still there.
+    expect(field).not.toHaveAttribute('readonly')
+    expect(field).toHaveValue('Updated purpose')
+  })
+
+  it('does not fire a second save request while one is already in flight', async () => {
+    const save = vi.spyOn(reviewService, 'saveItem')
+    renderReview()
+    await screen.findAllByText('Section heading needs confirmation')
+    fireEvent.click(screen.getByRole('button', { name: /Section heading needs confirmation/ }))
+    fireEvent.click(screen.getByRole('button', { name: 'Edit flagged item' }))
+    const saveButton = screen.getByRole('button', { name: 'Save changes' })
+    fireEvent.click(saveButton)
+    fireEvent.click(saveButton)
+    await waitFor(() =>
+      expect(screen.getByRole('textbox', { name: 'Extracted text' })).toHaveAttribute(
+        'readonly',
+      ),
+    )
+    expect(save).toHaveBeenCalledTimes(1)
+  })
+
   it('loads a uniquely versioned original-PDF crop for each selected flag', async () => {
     renderReview()
     await screen.findAllByText('Definitions table needs confirmation')
 
     fireEvent.click(screen.getByRole('button', { name: /Definitions table needs confirmation/ }))
-    const tableEvidence = screen.getByRole('img', { name: /Original PDF evidence for Table on page 4/ })
+    const tableEvidence = await screen.findByRole('img', { name: /Original PDF evidence for Table on page 4/ })
     expect(tableEvidence).toHaveAttribute('loading', 'eager')
-    expect(tableEvidence.getAttribute('src')).toContain('/review-items/review-table/evidence.png?v=')
+    expect(tableEvidence.getAttribute('src')).toMatch(/^blob:/)
     const firstSource = tableEvidence.getAttribute('src')
 
     fireEvent.click(screen.getByRole('button', { name: /Section heading needs confirmation/ }))
-    const headingEvidence = screen.getByRole('img', { name: /Original PDF evidence for H2 on page 2/ })
-    expect(headingEvidence.getAttribute('src')).toContain('/review-items/review-heading/evidence.png?v=')
+    const headingEvidence = await screen.findByRole('img', { name: /Original PDF evidence for H2 on page 2/ })
+    expect(headingEvidence.getAttribute('src')).toMatch(/^blob:/)
     expect(headingEvidence.getAttribute('src')).not.toBe(firstSource)
   })
 
@@ -269,6 +327,25 @@ describe('ReviewPage', () => {
     expect(within(menu).queryByRole('option', { name: 'Unspecified' })).not.toBeInTheDocument()
     expect(within(menu).getByRole('option', { name: 'Quote' })).toBeInTheDocument()
     expect(within(menu).getByRole('option', { name: 'Footnote' })).toBeInTheDocument()
+  })
+
+  it('shows an unspecified item honestly instead of silently defaulting to Title', async () => {
+    // Real, live shape: an item the extraction couldn't confidently
+    // classify has type "unspecified", which wasn't in the structure-label
+    // list at all — structureLabels.findIndex() returned -1, and
+    // Math.max(0, -1) silently fell back to index 0 ("Title"), showing a
+    // Table-of-Cases citation as if it were the document's own title.
+    vi.spyOn(reviewService, 'getReviewItems').mockResolvedValueOnce(
+      testReviewItems.map((item) =>
+        item.id === 'review-heading' ? { ...item, type: 'unspecified', label: 'Unspecified' } : item,
+      ),
+    )
+    renderReview()
+    await screen.findAllByText('Section heading needs confirmation')
+    fireEvent.click(screen.getByRole('button', { name: /Section heading needs confirmation/ }))
+
+    expect(screen.getByRole('button', { name: 'Structure label: Unspecified' })).toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: 'Structure label: Title' })).not.toBeInTheDocument()
   })
 
   it('removes unnecessary content from output and allows it to be restored', async () => {

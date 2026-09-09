@@ -1128,7 +1128,10 @@ class WorkflowService:
                     dpi=120,
                     padding=0,
                 )
-            except Exception:
+            except Exception as exc:
+                document_logger(__name__, document_id).warning(
+                    "cover image could not be rendered: %s", exc
+                )
                 cover_path.unlink(missing_ok=True)
         accessible_html = build_accessible_html(
             document_id,

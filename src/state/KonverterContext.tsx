@@ -326,9 +326,20 @@ export function KonverterProvider({ children }: PropsWithChildren) {
       void queryClient.removeQueries({ queryKey: ["review-items", id] });
       void queryClient.removeQueries({ queryKey: ["metadata", id] });
       void queryClient.removeQueries({ queryKey: ["publication", id] });
-      void documentService.removeDocument(id).catch(() => undefined);
+      void documentService.removeDocument(id).catch(() => {
+        // The document was already removed from local state above for a
+        // responsive UI, but the backend delete itself failed — without
+        // this, the document silently reappears (or doesn't) only the
+        // next time something happens to call refreshDocuments(), with no
+        // indication anything went wrong in between. Re-sync from the
+        // server's own list (which still has it, since the delete
+        // failed) rather than trying to hand-reconstruct exactly which
+        // local state fields this removal touched.
+        showToast("This document could not be removed. Please try again.");
+        void refreshDocuments();
+      });
     },
-    [queryClient],
+    [queryClient, refreshDocuments, showToast],
   );
 
   const selectDocument = useCallback((id: string) => {
@@ -696,10 +707,22 @@ export function KonverterProvider({ children }: PropsWithChildren) {
   }, [approvedAt, metadataResolved, unlock]);
 
   const resetWorkflow = useCallback(() => {
-    documents.forEach(
-      (document) =>
-        void documentService.removeDocument(document.id).catch(() => undefined),
-    );
+    Promise.allSettled(
+      documents.map((document) => documentService.removeDocument(document.id)),
+    ).then((results) => {
+      // Local state is cleared unconditionally below regardless of outcome
+      // — that's the intended "start over" behaviour — but a backend
+      // delete that failed leaves an orphaned document the server still
+      // has, invisible in this now-empty workspace until a future
+      // refreshDocuments() unexpectedly brings it back. Surfacing that now
+      // (rather than silently swallowing it, as every removeDocument call
+      // here used to) at least tells the user something needs attention.
+      if (results.some((result) => result.status === "rejected")) {
+        showToast(
+          "Some documents could not be removed from the server and may still appear later.",
+        );
+      }
+    });
     void queryClient.invalidateQueries({ queryKey: ["review-items"] });
     setDocuments([]);
     setActiveDocumentId(null);
@@ -709,7 +732,7 @@ export function KonverterProvider({ children }: PropsWithChildren) {
     setMetadataState(emptyMetadata);
     setUnlocked(initialUnlocked);
     setDoneStages(new Set());
-  }, [documents, queryClient]);
+  }, [documents, queryClient, showToast]);
 
   // Local state only — unlike resetWorkflow, does not delete documents from
   // the backend. Used when the session ends, so the next login starts clean

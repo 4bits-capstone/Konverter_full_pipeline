@@ -14,7 +14,7 @@ export class ApiError extends Error {
 
 export interface ApiRequestInit extends RequestInit {
   timeoutMs?: number;
-  responseType?: 'json' | 'text';
+  responseType?: 'json' | 'text' | 'blob';
 }
 
 export async function apiRequest<T>(
@@ -95,6 +95,7 @@ export async function apiRequest<T>(
     }
 
     if (response.status === 204) return undefined as T;
+    if (responseType === 'blob') return (await response.blob()) as T;
     return (await (responseType === 'text' ? response.text() : response.json())) as T;
   } catch (error) {
     if (error instanceof ApiError) throw error;
