@@ -2010,3 +2010,148 @@ def test_bare_number_nested_under_a_chart_is_not_promoted_to_a_floating_paragrap
     assert bare_number_blocks == []
     contact_blocks = [b for b in blocks if "1300 666 555" in b.get("text", "")]
     assert len(contact_blocks) == 1
+
+
+def _diagram_header_block(text: str, top: float, page: int = 32) -> dict:
+    return {
+        "id": f"#/texts/header-{text}",
+        "label": "section_header_5",
+        "text": text,
+        "page": page,
+        "source_bounds": {
+            "left": 60.0,
+            "top": top,
+            "right": 260.0,
+            "bottom": top + 20.0,
+            "page_width": 595.0,
+            "page_height": 842.0,
+        },
+    }
+
+
+def _diagram_list_item(ref: str, text: str, top: float, page: int = 32) -> dict:
+    return {
+        "self_ref": ref,
+        "text": text,
+        "marker": "·",
+        "prov": [
+            {
+                "page_no": page,
+                "bbox": {
+                    "l": 270.0,
+                    "t": 842.0 - top,
+                    "r": 500.0,
+                    "b": 842.0 - top - 10.0,
+                    "coord_origin": "BOTTOMLEFT",
+                },
+            }
+        ],
+    }
+
+
+def test_a_diagram_list_flattened_across_multiple_tier_headers_is_split_back_apart():
+    """Reproduces a real, serious bug found live in "Recklessness": a
+    VLRC-style diagram -- four arrow-shaped tier labels ("20 years
+    imprisonment", "15 years imprisonment", "10 years imprisonment", "5
+    years imprisonment"), each meant to introduce its own short list of
+    offences -- got read by Docling as four separate headers followed by
+    *one* merged list spanning the whole column. Every offence from every
+    tier ended up rendered under the single last heading, misrepresenting
+    real maximum sentences (a 20-year offence displaying as if it were a
+    5-year one). The real per-item PDF positions (each item starts at or
+    a few points above its own tier header's top edge, confirmed against
+    the live document) are what recovers the true grouping.
+
+    Numbers below are the exact tops measured from the real "Recklessness"
+    Figure 3 (in top-left coordinates), so this test also guards the
+    tolerance chosen for that ~2-3pt header/first-item overlap."""
+    headers = [
+        _diagram_header_block("20 years imprisonment", 139.41),
+        _diagram_header_block("15 years imprisonment", 208.75),
+        _diagram_header_block("10 years imprisonment", 377.94),
+        _diagram_header_block("5 years imprisonment", 607.71),
+    ]
+    child_items = [
+        _diagram_list_item("#/texts/495", "Intentionally causing serious injury in circumstances of gross violence (s 15A)", 137.22),
+        _diagram_list_item("#/texts/496", "Intentionally causing serious injury (s 16)", 166.80),
+        _diagram_list_item("#/texts/497", "Recklessly causing serious injury in circumstances of gross violence (s 15B)", 209.15),
+        _diagram_list_item("#/texts/502", "Female genital mutilation offences (ss 32, 33)", 333.39),
+        _diagram_list_item("#/texts/503", "Intentionally causing injury (s 18)", 381.75),
+        _diagram_list_item("#/texts/511", "Intimidation of a law enforcement officer or a family member of a law enforcement officer (s 31D)", 535.10),
+        _diagram_list_item("#/texts/512", "Recklessly causing injury (s 18)", 605.12),
+        _diagram_list_item("#/texts/519", "Being armed with criminal intent (s 31B)", 740.80),
+    ]
+    document = {"pages": {"32": {"size": {"width": 595.0, "height": 842.0}}}}
+
+    split = KonverterPipeline._split_diagram_list_by_preceding_headers(
+        headers, document, child_items, 32
+    )
+
+    assert split is not None
+    assert [header["text"] for header, _items in split] == [
+        "20 years imprisonment",
+        "15 years imprisonment",
+        "10 years imprisonment",
+        "5 years imprisonment",
+    ]
+    grouped_texts = [[item["text"] for item in items] for _header, items in split]
+    assert grouped_texts[0] == [
+        "Intentionally causing serious injury in circumstances of gross violence (s 15A)",
+        "Intentionally causing serious injury (s 16)",
+    ]
+    assert grouped_texts[1] == [
+        "Recklessly causing serious injury in circumstances of gross violence (s 15B)",
+        "Female genital mutilation offences (ss 32, 33)",
+    ]
+    assert grouped_texts[2] == [
+        "Intentionally causing injury (s 18)",
+        "Intimidation of a law enforcement officer or a family member of a law enforcement officer (s 31D)",
+    ]
+    assert grouped_texts[3] == [
+        "Recklessly causing injury (s 18)",
+        "Being armed with criminal intent (s 31B)",
+    ]
+
+
+def test_a_single_trailing_header_never_triggers_the_diagram_list_split():
+    """An ordinary heading immediately followed by its own single list --
+    the overwhelmingly common shape in real reports -- must never be
+    treated as a flattened diagram. The split only ever fires for a *run*
+    of 2+ consecutive same-label headers, the specific empty-header shape
+    a flattened diagram produces."""
+    headers = [_diagram_header_block("Overview", 100.0)]
+    child_items = [
+        _diagram_list_item("#/texts/1", "First point.", 130.0),
+        _diagram_list_item("#/texts/2", "Second point.", 150.0),
+    ]
+    document = {"pages": {"32": {"size": {"width": 595.0, "height": 842.0}}}}
+
+    split = KonverterPipeline._split_diagram_list_by_preceding_headers(
+        headers, document, child_items, 32
+    )
+
+    assert split is None
+
+
+def test_diagram_list_split_never_fires_when_a_tier_would_be_left_empty():
+    """If the real per-item positions don't cleanly map one-to-one onto
+    every trailing header -- e.g. all items actually belong to only the
+    first of three headers -- committing to the split would silently drop
+    the other two tiers' worth of content out of the document entirely.
+    Must bail out to the original single merged list instead."""
+    headers = [
+        _diagram_header_block("Tier A", 100.0),
+        _diagram_header_block("Tier B", 300.0),
+        _diagram_header_block("Tier C", 500.0),
+    ]
+    child_items = [
+        _diagram_list_item("#/texts/1", "Only belongs under Tier A.", 105.0),
+        _diagram_list_item("#/texts/2", "Also only under Tier A.", 120.0),
+    ]
+    document = {"pages": {"32": {"size": {"width": 595.0, "height": 842.0}}}}
+
+    split = KonverterPipeline._split_diagram_list_by_preceding_headers(
+        headers, document, child_items, 32
+    )
+
+    assert split is None

@@ -1605,52 +1605,39 @@ class KonverterPipeline:
                 consumed.update(child for child in children if child)
                 if not child_items:
                     return
-                list_entries = []
-                for child in child_items:
-                    value = str(child.get("text", "")).strip()
-                    marker = str(child.get("marker", "")).strip()
-                    list_entries.append(
-                        {
-                            "text": value,
-                            "marker": marker,
-                            "enumerated": bool(child.get("enumerated")),
-                            "level": self._list_item_level(child),
-                        }
-                    )
-                confidences = [
-                    confidence_by_ref.get(str(child.get("self_ref", "")))
-                    for child in child_items
-                ]
-                valid_confidences = [
-                    value for value in confidences if value is not None
-                ]
+                page = _first_page(child_items[0])
+                split = self._split_diagram_list_by_preceding_headers(
+                    blocks, document, child_items, page
+                )
+                if split is not None:
+                    del blocks[-len(split):]
+                    for tier, (header_block, group_items) in enumerate(split):
+                        blocks.append(header_block)
+                        tier_block = self._build_list_block(
+                            document,
+                            f"{reference}::tier{tier}",
+                            group_items,
+                            confidence_by_ref,
+                        )
+                        # The final position-normalising sort below ranks
+                        # every block by its *raw* Docling document-tree
+                        # order, not by page geometry -- and Docling put
+                        # all N headers before the single merged list as
+                        # one contiguous unit, so every split-off piece
+                        # would still rank after every header no matter
+                        # what real ref its own id resolves to, undoing
+                        # this interleave right back into the original
+                        # bug shape. Anchoring each split list's rank to
+                        # its own paired header's real rank keeps the two
+                        # tied, so the stable append-order tiebreaker
+                        # (this loop's own order) decides between them.
+                        tier_block["_sort_rank_ref"] = header_block.get("id")
+                        blocks.append(tier_block)
+                    return
                 blocks.append(
-                    {
-                        "id": reference,
-                        "label": "list",
-                        "text": "\n".join(
-                            (
-                                f"{entry['marker']} {entry['text']}".strip()
-                                if entry["marker"]
-                                else f"• {entry['text']}"
-                            )
-                            for entry in list_entries
-                            if entry["text"]
-                        ),
-                        "list_items": [
-                            entry["text"] for entry in list_entries if entry["text"]
-                        ],
-                        "list_entries": [
-                            entry for entry in list_entries if entry["text"]
-                        ],
-                        "page": _first_page(child_items[0]),
-                        "confidence": (
-                            min(valid_confidences) if valid_confidences else None
-                        ),
-                        "source_bounds": self._combined_source_bounds(
-                            document, child_items
-                        ),
-                    }
+                    self._build_list_block(
+                        document, reference, child_items, confidence_by_ref
+                    )
                 )
                 return
 
@@ -1764,10 +1751,14 @@ class KonverterPipeline:
         visible_blocks.sort(
             key=lambda block: (
                 int(block.get("page", 1)),
-                source_rank(str(block.get("id", ""))),
+                source_rank(
+                    str(block.get("_sort_rank_ref") or block.get("id", ""))
+                ),
                 original_order[id(block)],
             )
         )
+        for block in visible_blocks:
+            block.pop("_sort_rank_ref", None)
         ordered_blocks = [
             {**block, "order": index} for index, block in enumerate(visible_blocks)
         ]
@@ -1788,6 +1779,162 @@ class KonverterPipeline:
         for index, block in enumerate(ordered_blocks):
             block["order"] = index
         return ordered_blocks, resolver.warnings
+
+    @staticmethod
+    def _build_list_block(
+        document: dict[str, Any],
+        reference: str,
+        child_items: list[dict[str, Any]],
+        confidence_by_ref: dict[str, float | None],
+    ) -> dict[str, Any]:
+        list_entries = []
+        for child in child_items:
+            value = str(child.get("text", "")).strip()
+            marker = str(child.get("marker", "")).strip()
+            list_entries.append(
+                {
+                    "text": value,
+                    "marker": marker,
+                    "enumerated": bool(child.get("enumerated")),
+                    "level": KonverterPipeline._list_item_level(child),
+                }
+            )
+        confidences = [
+            confidence_by_ref.get(str(child.get("self_ref", "")))
+            for child in child_items
+        ]
+        valid_confidences = [value for value in confidences if value is not None]
+        return {
+            "id": reference,
+            "label": "list",
+            "text": "\n".join(
+                (
+                    f"{entry['marker']} {entry['text']}".strip()
+                    if entry["marker"]
+                    else f"• {entry['text']}"
+                )
+                for entry in list_entries
+                if entry["text"]
+            ),
+            "list_items": [
+                entry["text"] for entry in list_entries if entry["text"]
+            ],
+            "list_entries": [entry for entry in list_entries if entry["text"]],
+            "page": _first_page(child_items[0]),
+            "confidence": (min(valid_confidences) if valid_confidences else None),
+            "source_bounds": KonverterPipeline._combined_source_bounds(
+                document, child_items
+            ),
+        }
+
+    _DIAGRAM_LIST_HEADER_LABELS = {
+        "section_header_3",
+        "section_header_4",
+        "section_header_5",
+    }
+    _DIAGRAM_LIST_HEADER_TOLERANCE_POINTS = 5.0
+
+    @staticmethod
+    def _split_diagram_list_by_preceding_headers(
+        blocks: list[dict[str, Any]],
+        document: dict[str, Any],
+        child_items: list[dict[str, Any]],
+        page: int,
+    ) -> list[tuple[dict[str, Any], list[dict[str, Any]]]] | None:
+        """A VLRC-style diagram -- a short run of arrow-shaped tier labels
+        ("20 years imprisonment", "15 years imprisonment"...), each meant
+        to introduce its own short bullet list -- gets read by Docling as
+        N separate heading items followed by *one* merged list group
+        spanning the whole column, losing which bullet belongs under
+        which tier entirely. Verified live against a real report
+        ("Recklessness", Figure 3): every citation from every tier ended
+        up rendered under the single last heading, misrepresenting actual
+        maximum sentences (a 20-year offence displayed as if it carried a
+        5-year one).
+
+        Each merged item still carries its own real position from the
+        source PDF -- it just never got compared against the headers'
+        positions, only appended after them in document-tree order. Every
+        one of these items started, in the original PDF, at or a few
+        points above its own tier header's top edge, not the next block
+        in document order -- the few points of overlap is normal font
+        ascent/leading noise between a bold heading line and a body-text
+        bullet on the same visual row, confirmed against this exact
+        figure before picking the tolerance below.
+
+        Deliberately narrow: only fires when the immediately preceding
+        blocks are a run of 2+ same-label headers on this exact page with
+        nothing else between them and this list (the specific
+        empty-header shape a flattened diagram produces -- an ordinary
+        heading followed by its own paragraph never matches this), and
+        only commits to the split if every resulting group gets at least
+        one item, so a coincidental run of section headers can never
+        silently drop content that genuinely belongs in one list."""
+        trailing_headers: list[dict[str, Any]] = []
+        run_label: str | None = None
+        for candidate in reversed(blocks):
+            label = candidate.get("label")
+            if (
+                label in KonverterPipeline._DIAGRAM_LIST_HEADER_LABELS
+                and candidate.get("page") == page
+                and (run_label is None or label == run_label)
+            ):
+                trailing_headers.append(candidate)
+                run_label = label
+                continue
+            break
+        trailing_headers.reverse()
+        if len(trailing_headers) < 2:
+            return None
+
+        page_meta = document.get("pages", {}).get(
+            str(page), document.get("pages", {}).get(page, {})
+        )
+        page_height = float(page_meta.get("size", {}).get("height", 0))
+        if page_height <= 0:
+            return None
+
+        header_tops: list[tuple[dict[str, Any], float]] = []
+        for header in trailing_headers:
+            bounds = header.get("source_bounds")
+            if not isinstance(bounds, dict) or not isinstance(
+                bounds.get("top"), (int, float)
+            ):
+                return None
+            header_tops.append((header, float(bounds["top"])))
+        header_tops.sort(key=lambda pair: pair[1])
+
+        groups: list[list[dict[str, Any]]] = [[] for _ in header_tops]
+        for item in child_items:
+            provenance = next(
+                (
+                    entry
+                    for entry in item.get("prov") or []
+                    if int(entry.get("page_no", page)) == page
+                ),
+                None,
+            )
+            raw_box = provenance.get("bbox") if provenance else None
+            if not raw_box:
+                return None
+            item_top = KonverterPipeline._top_left_bbox(raw_box, page_height)["t"]
+            chosen: int | None = None
+            for group_index, (_, header_top) in enumerate(header_tops):
+                if (
+                    header_top
+                    <= item_top + KonverterPipeline._DIAGRAM_LIST_HEADER_TOLERANCE_POINTS
+                ):
+                    chosen = group_index
+                else:
+                    break
+            if chosen is None:
+                return None
+            groups[chosen].append(item)
+
+        if any(not group for group in groups):
+            return None
+
+        return [(header_tops[i][0], groups[i]) for i in range(len(groups))]
 
     @staticmethod
     def _list_item_level(item: dict[str, Any]) -> int:
