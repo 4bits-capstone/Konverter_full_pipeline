@@ -880,6 +880,138 @@ def _block_left(block: dict[str, Any]) -> float | None:
     return float(left) if isinstance(left, (int, float)) else None
 
 
+_ISOLATED_FOOTNOTE_MARKER_RE = re.compile(r"^\d{1,3}$")
+_RECOVERED_FOOTNOTE_SHORT_TOKEN_RATIO = 0.3
+_RECOVERED_FOOTNOTE_MIN_LENGTH = 15
+_ORPHAN_MARKER_MAX_LOOKAHEAD_POINTS = 80.0
+
+
+def _recover_orphaned_footnote_markers(
+    blocks: list[dict[str, Any]], pdf_path: Path | None
+) -> list[dict[str, Any]]:
+    """A bare orphan marker (preview_html.py's own docling-orphan-marker
+    styling exists specifically for this) usually means Docling's own
+    extraction genuinely never captured that footnote's body text at all
+    -- not a post-processing ordering problem the other footnote fixes in
+    this chain can repair, since there's nothing adjacent to reattach.
+    Docling labels this shape inconsistently -- sometimes as plain "text",
+    sometimes as "footnote" in its own right (with no body ever
+    captured) -- so both are candidates; the isolated-marker regex only
+    ever matches a block whose entire text is 1-3 digits, so widening to
+    "footnote" can't touch a real, fully-extracted footnote.
+    Verified directly against a real, live report: independently
+    re-reading the exact same PDF region with pymupdf -- bypassing
+    Docling's own text extraction entirely, the same technique
+    _footnote_text_is_trustworthy already uses to cross-check footnotes
+    Docling *did* extract -- recovers the real citation text cleanly for
+    a marker Docling missed completely.
+
+    This can't be trusted blindly, though. An early version of this fix
+    clipped too narrow a region and produced what looked exactly like a
+    genuinely garbled PDF -- individual single-letter fragments -- for the
+    very next footnote on the same page; re-reading a wider region proved
+    the underlying text was completely clean the whole time, and the
+    "garbling" was an artifact of that too-tight clip, not the PDF. That
+    finding is the reason this still keeps two independent checks rather
+    than trusting a clean-looking result on faith: the recovered text must
+    start with this exact marker number (proving the extraction landed on
+    the right footnote, not a neighbour), and no more than 30% of its own
+    words may be short, fragment-shaped tokens -- cheap insurance against
+    a genuinely bad clip or an actual PDF-level extraction failure this
+    session's testing simply didn't happen to hit. Either check failing
+    leaves the block exactly as before -- a plain, honestly-unlinked
+    orphan marker, never a half-recovered, corrupted citation passed off
+    as real."""
+    if pdf_path is None or not pdf_path.is_file():
+        return blocks
+    candidates = [
+        block
+        for block in blocks
+        if block.get("label") in ("text", "footnote")
+        and _ISOLATED_FOOTNOTE_MARKER_RE.match(str(block.get("text", "")).strip())
+        and isinstance(block.get("source_bounds"), dict)
+    ]
+    if not candidates:
+        return blocks
+
+    try:
+        import pymupdf
+    except Exception:
+        return blocks
+
+    index_by_id = {str(block.get("id")): index for index, block in enumerate(blocks)}
+    try:
+        with pymupdf.open(pdf_path) as pdf:
+            for block in candidates:
+                marker = str(block.get("text", "")).strip()
+                bounds = block["source_bounds"]
+                page_no = block.get("page")
+                left, top = bounds.get("left"), bounds.get("top")
+                page_width = bounds.get("page_width")
+                if not (
+                    isinstance(page_no, int)
+                    and isinstance(left, (int, float))
+                    and isinstance(top, (int, float))
+                    and isinstance(page_width, (int, float))
+                    and 1 <= page_no <= len(pdf)
+                ):
+                    continue
+
+                lower_bound = top + _ORPHAN_MARKER_MAX_LOOKAHEAD_POINTS
+                own_index = index_by_id.get(str(block.get("id")))
+                if own_index is not None:
+                    # A page footer/header sitting right after this marker
+                    # in block order isn't necessarily below the footnote's
+                    # own wrapped continuation -- verified directly: a real
+                    # footnote's last line printed *after* the page-number
+                    # furniture that happened to be ordered just ahead of it
+                    # in this exact case, so stopping at the first following
+                    # block regardless of what it is truncated a real
+                    # citation mid-sentence. Skipping past consecutive
+                    # furniture to find the next real content block (or the
+                    # lookahead cap, if none) is what the boundary should
+                    # actually be keyed to.
+                    for candidate_index in range(own_index + 1, len(blocks)):
+                        next_block = blocks[candidate_index]
+                        if next_block.get("label") in ("header", "footer"):
+                            continue
+                        next_bounds = next_block.get("source_bounds")
+                        if (
+                            next_block.get("page") == page_no
+                            and isinstance(next_bounds, dict)
+                            and isinstance(next_bounds.get("top"), (int, float))
+                            and next_bounds["top"] > top
+                        ):
+                            lower_bound = min(lower_bound, next_bounds["top"] - 1)
+                        break
+
+                clip = pymupdf.Rect(
+                    max(0.0, left - 15.0), top - 2.0, page_width, lower_bound
+                )
+                try:
+                    recovered = pdf[page_no - 1].get_text("text", clip=clip)
+                except Exception:
+                    continue
+
+                match = re.match(rf"^\s*{marker}\s+(.+)$", recovered, re.DOTALL)
+                if not match:
+                    continue
+                recovered_body = re.sub(r"\s+", " ", match.group(1)).strip()
+                if len(recovered_body) < _RECOVERED_FOOTNOTE_MIN_LENGTH:
+                    continue
+
+                words = [w for w in recovered_body.split(" ") if w]
+                short_words = [w for w in words if len(re.sub(r"[^A-Za-z]", "", w)) in (1, 2)]
+                if words and len(short_words) / len(words) > _RECOVERED_FOOTNOTE_SHORT_TOKEN_RATIO:
+                    continue
+
+                block["text"] = f"{marker} {recovered_body}"
+                block["label"] = "footnote"
+    except Exception:
+        return blocks
+    return blocks
+
+
 def _flag_orphaned_captions(blocks: list[dict[str, Any]]) -> list[dict[str, Any]]:
     """A caption's own picture can go missing even after
     _synthesize_missing_pictures's own recovery pass -- that fix only
@@ -1265,6 +1397,7 @@ class KonverterPipeline:
         blocks = _merge_indented_footnote_continuations(blocks)
         blocks = _repair_split_footnote_markers(blocks)
         blocks = _reorder_inverted_adjacent_footnotes(blocks)
+        blocks = _recover_orphaned_footnote_markers(blocks, pdf_path)
         blocks = _relabel_footnote_lists(blocks, callout_regions)
         blocks = group_visual_callouts(blocks, callout_regions)
         blocks = group_quote_blocks(blocks, quote_regions)

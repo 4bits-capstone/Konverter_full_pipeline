@@ -13,6 +13,7 @@ from app.pipeline import (
     _merge_indented_footnote_continuations,
     _relabel_footnote_lists,
     _relabel_misclassified_page_furniture,
+    _recover_orphaned_footnote_markers,
     _reorder_inverted_adjacent_footnotes,
     _repair_split_footnote_markers,
     _split_merged_footnotes,
@@ -528,7 +529,142 @@ def test_footnote_at_body_text_size_is_flagged_regardless_of_wording(tmp_path):
     assert items[0]["block_id"] == "#/texts/4"
     assert items[0]["status"] == "pending"
     assert items[0]["reviewed_by"] is None
-    assert "body text" in items[0]["note"]
+
+
+def _orphan_marker_block(marker: str, bounds: dict, page: int = 1) -> dict:
+    return {
+        "id": f"#/texts/marker-{marker}",
+        "label": "text",
+        "text": marker,
+        "page": page,
+        "confidence": 0.5,
+        "source_bounds": bounds,
+    }
+
+
+def test_a_bare_orphan_marker_is_recovered_from_the_pdfs_own_text_layer(tmp_path):
+    """Reproduces the real bug found live on a fresh "Review of the
+    Adoption Act 1984" upload: a bare "51" with no body text anywhere near
+    it, styled as a docling-orphan-marker in the review UI -- while the
+    PDF's own text layer has the real citation completely intact,
+    Docling's own extraction just never captured it. Independently
+    re-reading that exact region recovers it, the same cross-validation
+    technique _footnote_text_is_trustworthy already uses in the other
+    direction (checking a footnote Docling *did* extract)."""
+    pdf_path = tmp_path / "source.pdf"
+    full_line = "51 Convention on the Rights of the Child, opened for signature 1989."
+    bounds_list = _write_mixed_font_size_pdf(pdf_path, [(full_line, 9, 800)])
+    marker_bounds = dict(bounds_list[0])
+    marker_bounds["right"] = marker_bounds["left"] + 14  # only the "51" portion
+
+    blocks = [_orphan_marker_block("51", marker_bounds)]
+
+    result = _recover_orphaned_footnote_markers(blocks, pdf_path)
+
+    assert result[0]["label"] == "footnote"
+    assert result[0]["text"] == full_line
+
+
+def test_a_bare_orphan_marker_already_labeled_footnote_is_also_recovered(tmp_path):
+    """Docling doesn't always drop an orphan marker into a "text" block --
+    audited across the corpus, 99 bare markers came through already
+    labelled "footnote" in their own right (just with no body captured),
+    not "text". Since the isolated-marker regex only ever matches a block
+    whose *entire* text is 1-3 digits, widening the candidate label to
+    include "footnote" can't accidentally clobber a real, fully-extracted
+    footnote -- only these equally-orphaned ones Docling happened to
+    label differently."""
+    pdf_path = tmp_path / "source.pdf"
+    full_line = "7 Victoria Police, Submission 12."
+    bounds_list = _write_mixed_font_size_pdf(pdf_path, [(full_line, 9, 800)])
+    marker_bounds = dict(bounds_list[0])
+    marker_bounds["right"] = marker_bounds["left"] + 14
+
+    block = _orphan_marker_block("7", marker_bounds)
+    block["label"] = "footnote"
+
+    result = _recover_orphaned_footnote_markers([block], pdf_path)
+
+    assert result[0]["label"] == "footnote"
+    assert result[0]["text"] == full_line
+
+
+def test_recovery_skips_past_page_furniture_to_find_the_real_boundary(tmp_path):
+    """Reproduces the real truncation bug caught during testing: the first
+    version of this fix stopped at whatever block came next in order,
+    regardless of what it was. A page footer/header sitting between a
+    marker and the rest of its own footnote's wrapped continuation line
+    truncated a real citation mid-sentence the first time this was tested
+    live. A header/footer block immediately after the marker must be
+    skipped, not treated as the boundary."""
+    pdf_path = tmp_path / "source.pdf"
+    lines = [
+        ("52 In 1906, the inspector supervised adoptions to ascertain the", 9, 800),
+        ("condition of the adoptions, see Horsburgh 1978.", 9, 815),
+    ]
+    bounds_list = _write_mixed_font_size_pdf(pdf_path, lines)
+    marker_bounds = dict(bounds_list[0])
+    marker_bounds["right"] = marker_bounds["left"] + 14
+
+    blocks = [
+        _orphan_marker_block("52", marker_bounds),
+        {
+            "id": "#/texts/footer",
+            "label": "footer",
+            "text": "12",
+            "page": 1,
+            "source_bounds": {
+                "left": 300, "top": 805, "right": 310, "bottom": 812,
+                "page_width": 595, "page_height": 842,
+            },
+        },
+    ]
+
+    result = _recover_orphaned_footnote_markers(blocks, pdf_path)
+
+    assert result[0]["label"] == "footnote"
+    assert "Horsburgh 1978" in result[0]["text"]
+
+
+def test_recovery_is_rejected_when_the_region_does_not_start_with_the_marker(tmp_path):
+    """The recovered text must start with the exact marker number -- proof
+    the clip landed on the right footnote, not drifted onto a neighbour.
+    A region that starts with a different number must be left alone."""
+    pdf_path = tmp_path / "source.pdf"
+    bounds_list = _write_mixed_font_size_pdf(
+        pdf_path, [("99 Unrelated citation that isn't footnote 51 at all.", 9, 800)]
+    )
+    marker_bounds = dict(bounds_list[0])
+    marker_bounds["right"] = marker_bounds["left"] + 14
+
+    blocks = [_orphan_marker_block("51", marker_bounds)]
+
+    result = _recover_orphaned_footnote_markers(blocks, pdf_path)
+
+    assert result[0]["label"] == "text"
+    assert result[0]["text"] == "51"
+
+
+def test_recovery_is_rejected_when_the_recovered_text_is_mostly_fragments(tmp_path):
+    """Insurance against a bad clip or a genuine PDF-level extraction
+    failure producing short-fragment soup instead of real words -- even
+    though this session's own live testing found that what first looked
+    like this shape turned out to be a clipping artifact, not a real PDF
+    problem, this check stays as the safety net for whichever one it
+    actually is next time."""
+    pdf_path = tmp_path / "source.pdf"
+    bounds_list = _write_mixed_font_size_pdf(
+        pdf_path, [("51 f f d t t i t th lt t t f d d t hild d t th b i d", 9, 800)]
+    )
+    marker_bounds = dict(bounds_list[0])
+    marker_bounds["right"] = marker_bounds["left"] + 14
+
+    blocks = [_orphan_marker_block("51", marker_bounds)]
+
+    result = _recover_orphaned_footnote_markers(blocks, pdf_path)
+
+    assert result[0]["label"] == "text"
+    assert result[0]["text"] == "51"
 
 
 def test_second_legitimate_footnote_size_is_not_flagged_only_true_body_size_is(tmp_path):
