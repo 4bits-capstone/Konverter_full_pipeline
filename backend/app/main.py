@@ -60,7 +60,7 @@ from .wordpress import (
 )
 
 MAX_PDF_BYTES = 200 * 1024 * 1024
-MAX_DOCUMENTS_PER_UPLOAD = 10
+MAX_DOCUMENTS_PER_UPLOAD = 5
 MAX_REVIEW_IMAGE_BYTES = 20 * 1024 * 1024
 
 CurrentUser = Annotated[dict, Depends(get_current_user)]

@@ -16,7 +16,7 @@ import { documentService } from "../services";
 import { useKonverter } from "../state/KonverterContext";
 import type { DocumentProcessingJob } from "../types/konverter";
 
-const MAX_DOCUMENTS = 10;
+const MAX_DOCUMENTS = 5;
 
 function formatRemainingTime(totalSeconds: number): string {
   const seconds = Math.max(0, Math.round(totalSeconds));
