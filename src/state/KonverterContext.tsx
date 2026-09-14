@@ -95,6 +95,7 @@ interface KonverterContextValue {
     label: string,
   ) => Promise<void>;
   saveReviewItem: (id: string, changes: ReviewUpdate) => Promise<ReviewItem>;
+  uploadReviewItemImage: (id: string, file: File) => Promise<ReviewItem>;
   bulkUpdateReviewItems: (
     ids: string[],
     changes: ReviewUpdate,
@@ -580,6 +581,20 @@ export function KonverterProvider({ children }: PropsWithChildren) {
     [activeDocumentId, cacheReviewItem, setApprovedAt],
   );
 
+  const uploadReviewItemImage = useCallback(
+    async (id: string, file: File) => {
+      const updated = await reviewService.uploadImage(
+        id,
+        file,
+        activeDocumentId ?? undefined,
+      );
+      setApprovedAt(null);
+      cacheReviewItem(updated);
+      return updated;
+    },
+    [activeDocumentId, cacheReviewItem, setApprovedAt],
+  );
+
   const bulkUpdateReviewItems = useCallback(
     async (ids: string[], changes: ReviewUpdate) => {
       const updated = await reviewService.bulkUpdate(
@@ -782,6 +797,7 @@ export function KonverterProvider({ children }: PropsWithChildren) {
       updateReviewTable,
       updateReviewLabel,
       saveReviewItem,
+      uploadReviewItemImage,
       bulkUpdateReviewItems,
       resolveAllReviews,
       pendingCount,
@@ -827,6 +843,7 @@ export function KonverterProvider({ children }: PropsWithChildren) {
       updateReviewTable,
       updateReviewLabel,
       saveReviewItem,
+      uploadReviewItemImage,
       bulkUpdateReviewItems,
       resolveAllReviews,
       pendingCount,

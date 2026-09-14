@@ -4,8 +4,8 @@ import { useEffect } from 'react'
 import { MemoryRouter } from 'react-router-dom'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { KonverterProvider, useKonverter } from '../state/KonverterContext'
-import { testDocument, testReviewItems } from '../test/fixtures'
-import { resetTestServices, reviewService } from '../test/serviceMocks'
+import { testDocument, testOrphanedCaptionReviewItem, testPictureReviewItem, testReviewItems } from '../test/fixtures'
+import { addTestReviewItem, resetTestServices, reviewService } from '../test/serviceMocks'
 import type { ReviewItem } from '../types/konverter'
 import { ReviewPage } from './ReviewPage'
 
@@ -441,5 +441,49 @@ describe('ReviewPage', () => {
     expect(screen.getByLabelText('Table')).not.toBeChecked()
     expect(screen.getByText(/Flag 1 of 2/)).toBeInTheDocument()
     expect(screen.queryByRole('button', { name: /Definitions table needs confirmation/ })).not.toBeInTheDocument()
+  })
+
+  it('lets a reviewer upload a replacement image for a caption with no matching figure', async () => {
+    addTestReviewItem(testOrphanedCaptionReviewItem)
+    renderReview()
+    await screen.findAllByText('Caption structure needs confirmation')
+    fireEvent.click(screen.getByRole('button', { name: /Caption structure needs confirmation/ }))
+
+    // The upload control shows immediately on selecting the item — a
+    // reviewer shouldn't need to enter edit mode just to attach a file.
+    expect(screen.getByText('No matching figure was found on this page')).toBeInTheDocument()
+    const file = new File(['image-bytes'], 'figure2.png', { type: 'image/png' })
+    fireEvent.change(screen.getByLabelText('Upload image'), { target: { files: [file] } })
+
+    await waitFor(() =>
+      expect(screen.getByTestId('toast-probe')).toHaveTextContent('Image uploaded'),
+    )
+  })
+
+  it('shows confirm-against-original guidance for a genuine low-confidence picture, not the upload control', async () => {
+    addTestReviewItem(testPictureReviewItem)
+    renderReview()
+    await screen.findAllByText('Picture structure needs confirmation')
+    fireEvent.click(screen.getByRole('button', { name: /Picture structure needs confirmation/ }))
+
+    expect(screen.getByText('Confirm this figure against the original page')).toBeInTheDocument()
+    expect(screen.queryByLabelText('Upload image')).not.toBeInTheDocument()
+  })
+
+  it('shows an error toast when an image upload fails', async () => {
+    vi.spyOn(reviewService, 'uploadImage').mockRejectedValueOnce(new Error('network error'))
+    addTestReviewItem(testOrphanedCaptionReviewItem)
+    renderReview()
+    await screen.findAllByText('Caption structure needs confirmation')
+    fireEvent.click(screen.getByRole('button', { name: /Caption structure needs confirmation/ }))
+
+    const file = new File(['image-bytes'], 'figure2.png', { type: 'image/png' })
+    fireEvent.change(screen.getByLabelText('Upload image'), { target: { files: [file] } })
+
+    await waitFor(() =>
+      expect(screen.getByTestId('toast-probe')).toHaveTextContent(
+        'This image could not be uploaded. Please try again.',
+      ),
+    )
   })
 })

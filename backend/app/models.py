@@ -60,7 +60,7 @@ class ProcessingSummary(ApiModel):
 
 ReviewStatus = Literal["pending", "accepted", "edited", "removed"]
 ConfidenceBand = Literal["high", "med", "low"]
-ReviewKind = Literal["kv", "text", "table"]
+ReviewKind = Literal["kv", "text", "table", "image"]
 
 ReviewType = Literal[
     "box_section",

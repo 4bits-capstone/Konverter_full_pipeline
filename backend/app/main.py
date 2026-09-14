@@ -61,6 +61,7 @@ from .wordpress import (
 
 MAX_PDF_BYTES = 200 * 1024 * 1024
 MAX_DOCUMENTS_PER_UPLOAD = 10
+MAX_REVIEW_IMAGE_BYTES = 20 * 1024 * 1024
 
 CurrentUser = Annotated[dict, Depends(get_current_user)]
 AdminUser = Annotated[dict, Depends(require_admin)]
@@ -559,6 +560,48 @@ async def update_review_item(
             "changes": _safe_review_changes(changes),
             "before": before,
             "after": after,
+        },
+    )
+    return ReviewItem(**item)
+
+
+@app.post(
+    "/api/documents/{document_id}/review-items/{item_id}/image",
+    response_model=ReviewItem,
+)
+async def upload_review_item_image(
+    document_id: str,
+    item_id: str,
+    user: CurrentUser,
+    file: Annotated[UploadFile, File(description="Replacement image for a figure")],
+) -> ReviewItem:
+    record = _require_complete(document_id)
+    _require_owner(record, user)
+    # Chunked and size-checked as it arrives, the same way upload_documents
+    # handles a PDF above -- an unbounded `await file.read()` would buffer
+    # an oversized request body in full before the size check ever runs.
+    chunks: list[bytes] = []
+    size = 0
+    while chunk := await file.read(1024 * 1024):
+        size += len(chunk)
+        if size > MAX_REVIEW_IMAGE_BYTES:
+            raise HTTPException(status_code=413, detail="Image is too large")
+        chunks.append(chunk)
+    image_bytes = b"".join(chunks)
+    try:
+        item = workflow.upload_review_item_image(document_id, item_id, image_bytes)
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail="Review item not found") from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    await audit.record_audit(
+        "upload_review_item_image",
+        document_id=document_id,
+        actor_id=user.get("id"),
+        actor_email=user.get("email"),
+        detail={
+            "file_name": record.get("file_name"),
+            "item": _review_item_label(item),
         },
     )
     return ReviewItem(**item)

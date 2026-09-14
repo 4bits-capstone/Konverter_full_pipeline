@@ -328,6 +328,55 @@ def _synthesize_missing_pictures(document: dict[str, Any], pdf_path: Path | None
         return
 
 
+_TINY_PICTURE_MAX_POINTS = 30.0
+_DECORATIVE_PICTURE_REPEAT_THRESHOLD = 3
+
+
+def _exclude_repeating_decorative_pictures(document: dict[str, Any]) -> None:
+    """Docling's own layout model doesn't only find real embedded images --
+    it can classify a small vector-drawn graphic (a corner mark, a page-
+    number background shape, a repeating border element from the report's
+    own page template) as a "picture" purely from visual layout analysis,
+    with no real embedded image object behind it at all. Verified directly
+    against a real 404-page VLRC report: 1,502 "picture" blocks, every one
+    with empty caption text, and pymupdf's own embedded-image inventory
+    (the same one _synthesize_missing_pictures reads) finds only 2 real
+    images in the same page range -- confirming these aren't figures
+    Docling detected, they're the same handful of tiny template graphics
+    printed at the same position on nearly every page, each one becoming
+    its own low-confidence "picture" review item.
+
+    The discriminator is the same one already used for running headers/
+    footers and decorative embedded-image repetition elsewhere in this
+    file: a genuine figure is essentially never small (VLRC figures/charts
+    span well over 100pt in at least one dimension) and never repeats at
+    the *same* position across multiple pages -- a real photo or chart is
+    specific to the one page discussing it. A tiny picture recurring at
+    the same position on 3 or more distinct pages is structurally a page
+    template element, not content, regardless of what Docling called it."""
+    position_groups: dict[tuple[int, int, int, int], list[tuple[dict[str, Any], int]]] = {}
+    for picture in document.get("pictures", []):
+        prov = (picture.get("prov") or [{}])[0]
+        bbox = prov.get("bbox") or {}
+        page_no = prov.get("page_no")
+        left, right = bbox.get("l"), bbox.get("r")
+        top, bottom = bbox.get("t"), bbox.get("b")
+        if None in (left, right, top, bottom, page_no):
+            continue
+        width, height = abs(right - left), abs(top - bottom)
+        if width > _TINY_PICTURE_MAX_POINTS or height > _TINY_PICTURE_MAX_POINTS:
+            continue
+        key = (round(left), round(top), round(right), round(bottom))
+        position_groups.setdefault(key, []).append((picture, page_no))
+
+    for entries in position_groups.values():
+        pages = {page_no for _, page_no in entries}
+        if len(pages) < _DECORATIVE_PICTURE_REPEAT_THRESHOLD:
+            continue
+        for picture, _ in entries:
+            picture.setdefault("meta", {})["konverter_exclude_from_output"] = True
+
+
 def _normalise_furniture_text(value: Any) -> str:
     return re.sub(r"\s+", " ", str(value or "")).strip().casefold()
 
@@ -831,6 +880,66 @@ def _block_left(block: dict[str, Any]) -> float | None:
     return float(left) if isinstance(left, (int, float)) else None
 
 
+def _flag_orphaned_captions(blocks: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """A caption's own picture can go missing even after
+    _synthesize_missing_pictures's own recovery pass -- that fix only
+    reaches images Docling's layout model failed to detect but pymupdf's
+    raw embedded-image inventory still has a record of. A figure that
+    Docling never laid eyes on *and* isn't a real embedded image object at
+    all (a vector chart flattened unusually, a scan artifact, a page
+    genuinely missing the image the printed report describes) has no
+    bounding box anywhere for any repair pass to work from -- the caption
+    text extracts on its own, correctly, with nothing beside it.
+
+    There's no bbox-based signal left to detect this by, so this is scoped
+    to the one signal that remains: a block labelled "caption" with no
+    "picture" block anywhere on the same page. A real caption is always
+    printed on the same page as its own figure -- Docling never splits
+    the two across a page break -- so requiring the picture to be missing
+    from the *entire* page, not just nearby, is what keeps this narrow:
+    a genuinely paired caption sitting far down a busy page from its own
+    picture block still finds it; only a page with truly zero picture
+    blocks at all trips this.
+
+    This has to look inside box_section/callout children too, not just
+    the top-level list -- group_visual_callouts (run earlier in this same
+    chain) collapses a detected panel's contents into one block's own
+    "box_section_blocks", which pulls any picture caught inside that
+    panel out of the top-level list entirely. A figure legitimately
+    grouped into a callout, with its caption sitting just outside the
+    panel's own region, would otherwise look page-wide missing here and
+    get wrongly flagged as needing a manual upload it doesn't need.
+
+    Docling labels a table's own caption "caption" too, identically to a
+    figure's -- verified live on a fresh document: "Table 1: Time taken
+    (weeks) for finalisation of criminal cases..." sitting right next to
+    its own correctly-extracted table block, flagged as if its figure
+    were missing purely because there's no *picture* on that page (there
+    never was one -- it's a table). A caption whose own printed text
+    starts with "Table" is never asking for a figure, regardless of
+    whether a table block happens to still be on the same page."""
+    _TABLE_CAPTION_RE = re.compile(r"^\s*table\s+\d", re.IGNORECASE)
+
+    def all_blocks(values: list[dict[str, Any]]):
+        for value in values:
+            yield value
+            yield from all_blocks(
+                value.get("box_section_blocks") or value.get("callout_blocks") or []
+            )
+
+    picture_pages = {
+        block.get("page") for block in all_blocks(blocks) if block.get("label") == "picture"
+    }
+    for block in blocks:
+        if (
+            block.get("label") == "caption"
+            and block.get("page") not in picture_pages
+            and not _TABLE_CAPTION_RE.match(str(block.get("text", "")))
+        ):
+            block["orphaned_caption"] = True
+    return blocks
+
+
 def _plain_text_from_table(table: dict[str, Any] | None) -> str:
     if not table:
         return ""
@@ -1138,6 +1247,7 @@ class KonverterPipeline:
         warnings = annotate_pdf_artifacts(raw_document, pdf_path)
         _relabel_misclassified_page_furniture(raw_document)
         _synthesize_missing_pictures(raw_document, pdf_path)
+        _exclude_repeating_decorative_pictures(raw_document)
         callout_regions, callout_warnings = detect_callout_regions(pdf_path)
         warnings.extend(callout_warnings)
         quote_regions, quote_warnings = detect_quote_regions(pdf_path)
@@ -1158,6 +1268,7 @@ class KonverterPipeline:
         blocks = _relabel_footnote_lists(blocks, callout_regions)
         blocks = group_visual_callouts(blocks, callout_regions)
         blocks = group_quote_blocks(blocks, quote_regions)
+        blocks = _flag_orphaned_captions(blocks)
 
         return raw_document, blocks, doc_confidence, warnings
 
@@ -2019,9 +2130,13 @@ class KonverterPipeline:
             suspected_misclassified_footnote = (
                 suspected_misclassified_recommendation or suspected_font_size_outlier
             )
+            is_orphaned_caption = label == "caption" and bool(
+                block.get("orphaned_caption")
+            )
             if (
                 confidence >= self.settings.high_confidence_threshold
                 and not suspected_misclassified_footnote
+                and not is_orphaned_caption
             ):
                 continue
             band = (
@@ -2032,7 +2147,13 @@ class KonverterPipeline:
                 else "low"
             )
             table_data = block.get("table_data")
-            kind = "table" if label in {"table", "document_index"} else "text"
+            kind = (
+                "image"
+                if is_orphaned_caption
+                else "table"
+                if label in {"table", "document_index"}
+                else "text"
+            )
             display = LABEL_DISPLAY.get(label, label.replace("_", " ").title())
             page = int(block.get("page", 1))
             text = str(block.get("text", ""))
@@ -2179,6 +2300,11 @@ class KonverterPipeline:
                         "document's usual (smaller) footnote size — check whether it's "
                         "really a footnote or should have a different structure label."
                         if suspected_font_size_outlier
+                        else "This caption has no matching figure anywhere on its page — "
+                        "the source PDF may have an image here that extraction couldn't "
+                        "find at all. Check the original page and upload the missing "
+                        "figure if there is one."
+                        if is_orphaned_caption
                         else "Confirm the structure label and extracted content against the original PDF. "
                         "Changing the structure also changes the correction editor and generated output."
                     ),

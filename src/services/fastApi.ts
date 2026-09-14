@@ -96,6 +96,14 @@ export const fastApiReviewService: ReviewService = {
   resolveAll(documentId) {
     return apiRequest(`/documents/${requireDocumentId(documentId)}/review-items/resolve-all`, { method: 'POST' })
   },
+  uploadImage(id: string, file: File, documentId?: string) {
+    const body = new FormData()
+    body.append('file', file)
+    return apiRequest(`/documents/${requireDocumentId(documentId)}/review-items/${encodeURIComponent(id)}/image`, {
+      method: 'POST',
+      body,
+    })
+  },
 }
 
 export const fastApiMetadataService: MetadataService = {

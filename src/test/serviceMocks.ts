@@ -9,6 +9,7 @@ import type {
 import type {
   DocumentMetadata,
   DocumentSummary,
+  ReviewItem,
   ReviewStatus,
   ReviewTableData,
   ReviewType,
@@ -32,6 +33,14 @@ export function resetTestServices(): void {
   reviewItems = structuredClone(testReviewItems)
   metadataPayload = structuredClone(testMetadataPayload)
   wordpressPublication = null
+}
+
+// For the one review item shape not in the shared fixture list (an
+// orphaned-caption "upload image" item) -- kept out of testReviewItems
+// itself since several other tests assert exact counts/positions against
+// that list, and this shape only matters to its own test.
+export function addTestReviewItem(item: ReviewItem): void {
+  reviewItems = [...reviewItems, structuredClone(item)]
 }
 
 export const documentService: DocumentService = {
@@ -165,6 +174,14 @@ export const reviewService: ReviewService = {
         : item
     ))
     return structuredClone(reviewItems)
+  },
+  async uploadImage(id: string) {
+    const item = findReviewItem(id)
+    item.type = 'picture'
+    item.label = 'Picture'
+    item.status = 'edited'
+    item.reviewedBy = 'reviewer'
+    return structuredClone(item)
   },
 }
 

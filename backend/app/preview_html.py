@@ -16,7 +16,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any
 
-from .footnote_numbering import FOOTNOTE_LEADING_NUMBER_RE
+from .footnote_numbering import resolve_footnote_number
 
 # A footnote number that Docling split off from its own citation text, and
 # that the pipeline's own repair pass (pipeline.py's
@@ -280,18 +280,25 @@ def _render_footnotes_list(notes: list[dict[str, Any]]) -> str:
     number nobody assigned it sidesteps that; the next matched <li>'s
     explicit value always wins regardless of what the counter did in
     between."""
-    matches = [FOOTNOTE_LEADING_NUMBER_RE.match(str(note.get("text", ""))) for note in notes]
-    numbers = [int(match.group(1)) for match in matches if match]
+    resolved: list[tuple[str, str] | None] = []
+    expected: int | None = None
+    for note in notes:
+        result = resolve_footnote_number(str(note.get("text", "")), expected)
+        resolved.append(result)
+        if result:
+            expected = int(result[0]) + 1
+    numbers = [int(result[0]) for result in resolved if result]
     trustworthy = len(numbers) >= 2 and all(
         later > earlier for earlier, later in zip(numbers, numbers[1:])
     )
     parts = []
-    for note, match in zip(notes, matches):
+    for note, result in zip(notes, resolved):
         safe_id = html.escape(str(note["id"]), quote=True)
-        if trustworthy and match:
+        if trustworthy and result:
+            number, remainder = result
             parts.append(
-                f'<li id="{safe_id}" value="{html.escape(match.group(1), quote=True)}">'
-                f"{html.escape(match.group(2))}</li>"
+                f'<li id="{safe_id}" value="{html.escape(number, quote=True)}">'
+                f"{html.escape(remainder)}</li>"
             )
         elif trustworthy:
             parts.append(
@@ -320,11 +327,14 @@ def _footnote_targets(footnotes: list[dict[str, Any]]) -> dict[str, str]:
     leading number of its own keeps that case working as before."""
     targets: dict[str, str] = {}
     unmatched_ids: list[str] = []
+    expected: int | None = None
     for note in footnotes:
         note_id = str(note.get("id", "")).strip()
-        number_match = FOOTNOTE_LEADING_NUMBER_RE.match(str(note.get("text", "")))
-        if number_match and number_match.group(1) not in targets:
-            targets[number_match.group(1)] = note_id
+        result = resolve_footnote_number(str(note.get("text", "")), expected)
+        if result:
+            expected = int(result[0]) + 1
+        if result and result[0] not in targets:
+            targets[result[0]] = note_id
         else:
             unmatched_ids.append(note_id)
     # A degenerate note with no real citation number (a stray fragment

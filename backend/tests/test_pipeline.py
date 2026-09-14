@@ -7,6 +7,8 @@ import fitz  # PyMuPDF, used only to build test fixture PDFs with real text
 from app.config import Settings
 from app.pipeline import (
     KonverterPipeline,
+    _exclude_repeating_decorative_pictures,
+    _flag_orphaned_captions,
     _is_genuine_form_content,
     _merge_indented_footnote_continuations,
     _relabel_footnote_lists,
@@ -311,6 +313,95 @@ def test_footnote_review_items_are_pre_accepted_but_other_types_stay_pending():
         "footnote": "system",
         "text": None,
     }
+
+
+def test_a_caption_with_no_picture_anywhere_on_its_page_is_flagged_orphaned():
+    blocks = [
+        {"id": "#/texts/1", "label": "caption", "text": "Figure 2: Missing image", "page": 95},
+        {"id": "#/texts/2", "label": "caption", "text": "Figure 3: Present", "page": 96},
+        {"id": "#/pictures/1", "label": "picture", "text": "", "page": 96},
+    ]
+
+    result = _flag_orphaned_captions(blocks)
+
+    assert result[0]["orphaned_caption"] is True
+    assert "orphaned_caption" not in result[1]
+
+
+def test_a_picture_grouped_into_a_box_section_still_counts_for_its_page():
+    """Real bug caught in review: group_visual_callouts (run earlier in
+    _run_docling's own chain) collapses a detected panel's contents into
+    the panel block's own "box_section_blocks", pulling any picture inside
+    that panel out of the top-level list entirely. Scanning only the
+    top-level list for pictures would make a perfectly normal, correctly
+    paired caption look page-wide orphaned just because its own figure
+    happened to get grouped into a callout box."""
+    blocks = [
+        {"id": "#/texts/1", "label": "caption", "text": "Figure 4: Inside a callout", "page": 40},
+        {
+            "id": "box-section:1",
+            "label": "box_section",
+            "text": "",
+            "page": 40,
+            "box_section_blocks": [
+                {"id": "#/pictures/2", "label": "picture", "text": "", "page": 40},
+            ],
+        },
+    ]
+
+    result = _flag_orphaned_captions(blocks)
+
+    assert "orphaned_caption" not in result[0]
+
+
+def test_a_table_caption_is_never_flagged_as_a_missing_figure():
+    """Real false positive caught live on a fresh document ("Committals"):
+    Docling labels a table's own caption "caption" identically to a
+    figure's -- "Table 1: Time taken (weeks) for finalisation of criminal
+    cases..." sitting right next to its own correctly-extracted table was
+    flagged as needing an uploaded replacement image purely because there
+    was no *picture* on that page, when there never should be one -- it's
+    a table."""
+    blocks = [
+        {"id": "#/tables/1", "label": "table", "text": "Vic | NSW | QLD", "page": 58},
+        {"id": "#/texts/1", "label": "caption", "text": "Table 1: Time taken (weeks) for finalisation", "page": 58},
+    ]
+
+    result = _flag_orphaned_captions(blocks)
+
+    assert "orphaned_caption" not in result[1]
+
+
+def test_orphaned_caption_review_item_forces_review_and_accepts_an_uploaded_image():
+    """The real bug this closes: "Figure 2" in a real VLRC report had a
+    caption Docling extracted correctly but no picture anywhere on the
+    page for _synthesize_missing_pictures to recover, since pymupdf's own
+    embedded-image inventory had nothing there either -- a genuine
+    detection gap with no bounding box for any repair pass to work from.
+    A caption-only block like this is typically high-confidence (the text
+    itself extracted cleanly), so without forcing it through review
+    regardless of confidence, it would auto-skip the queue exactly like
+    the appendix-letter and box_section false positives did before their
+    own fixes."""
+    blocks = [
+        {
+            "id": "#/texts/1",
+            "label": "caption",
+            "text": "Figure 2: Excerpt from the form",
+            "page": 95,
+            "confidence": 0.97,
+            "orphaned_caption": True,
+        },
+    ]
+
+    pipeline = KonverterPipeline(_settings())
+    items = pipeline._build_review_items(blocks)
+
+    assert len(items) == 1
+    item = items[0]
+    assert item["kind"] == "image"
+    assert item["status"] == "pending"
+    assert "upload" in item["note"].lower()
 
 
 def test_box_section_review_item_uses_childrens_clean_list_items():
@@ -1410,6 +1501,68 @@ def _write_pdf_with_images(path: Path, decorative_pages: int, unique_page_rect: 
     doc[decorative_pages].insert_image(fitz.Rect(*unique_page_rect), pixmap=unique)
     doc.save(path)
     doc.close()
+
+
+def _picture(self_ref: str, page_no: int, left: float, top: float, right: float, bottom: float) -> dict:
+    return {
+        "self_ref": self_ref,
+        "prov": [{"page_no": page_no, "bbox": {"l": left, "t": top, "r": right, "b": bottom}}],
+    }
+
+
+def test_a_tiny_picture_repeating_at_the_same_position_across_pages_is_excluded():
+    """Real bug found live on a fresh 404-page VLRC report: 1,502 "picture"
+    blocks, every single one with empty caption text, while pymupdf's own
+    embedded-image inventory (the same one _synthesize_missing_pictures
+    reads) found only 2 real images in the same page range -- Docling's
+    layout model was independently classifying a tiny page-template
+    graphic (a corner mark, ~13x13pt) as its own "picture" on nearly every
+    page. A tiny, position-repeating shape like this is a template
+    element, not content, no matter what label Docling gave it."""
+    document = {
+        "pictures": [
+            _picture("#/pictures/0", 1, 312.0, 869.7, 324.7, 882.2),
+            _picture("#/pictures/1", 2, 312.1, 869.8, 324.6, 882.1),
+            _picture("#/pictures/2", 3, 312.0, 869.7, 324.7, 882.3),
+        ]
+    }
+
+    _exclude_repeating_decorative_pictures(document)
+
+    for picture in document["pictures"]:
+        assert picture["meta"]["konverter_exclude_from_output"] is True
+
+
+def test_a_real_figure_appearing_once_is_never_excluded():
+    """The fix above must not touch a genuine, large, one-off figure --
+    only a small shape recurring at the same position across 3+ pages."""
+    document = {
+        "pictures": [
+            _picture("#/pictures/0", 40, 100.0, 400.0, 450.0, 650.0),
+        ]
+    }
+
+    _exclude_repeating_decorative_pictures(document)
+
+    assert "meta" not in document["pictures"][0]
+
+
+def test_a_small_picture_appearing_on_only_two_pages_is_never_excluded():
+    """Requires 3+ distinct pages, same threshold as the running-header/
+    footer and decorative-embedded-image repetition checks elsewhere in
+    this file -- a shape seen on only one or two pages could genuinely be
+    a small, real icon-style figure used twice, not a template element."""
+    document = {
+        "pictures": [
+            _picture("#/pictures/0", 1, 312.0, 869.7, 324.7, 882.2),
+            _picture("#/pictures/1", 2, 312.1, 869.8, 324.6, 882.1),
+        ]
+    }
+
+    _exclude_repeating_decorative_pictures(document)
+
+    for picture in document["pictures"]:
+        assert "meta" not in picture
 
 
 def test_a_genuine_one_off_image_docling_never_detected_is_synthesized_as_a_picture(tmp_path):

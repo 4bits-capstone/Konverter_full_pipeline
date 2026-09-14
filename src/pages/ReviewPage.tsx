@@ -1103,6 +1103,7 @@ export function ReviewPage() {
     pendingCount,
     setReviewStatus,
     saveReviewItem,
+    uploadReviewItemImage,
     bulkUpdateReviewItems,
     unlock,
     showToast,
@@ -1385,6 +1386,20 @@ export function ReviewPage() {
       showToast("Review changes saved");
     } catch {
       showToast("This change could not be saved. Please try again.");
+    } finally {
+      setActingItemId(null);
+    }
+  };
+
+  const uploadImage = async (item: ReviewItem, file: File) => {
+    if (actingItemId === item.id) return;
+    setActingItemId(item.id);
+    try {
+      await uploadReviewItemImage(item.id, file);
+      preserveQueueScroll();
+      showToast("Image uploaded");
+    } catch {
+      showToast("This image could not be uploaded. Please try again.");
     } finally {
       setActingItemId(null);
     }
@@ -2226,13 +2241,40 @@ export function ReviewPage() {
                   </div>
                 </div>
 
-                {selected.type === "picture" && (
+                {selected.kind === "image" && (
                   <div className="manual-picture-upload">
                     <div>
-                      <strong>Picture extraction failed</strong>
+                      <strong>No matching figure was found on this page</strong>
                       <span>
-                        Manual picture replacement isn&apos;t available yet — reject
-                        this item and provide the correct figure separately.
+                        Check the original PDF page. If it has an image this
+                        caption belongs to, upload it here.
+                      </span>
+                    </div>
+                    <label className="btn btn-outline manual-picture-upload-button">
+                      Upload image
+                      <input
+                        type="file"
+                        accept="image/png,image/jpeg,image/webp"
+                        hidden
+                        disabled={actingItemId === selected.id}
+                        onChange={(event) => {
+                          const file = event.target.files?.[0];
+                          event.target.value = "";
+                          if (file) void uploadImage(selected, file);
+                        }}
+                      />
+                    </label>
+                  </div>
+                )}
+
+                {selected.type === "picture" && selected.kind !== "image" && (
+                  <div className="manual-picture-upload">
+                    <div>
+                      <strong>Confirm this figure against the original page</strong>
+                      <span>
+                        Compare the image above with the PDF evidence, then
+                        confirm or relabel it using the structure control
+                        above. If this isn&apos;t really a figure, reject it.
                       </span>
                     </div>
                   </div>

@@ -94,6 +94,20 @@ class LocalDocumentStore:
     def cover_path(self, document_id: str) -> Path:
         return self.document_dir(document_id) / "cover.png"
 
+    def uploaded_image_path(self, document_id: str, item_id: str, extension: str) -> Path:
+        """A reviewer-supplied replacement image for a figure the extraction
+        never found at all (see pipeline.py's orphaned-caption detection) --
+        kept in its own subdirectory rather than alongside the cached
+        extraction artifacts, since this is the one file in a document's
+        directory a human actually authored rather than the pipeline."""
+        if not item_id or any(char in item_id for char in "/\\."):
+            raise ValueError("Invalid review item id")
+        if extension not in {"png", "jpg", "jpeg", "webp"}:
+            raise ValueError("Invalid image extension")
+        directory = self.document_dir(document_id) / "uploads"
+        directory.mkdir(parents=True, exist_ok=True)
+        return directory / f"{item_id}.{extension}"
+
     def artifact_path(self, document_id: str, name: str) -> Path:
         if "/" in name or "\\" in name or name.startswith("."):
             raise ValueError("Invalid artifact name")

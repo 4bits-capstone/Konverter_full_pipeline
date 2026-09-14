@@ -1,9 +1,11 @@
 from __future__ import annotations
 
 import importlib
+import json
 import os
 import time
 from io import BytesIO
+from pathlib import Path
 
 from pypdf import PdfWriter
 
@@ -540,3 +542,175 @@ def test_converting_table_to_heading_flattens_to_one_line(tmp_path):
         corrected = converted.json()["correctedText"]
         assert "\n" not in corrected
         assert "|" not in corrected
+
+
+def _inject_orphaned_caption(tmp_path, document_id: str) -> str:
+    """Simulate the one real gap _synthesize_missing_pictures can't close:
+    a caption with no picture anywhere on its page. No real PDF produces
+    this from a blank test fixture, so the review item is injected
+    directly, the same shape pipeline.py's own orphaned-caption detection
+    would have produced against a real document."""
+    document_dir = Path(os.environ["KONVERTER_DATA_DIR"]) / "documents" / document_id
+    blocks_path = document_dir / "blocks.json"
+    review_path = document_dir / "review_items.json"
+    blocks = json.loads(blocks_path.read_text())
+    items = json.loads(review_path.read_text())
+
+    block_id = "#/texts/orphaned-caption-test"
+    blocks.append(
+        {
+            "id": block_id,
+            "label": "caption",
+            "text": "Figure 2: Excerpt from the form",
+            "page": 1,
+            "confidence": 0.97,
+            "orphaned_caption": True,
+            "order": len(blocks),
+        }
+    )
+    item_id = "review-orphaned-caption-test"
+    items.append(
+        {
+            "id": item_id,
+            "block_id": block_id,
+            "type": "caption",
+            "label": "Caption",
+            "page": 1,
+            "confidence": 0.97,
+            "band": "high",
+            "title": "Caption structure needs confirmation",
+            "kind": "image",
+            "status": "pending",
+            "reviewed_by": None,
+            "extracted_text": "Figure 2: Excerpt from the form",
+            "corrected_text": None,
+            "note": "This caption has no matching figure anywhere on its page.",
+            "table_data": None,
+            "corrected_table": None,
+            "source": {"page": 1, "html": "<div>Figure 2: Excerpt from the form</div>"},
+        }
+    )
+    blocks_path.write_text(json.dumps(blocks))
+    review_path.write_text(json.dumps(items))
+    return item_id
+
+
+def test_uploading_an_image_resolves_an_orphaned_caption_review_item(tmp_path):
+    from PIL import Image
+
+    with load_client(tmp_path) as client:
+        document_id = upload_and_process(client)
+        item_id = _inject_orphaned_caption(tmp_path, document_id)
+
+        png_bytes = BytesIO()
+        Image.new("RGB", (40, 30), color=(200, 50, 50)).save(png_bytes, format="PNG")
+        png_bytes.seek(0)
+
+        response = client.post(
+            f"/api/documents/{document_id}/review-items/{item_id}/image",
+            files={"file": ("figure2.png", png_bytes, "image/png")},
+        )
+
+        assert response.status_code == 200
+        item = response.json()
+        assert item["type"] == "picture"
+        assert item["status"] == "edited"
+        assert item["reviewedBy"] == "reviewer"
+
+        blocks = json.loads(
+            (
+                Path(os.environ["KONVERTER_DATA_DIR"])
+                / "documents"
+                / document_id
+                / "blocks.json"
+            ).read_text()
+        )
+        block = next(b for b in blocks if b["id"] == "#/texts/orphaned-caption-test")
+        assert block["label"] == "picture"
+        assert block["uploaded_image_path"] == "uploads/review-orphaned-caption-test.png"
+        uploaded_file = (
+            Path(os.environ["KONVERTER_DATA_DIR"])
+            / "documents"
+            / document_id
+            / block["uploaded_image_path"]
+        )
+        assert uploaded_file.is_file()
+
+
+def test_uploading_a_transparent_image_composites_onto_white_not_black(tmp_path):
+    """A blind .convert("RGB") on an RGBA image discards the alpha channel
+    without compositing it, leaving whatever RGB values sat underneath a
+    transparent pixel -- frequently black -- baked into the published
+    figure. A fully transparent pixel must end up white (this document's
+    own page background), not black."""
+    from PIL import Image
+
+    with load_client(tmp_path) as client:
+        document_id = upload_and_process(client)
+        item_id = _inject_orphaned_caption(tmp_path, document_id)
+
+        rgba = Image.new("RGBA", (20, 20), (0, 0, 0, 0))
+        png_bytes = BytesIO()
+        rgba.save(png_bytes, format="PNG")
+        png_bytes.seek(0)
+
+        response = client.post(
+            f"/api/documents/{document_id}/review-items/{item_id}/image",
+            files={"file": ("transparent.png", png_bytes, "image/png")},
+        )
+        assert response.status_code == 200
+
+        blocks = json.loads(
+            (
+                Path(os.environ["KONVERTER_DATA_DIR"])
+                / "documents"
+                / document_id
+                / "blocks.json"
+            ).read_text()
+        )
+        block = next(b for b in blocks if b["id"] == "#/texts/orphaned-caption-test")
+        saved = Image.open(
+            Path(os.environ["KONVERTER_DATA_DIR"])
+            / "documents"
+            / document_id
+            / block["uploaded_image_path"]
+        )
+        assert saved.mode == "RGB"
+        assert saved.getpixel((10, 10)) == (255, 255, 255)
+
+
+def test_uploading_a_non_image_file_is_rejected(tmp_path):
+    with load_client(tmp_path) as client:
+        document_id = upload_and_process(client)
+        item_id = _inject_orphaned_caption(tmp_path, document_id)
+
+        response = client.post(
+            f"/api/documents/{document_id}/review-items/{item_id}/image",
+            files={"file": ("not-an-image.txt", BytesIO(b"hello"), "text/plain")},
+        )
+
+        assert response.status_code == 400
+
+
+def test_uploading_an_image_to_an_ordinary_review_item_is_rejected(tmp_path):
+    """Scoped deliberately to only the orphaned-caption case (see
+    pipeline.py's _flag_orphaned_captions docstring) -- every other
+    picture already has a real PDF region behind it, so this must not
+    become a general "replace any figure" endpoint."""
+    from PIL import Image
+
+    with load_client(tmp_path) as client:
+        document_id = upload_and_process(client)
+        review = client.get(f"/api/documents/{document_id}/review-items").json()
+        ordinary_item = next(item for item in review if item["kind"] != "image")
+
+        png_bytes = BytesIO()
+        Image.new("RGB", (10, 10)).save(png_bytes, format="PNG")
+        png_bytes.seek(0)
+
+        response = client.post(
+            f"/api/documents/{document_id}/review-items/{ordinary_item['id']}/image",
+            files={"file": ("figure.png", png_bytes, "image/png")},
+        )
+
+        assert response.status_code == 400

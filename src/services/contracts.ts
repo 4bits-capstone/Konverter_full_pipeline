@@ -35,6 +35,7 @@ export interface ReviewService {
   saveItem(id: string, changes: ReviewUpdate, documentId?: string): Promise<ReviewItem>
   bulkUpdate(ids: string[], changes: ReviewUpdate, documentId?: string): Promise<ReviewItem[]>
   resolveAll(documentId?: string): Promise<ReviewItem[]>
+  uploadImage(id: string, file: File, documentId?: string): Promise<ReviewItem>
 }
 
 export interface MetadataService {

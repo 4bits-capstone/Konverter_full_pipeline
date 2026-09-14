@@ -65,7 +65,7 @@ export interface ReviewItem {
   confidence: number
   band: ConfidenceBand
   title: string
-  kind: 'kv' | 'text' | 'table'
+  kind: 'kv' | 'text' | 'table' | 'image'
   status: ReviewStatus
   /** Who last made the decision behind `status` — the pipeline itself
    * (footnotes start pre-accepted, unseen by anyone) or a reviewer (any

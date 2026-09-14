@@ -783,6 +783,81 @@ class WorkflowService:
             self._discard_generated(document_id)
             return item
 
+    def upload_review_item_image(
+        self, document_id: str, item_id: str, image_bytes: bytes
+    ) -> dict[str, Any]:
+        """Attach a reviewer-supplied image to an orphaned-caption review
+        item -- the one review item kind with no PDF region to fall back
+        on, since the whole point of it existing is that extraction found
+        no figure anywhere on the page to draw evidence from in the first
+        place. Scoped to only that one case (not "replace any figure")
+        deliberately: every other picture already has a real, working PDF
+        region behind it, so allowing this everywhere would just invite
+        replacing content that was never actually missing."""
+        from io import BytesIO
+
+        from PIL import Image, UnidentifiedImageError
+
+        try:
+            with Image.open(BytesIO(image_bytes)) as opened:
+                opened.verify()
+            with Image.open(BytesIO(image_bytes)) as opened:
+                if opened.mode in ("RGBA", "LA") or (
+                    opened.mode == "P" and "transparency" in opened.info
+                ):
+                    # A blind .convert("RGB") discards the alpha channel
+                    # without compositing it, leaving whatever RGB values
+                    # sat underneath a transparent region -- often black or
+                    # garbled -- baked into the published figure. Compositing
+                    # onto white first is what a transparent PNG/WebP
+                    # actually looks like against this document's own white
+                    # page background.
+                    rgba = opened.convert("RGBA")
+                    background = Image.new("RGBA", rgba.size, (255, 255, 255, 255))
+                    image = Image.alpha_composite(background, rgba).convert("RGB")
+                else:
+                    image = opened.convert("RGB")
+        except (UnidentifiedImageError, OSError) as exc:
+            raise ValueError("That file isn't a readable image") from exc
+
+        with self._review_update_lock:
+            items = self.get_review_items(document_id)
+            blocks = self.store.read_artifact(document_id, "blocks.json", [])
+            item = next((value for value in items if value["id"] == item_id), None)
+            if item is None:
+                raise KeyError(item_id)
+            if item.get("kind") != "image":
+                raise ValueError(
+                    "This review item doesn't accept an uploaded image"
+                )
+            block = next(
+                (value for value in blocks if value["id"] == item["block_id"]), None
+            )
+            if block is None:
+                raise KeyError(item["block_id"])
+
+            destination = self.store.uploaded_image_path(document_id, item_id, "png")
+            image.save(destination, format="PNG")
+
+            block["label"] = "picture"
+            block["caption"] = str(block.get("text", "")).strip()
+            block["uploaded_image_path"] = f"uploads/{destination.name}"
+            block.pop("orphaned_caption", None)
+
+            item["type"] = "picture"
+            item["label"] = LABEL_DISPLAY.get("picture", "Picture")
+            item["title"] = f"{item['label']} structure needs confirmation"
+            item["status"] = "edited"
+            item["reviewed_by"] = "reviewer"
+            item["note"] = "A reviewer uploaded a replacement image for this figure."
+
+            self.store.write_artifacts(
+                document_id,
+                {"blocks.json": blocks, "review_items.json": items},
+            )
+            self._discard_generated(document_id)
+            return item
+
     @staticmethod
     def _apply_review_item_changes(
         items: list[dict[str, Any]],
@@ -1086,6 +1161,24 @@ class WorkflowService:
                 )
                 if destination.exists():
                     figure["imageKey"] = image_key
+                    continue
+                uploaded_path = source_block.get("uploaded_image_path")
+                if uploaded_path:
+                    # A reviewer-uploaded replacement has no real PDF region
+                    # behind it -- the bounds on this block still belong to
+                    # the orphaned caption it was converted from, cropping
+                    # that would just re-show the caption text as if it
+                    # were the image. Copy the uploaded file directly
+                    # instead of queuing a PDF-region render job for it.
+                    source_file = self.store.document_dir(document_id) / uploaded_path
+                    if source_file.is_file():
+                        destination.write_bytes(source_file.read_bytes())
+                        figure["imageKey"] = image_key
+                    else:
+                        document_logger(__name__, document_id).warning(
+                            "uploaded review image missing at approval time: %s",
+                            uploaded_path,
+                        )
                     continue
                 figure_jobs.append(
                     {

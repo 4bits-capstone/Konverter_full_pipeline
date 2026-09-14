@@ -83,6 +83,45 @@ export const testReviewItems: ReviewItem[] = [
   },
 ]
 
+export const testOrphanedCaptionReviewItem: ReviewItem = {
+  id: 'review-orphaned-caption',
+  blockId: '#/texts/12',
+  type: 'caption',
+  label: 'Caption',
+  page: 9,
+  confidence: 0.97,
+  band: 'high',
+  title: 'Caption structure needs confirmation',
+  kind: 'image',
+  status: 'pending',
+  extractedText: 'Figure 2: Excerpt from the form',
+  note: 'This caption has no matching figure anywhere on its page.',
+  source: {
+    page: 9,
+    html: '<p class="hl">Figure 2: Excerpt from the form</p><span class="page-num">Page 9</span>',
+    bounds: { left: 74, top: 300, right: 400, bottom: 336, pageWidth: 595, pageHeight: 842 },
+  },
+}
+
+export const testPictureReviewItem: ReviewItem = {
+  id: 'review-picture',
+  blockId: '#/pictures/3',
+  type: 'picture',
+  label: 'Picture',
+  page: 11,
+  confidence: 0.6,
+  band: 'med',
+  title: 'Picture structure needs confirmation',
+  kind: 'text',
+  status: 'pending',
+  extractedText: 'Figure 5: Court process diagram',
+  source: {
+    page: 11,
+    html: '<p class="hl">Figure 5: Court process diagram</p><span class="page-num">Page 11</span>',
+    bounds: { left: 74, top: 200, right: 500, bottom: 520, pageWidth: 595, pageHeight: 842 },
+  },
+}
+
 export const testMetadata: DocumentMetadata = {
   title: 'Accessibility Standards Report',
   publisher: 'Example Commission',
