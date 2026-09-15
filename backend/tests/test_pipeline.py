@@ -149,3 +149,82 @@ def test_footnote_review_items_are_pre_accepted_but_other_types_stay_pending():
         "footnote": "accepted",
         "text": "pending",
     }
+
+
+def test_review_items_carry_the_segment_of_their_source_block():
+    blocks = [
+        {
+            "id": "#/texts/1",
+            "label": "text",
+            "text": "A front-matter paragraph flagged at low confidence.",
+            "page": 2,
+            "confidence": 0.5,
+            "segment": "front_matter",
+        },
+        {
+            "id": "#/texts/2",
+            "label": "text",
+            "text": "A content paragraph flagged at low confidence.",
+            "page": 6,
+            "confidence": 0.5,
+            "segment": "content",
+        },
+    ]
+
+    pipeline = KonverterPipeline(_settings())
+    items = pipeline._build_review_items(blocks)
+
+    assert [item["segment"] for item in items] == ["front_matter", "content"]
+
+
+def test_segment_annotation_covers_nested_callout_blocks():
+    pipeline = KonverterPipeline(_settings())
+    blocks = [
+        {
+            "id": "#/groups/1",
+            "label": "box_section",
+            "text": "A boxed note.",
+            "page": 3,
+            "confidence": 0.5,
+            "box_section_blocks": [
+                {
+                    "id": "#/groups/1/child",
+                    "label": "text",
+                    "text": "Inner paragraph.",
+                    "page": 3,
+                    "confidence": 0.5,
+                }
+            ],
+        }
+    ]
+    resolver = type(
+        "Resolver",
+        (),
+        {
+            "outline": type(
+                "Outline",
+                (),
+                {
+                    "toc_pages": {2},
+                    "entries": [
+                        type(
+                            "Entry",
+                            (),
+                            {
+                                "title": "Introduction",
+                                "level": 1,
+                                "target_page": 4,
+                            },
+                        )()
+                    ],
+                },
+            )()
+        },
+    )()
+
+    result = pipeline._annotate_segments(
+        resolver, {"pages": {str(n): {} for n in range(1, 8)}}, blocks
+    )
+
+    assert result[0]["segment"] == "front_matter"
+    assert result[0]["box_section_blocks"][0]["segment"] == "front_matter"

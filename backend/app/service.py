@@ -17,6 +17,7 @@ from .exporter import build_accessible_html, build_json_ld, build_publication
 from .logging_utils import document_logger, sanitize_for_log
 from .media import render_pdf_region, render_pdf_regions
 from .pipeline import LABEL_DISPLAY, KonverterPipeline, _plain_text_from_table
+from .segment_detector import BACK_MATTER, FRONT_MATTER
 from .storage import LocalDocumentStore
 
 
@@ -220,8 +221,17 @@ NON_BLOCKING_REVIEW_TYPES = frozenset(
     {"picture", "table", "document_index", "footnote"}
 )
 
+# Front matter (title page, contents) and back matter (references, index)
+# low-confidence flags are boilerplate rather than primary prose, so a
+# pending item in either segment never blocks approval.  It stays visible
+# in the review queue for optional confirmation.
+NON_BLOCKING_SEGMENTS = frozenset({FRONT_MATTER, BACK_MATTER})
 
-def _is_blocking_review_item(item_type: str) -> bool:
+
+def _is_blocking_review_item(item: dict[str, Any]) -> bool:
+    item_type = str(item.get("type", "")).lower()
+    if str(item.get("segment", "")) in NON_BLOCKING_SEGMENTS:
+        return False
     return item_type not in NON_BLOCKING_REVIEW_TYPES and not item_type.startswith(
         "section_header_"
     )
@@ -832,7 +842,7 @@ class WorkflowService:
             item
             for item in items
             if item["status"] in {"pending", "needs_attention"}
-            and _is_blocking_review_item(str(item.get("type", "")))
+            and _is_blocking_review_item(item)
         ]
         if pending:
             raise ValueError(f"{len(pending)} review item(s) are still unresolved")

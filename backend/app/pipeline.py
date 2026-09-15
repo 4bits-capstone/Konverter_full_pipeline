@@ -11,6 +11,7 @@ from typing import Any
 
 from .config import Settings
 from .metadata_rules import empty_metadata_payload, extract_metadata_from_docling
+from .segment_detector import detect_segments
 from .toc_hierarchy import TocHierarchyResolver
 from .visual_structure import (
     annotate_pdf_artifacts,
@@ -143,9 +144,10 @@ class KonverterPipeline:
     def process(self, pdf_path: Path, stage: StageCallback) -> PipelineOutput:
         started = time.monotonic()
         stage(1, "Preparing document")
-        raw_document, blocks, doc_confidence, warnings = self._run_docling(
+        raw_document, blocks, doc_confidence, warnings, resolver = self._run_docling(
             pdf_path, stage
         )
+        blocks = self._annotate_segments(resolver, raw_document, blocks)
 
         stage(4, "Extracting metadata")
         try:
@@ -171,11 +173,48 @@ class KonverterPipeline:
             elapsed_seconds=time.monotonic() - started,
         )
 
+    @staticmethod
+    def _annotate_segments(
+        resolver: TocHierarchyResolver,
+        raw_document: dict[str, Any],
+        blocks: list[dict[str, Any]],
+    ) -> list[dict[str, Any]]:
+        """Classify every block as front matter, content, or back matter.
+
+        Segment membership is page based (see ``segment_detector``): blocks on
+        the same page share the label.  ``_build_review_items`` reads the
+        annotation so flagged front/back matter items stay in the queue
+        without blocking approval.
+        """
+        total_pages = len(raw_document.get("pages") or {}) or max(
+            (int(block.get("page", 1)) for block in blocks),
+            default=1,
+        )
+        boundaries = detect_segments(resolver, total_pages)
+
+        def annotate(batch: list[dict[str, Any]]) -> None:
+            for block in batch:
+                block["segment"] = boundaries.classify(int(block.get("page", 1)))
+                children = block.get("box_section_blocks") or block.get(
+                    "callout_blocks"
+                )
+                if isinstance(children, list):
+                    annotate(children)
+
+        annotate(blocks)
+        return blocks
+
     def _run_docling(
         self,
         pdf_path: Path,
         stage: StageCallback,
-    ) -> tuple[dict[str, Any], list[dict[str, Any]], dict[str, Any], list[str]]:
+    ) -> tuple[
+        dict[str, Any],
+        list[dict[str, Any]],
+        dict[str, Any],
+        list[str],
+        TocHierarchyResolver,
+    ]:
         stage(2, "Extracting content")
         converter = self._get_docling_converter()
         with self._docling_lock:
@@ -190,7 +229,7 @@ class KonverterPipeline:
         confidence_by_ref = self._confidence_by_reference(
             raw_document, cluster_confidences
         )
-        blocks, hierarchy_warnings = self._blocks_from_document(
+        blocks, hierarchy_warnings, resolver = self._blocks_from_document(
             raw_document,
             confidence_by_ref,
             pdf_path,
@@ -208,7 +247,7 @@ class KonverterPipeline:
             "table_score": getattr(confidence, "table_score", None),
             "parse_score": getattr(confidence, "parse_score", None),
         }
-        return raw_document, blocks, doc_confidence, warnings
+        return raw_document, blocks, doc_confidence, warnings, resolver
 
     def _get_docling_converter(self) -> Any:
         if self._docling_converter is not None:
@@ -371,7 +410,7 @@ class KonverterPipeline:
         document: dict[str, Any],
         confidence_by_ref: dict[str, float | None],
         pdf_path: Path | None = None,
-    ) -> tuple[list[dict[str, Any]], list[str]]:
+    ) -> tuple[list[dict[str, Any]], list[str], TocHierarchyResolver]:
         all_items: dict[str, dict[str, Any]] = {}
         for collection in (
             "texts",
@@ -609,7 +648,7 @@ class KonverterPipeline:
         ordered_blocks = resolver.apply_outline(ordered_blocks)
         for index, block in enumerate(ordered_blocks):
             block["order"] = index
-        return ordered_blocks, resolver.warnings
+        return ordered_blocks, resolver.warnings, resolver
 
     @staticmethod
     def _list_item_level(item: dict[str, Any]) -> int:
@@ -910,6 +949,7 @@ class KonverterPipeline:
                     # rather than sitting in the queue as "pending" —
                     # reviewers can still reopen and edit any of them.
                     "status": "accepted" if label == "footnote" else "pending",
+                    "segment": block.get("segment"),
                     "extracted_text": None if kind == "table" else text,
                     "corrected_text": None,
                     "note": (

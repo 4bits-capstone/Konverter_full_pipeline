@@ -366,13 +366,22 @@ def test_approval_is_not_blocked_by_pending_headings_and_tables(tmp_path):
     # required.
     from app.service import _is_blocking_review_item
 
-    assert _is_blocking_review_item("text") is True
-    assert _is_blocking_review_item("footnote") is False
-    assert _is_blocking_review_item("picture") is False
-    assert _is_blocking_review_item("table") is False
-    assert _is_blocking_review_item("document_index") is False
-    assert _is_blocking_review_item("section_header_1") is False
-    assert _is_blocking_review_item("section_header_5") is False
+    assert _is_blocking_review_item({"type": "text"}) is True
+    assert _is_blocking_review_item({"type": "footnote"}) is False
+    assert _is_blocking_review_item({"type": "picture"}) is False
+    assert _is_blocking_review_item({"type": "table"}) is False
+    assert _is_blocking_review_item({"type": "document_index"}) is False
+    assert _is_blocking_review_item({"type": "section_header_1"}) is False
+    assert _is_blocking_review_item({"type": "section_header_5"}) is False
+    # Front/back matter flags are boilerplate, so they never block approval
+    # even for ordinary text at any confidence band.
+    assert (
+        _is_blocking_review_item({"type": "text", "segment": "front_matter"}) is False
+    )
+    assert (
+        _is_blocking_review_item({"type": "text", "segment": "back_matter"}) is False
+    )
+    assert _is_blocking_review_item({"type": "text", "segment": "content"}) is True
 
     with load_client(tmp_path) as client:
         document_id = upload_and_process(client)
