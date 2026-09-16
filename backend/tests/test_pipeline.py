@@ -304,7 +304,16 @@ def test_footnote_review_items_are_pre_accepted_but_other_types_stay_pending():
         "footnote": "accepted",
         "text": "pending",
     }
-<<<<<<< HEAD
+    # A footnote's "accepted" status is the pipeline's own decision, made
+    # before any reviewer has seen the item — Docling cannot preserve
+    # italics on PDF text (verified directly against this project's own
+    # Docling install), so an auto-accepted citation with an italicised
+    # case name may have already silently lost that styling. Tagging it
+    # "system" keeps that distinct from a reviewer's own accept.
+    assert {item["type"]: item.get("reviewed_by") for item in items} == {
+        "footnote": "system",
+        "text": None,
+    }
 
 
 def test_review_items_carry_the_segment_of_their_source_block():
@@ -324,17 +333,66 @@ def test_review_items_carry_the_segment_of_their_source_block():
             "page": 6,
             "confidence": 0.5,
             "segment": "content",
-=======
-    # A footnote's "accepted" status is the pipeline's own decision, made
-    # before any reviewer has seen the item — Docling cannot preserve
-    # italics on PDF text (verified directly against this project's own
-    # Docling install), so an auto-accepted citation with an italicised
-    # case name may have already silently lost that styling. Tagging it
-    # "system" keeps that distinct from a reviewer's own accept.
-    assert {item["type"]: item.get("reviewed_by") for item in items} == {
-        "footnote": "system",
-        "text": None,
-    }
+        },
+    ]
+
+    pipeline = KonverterPipeline(_settings())
+    items = pipeline._build_review_items(blocks)
+
+    assert [item["segment"] for item in items] == ["front_matter", "content"]
+
+
+def test_segment_annotation_covers_nested_callout_blocks():
+    pipeline = KonverterPipeline(_settings())
+    blocks = [
+        {
+            "id": "#/groups/1",
+            "label": "box_section",
+            "text": "A boxed note.",
+            "page": 3,
+            "confidence": 0.5,
+            "box_section_blocks": [
+                {
+                    "id": "#/groups/1/child",
+                    "label": "text",
+                    "text": "Inner paragraph.",
+                    "page": 3,
+                    "confidence": 0.5,
+                }
+            ],
+        }
+    ]
+    resolver = type(
+        "Resolver",
+        (),
+        {
+            "outline": type(
+                "Outline",
+                (),
+                {
+                    "toc_pages": {2},
+                    "entries": [
+                        type(
+                            "Entry",
+                            (),
+                            {
+                                "title": "Introduction",
+                                "level": 1,
+                                "target_page": 4,
+                            },
+                        )()
+                    ],
+                },
+            )()
+        },
+    )()
+
+    result = pipeline._annotate_segments(
+        resolver, {"pages": {str(n): {} for n in range(1, 8)}}, blocks
+    )
+
+    assert result[0]["segment"] == "front_matter"
+    assert result[0]["box_section_blocks"][0]["segment"] == "front_matter"
 
 
 def test_a_caption_with_no_picture_anywhere_on_its_page_is_flagged_orphaned():
@@ -413,69 +471,12 @@ def test_orphaned_caption_review_item_forces_review_and_accepts_an_uploaded_imag
             "page": 95,
             "confidence": 0.97,
             "orphaned_caption": True,
->>>>>>> 35abeff4997232a06f9894158d7dfdd2e5a3cd74
         },
     ]
 
     pipeline = KonverterPipeline(_settings())
     items = pipeline._build_review_items(blocks)
 
-<<<<<<< HEAD
-    assert [item["segment"] for item in items] == ["front_matter", "content"]
-
-
-def test_segment_annotation_covers_nested_callout_blocks():
-    pipeline = KonverterPipeline(_settings())
-    blocks = [
-        {
-            "id": "#/groups/1",
-            "label": "box_section",
-            "text": "A boxed note.",
-            "page": 3,
-            "confidence": 0.5,
-            "box_section_blocks": [
-                {
-                    "id": "#/groups/1/child",
-                    "label": "text",
-                    "text": "Inner paragraph.",
-                    "page": 3,
-                    "confidence": 0.5,
-                }
-            ],
-        }
-    ]
-    resolver = type(
-        "Resolver",
-        (),
-        {
-            "outline": type(
-                "Outline",
-                (),
-                {
-                    "toc_pages": {2},
-                    "entries": [
-                        type(
-                            "Entry",
-                            (),
-                            {
-                                "title": "Introduction",
-                                "level": 1,
-                                "target_page": 4,
-                            },
-                        )()
-                    ],
-                },
-            )()
-        },
-    )()
-
-    result = pipeline._annotate_segments(
-        resolver, {"pages": {str(n): {} for n in range(1, 8)}}, blocks
-    )
-
-    assert result[0]["segment"] == "front_matter"
-    assert result[0]["box_section_blocks"][0]["segment"] == "front_matter"
-=======
     assert len(items) == 1
     item = items[0]
     assert item["kind"] == "image"
@@ -2023,7 +2024,7 @@ def test_an_unrecognised_raw_docling_label_falls_back_to_text_not_unspecified():
         "pages": {"1": {"size": {"width": 600, "height": 800}}},
     }
 
-    blocks, warnings = pipe._blocks_from_document(document, {}, None)
+    blocks, _warnings, _resolver = pipe._blocks_from_document(document, {}, None)
 
     matching = [block for block in blocks if "Advan Investments" in block.get("text", "")]
     assert len(matching) == 1
@@ -2082,7 +2083,7 @@ def test_bare_number_nested_under_a_chart_is_not_promoted_to_a_floating_paragrap
         "pages": {"1": {"size": {"width": 600, "height": 800}}},
     }
 
-    blocks, warnings = pipe._blocks_from_document(document, {}, None)
+    blocks, _warnings, _resolver = pipe._blocks_from_document(document, {}, None)
 
     bare_number_blocks = [b for b in blocks if b.get("text") == "10"]
     assert bare_number_blocks == []
@@ -2233,4 +2234,3 @@ def test_diagram_list_split_never_fires_when_a_tier_would_be_left_empty():
     )
 
     assert split is None
->>>>>>> 35abeff4997232a06f9894158d7dfdd2e5a3cd74

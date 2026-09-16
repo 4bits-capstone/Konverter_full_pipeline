@@ -4220,8 +4220,43 @@
 
 .converter-app .processing-queue-actions {
   display: flex;
+  align-items: center;
   gap: 8px;
   flex-wrap: wrap;
+}
+
+.converter-app .queue-skip-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  margin-right: auto;
+  padding: 5px 11px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  background: var(--surface);
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 1.25;
+  cursor: pointer;
+  user-select: none;
+  white-space: nowrap;
+}
+
+.converter-app .queue-skip-toggle:hover {
+  border-color: var(--hi);
+  color: var(--text);
+}
+
+.converter-app .queue-skip-toggle input {
+  margin: 0;
+  accent-color: var(--hi);
+}
+
+.converter-app .queue-skip-toggle small {
+  display: block;
+  color: var(--muted);
+  font-size: 10.5px;
+  margin-top: 1px;
 }
 
 .converter-app .ready-documents-banner {

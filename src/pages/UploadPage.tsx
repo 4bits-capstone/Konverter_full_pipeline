@@ -8,7 +8,7 @@ import {
   Square,
   Trash2,
 } from "lucide-react";
-import { useRef } from "react";
+import { useRef, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { processingSteps } from "../config/workflow";
 import { converterStagePath } from "../lib/converterRoutes";
@@ -65,6 +65,7 @@ export function UploadPage() {
     showToast,
   } = useKonverter();
   const fileInputRef = useRef<HTMLInputElement | null>(null);
+  const [skipPostprocessing, setSkipPostprocessing] = useState(false);
 
   const chooseFiles = () => fileInputRef.current?.click();
 
@@ -117,7 +118,9 @@ export function UploadPage() {
     : undefined;
 
   const processAllQueued = () => {
-    queuedDocuments.forEach((document) => startDocumentProcessing(document.id));
+    queuedDocuments.forEach((document) =>
+      startDocumentProcessing(document.id, skipPostprocessing),
+    );
     showToast(
       `${queuedDocuments.length} document${queuedDocuments.length === 1 ? "" : "s"} started processing`,
     );
@@ -218,6 +221,19 @@ export function UploadPage() {
                 </div>
               </div>
               <div className="processing-queue-actions">
+                <label className="queue-skip-toggle">
+                  <input
+                    type="checkbox"
+                    checked={skipPostprocessing}
+                    onChange={(event) =>
+                      setSkipPostprocessing(event.target.checked)
+                    }
+                  />
+                  <span>
+                    Skip post-processing
+                    <small>Raw Docling only — no repair passes</small>
+                  </span>
+                </label>
                 <button
                   className="btn btn-outline btn-sm"
                   type="button"
@@ -341,7 +357,7 @@ export function UploadPage() {
                       {(job.state === "idle" || job.state === "failed") && (
                         <button
                           className="btn btn-primary btn-sm"
-                          onClick={() => startDocumentProcessing(document.id)}
+                          onClick={() => startDocumentProcessing(document.id, skipPostprocessing)}
                         >
                           <Play />
                           Start

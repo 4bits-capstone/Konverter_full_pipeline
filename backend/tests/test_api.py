@@ -9,6 +9,8 @@ from pathlib import Path
 
 from pypdf import PdfWriter
 
+import app.main as _app_main
+
 
 def make_pdf(page_count: int = 1) -> bytes:
     writer = PdfWriter()
@@ -46,7 +48,8 @@ def load_client(tmp_path):
 
     module = importlib.reload(app.main)
 
-    def process_for_test(_pdf_path, stage, _document_id):
+    def process_for_test(_pdf_path, stage, _document_id, *, skip_postprocessing=False):
+        module.processing.pipeline.process_calls.append(skip_postprocessing)
         stage(1, "Extracting test document")
         blocks = [
             {
@@ -147,6 +150,7 @@ def load_client(tmp_path):
         )
 
     module.processing.pipeline.process = process_for_test
+    module.processing.pipeline.process_calls = []
     from fastapi.testclient import TestClient
 
     module.app.dependency_overrides[module.get_current_user] = (
@@ -187,6 +191,31 @@ def confirm_metadata(client, document_id: str) -> dict:
     response = client.put(f"/api/documents/{document_id}/metadata", json=metadata)
     assert response.status_code == 200
     return metadata
+
+
+def test_process_skip_postprocessing_flag_reaches_pipeline(tmp_path):
+    with load_client(tmp_path) as client:
+        # Upload a test PDF
+        response = client.post(
+            "/api/documents",
+            files={"files": ("report.pdf", make_pdf(), "application/pdf")},
+        )
+        assert response.status_code == 201
+        document_id = response.json()[0]["id"]
+        calls = _app_main.processing.pipeline.process_calls
+
+        # Process WITHOUT the flag (default: no skip)
+        client.post(f"/api/documents/{document_id}/process")
+        wait_until_complete(client, document_id)
+        assert calls == [False]
+
+        # Process WITH the flag (skip postprocessing)
+        client.post(
+            f"/api/documents/{document_id}/process",
+            json={"skipPostprocessing": True},
+        )
+        wait_until_complete(client, document_id)
+        assert calls == [False, True]
 
 
 def test_upload_review_correct_and_export(tmp_path):

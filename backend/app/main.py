@@ -40,6 +40,7 @@ from .models import (
     DocumentProcessingJob,
     DocumentSummary,
     MetadataPayload,
+    ProcessRequest,
     ProcessingSummary,
     PublicationPayload,
     ReviewItem,
@@ -464,16 +465,31 @@ async def delete_document(document_id: str, user: CurrentUser) -> Response:
 
 
 @app.post("/api/documents/{document_id}/process", response_model=DocumentProcessingJob)
-async def start_processing(document_id: str, user: CurrentUser) -> DocumentProcessingJob:
+async def start_processing(
+    document_id: str,
+    user: CurrentUser,
+    body: ProcessRequest | None = None,
+) -> DocumentProcessingJob:
     record = _record(document_id)
     _require_owner(record, user)
-    job = DocumentProcessingJob(**processing.start(document_id, user.get("id"), user.get("email")))
+    skip_postprocessing = bool(body and body.skip_postprocessing)
+    job = DocumentProcessingJob(
+        **processing.start(
+            document_id,
+            user.get("id"),
+            user.get("email"),
+            skip_postprocessing=skip_postprocessing,
+        )
+    )
     await audit.record_audit(
         "process_start",
         document_id=document_id,
         actor_id=user.get("id"),
         actor_email=user.get("email"),
-        detail={"file_name": record.get("file_name")},
+        detail={
+            "file_name": record.get("file_name"),
+            "skip_postprocessing": skip_postprocessing,
+        },
     )
     return job
 

@@ -72,7 +72,7 @@ export const documentService: DocumentService = {
   async removeDocument(documentId) {
     documents.delete(documentId)
   },
-  async startProcessing(documentId) {
+  async startProcessing(documentId, skipPostprocessing) {
     const document = documents.get(documentId)
     if (document) documents.set(documentId, { ...document, processingState: 'complete' })
     return {

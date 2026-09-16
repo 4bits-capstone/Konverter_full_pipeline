@@ -45,6 +45,14 @@ class DocumentProcessingJob(ApiModel):
     message: str | None = None
 
 
+class ProcessRequest(ApiModel):
+    model_config = ConfigDict(extra="forbid")
+    # Run Docling and produce blocks/segments/metadata/review items but skip
+    # the document-mutation repair passes (furniture relabelling, picture
+    # synthesis, footnote repair, callout/quote grouping).
+    skip_postprocessing: bool = False
+
+
 class ProcessingElementCoverage(ApiModel):
     detected: int = 0
     total: int = 0

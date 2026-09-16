@@ -436,37 +436,6 @@ def group_visual_callouts(
 
 
 
-<<<<<<< HEAD
-_MIN_QUOTE_SPAN_FRACTION = 0.55
-_MAX_FLAT_EXCURSION = 3.0
-_MIN_TAIL_EXCURSION = 8.0
-
-
-def _stroke_extent(drawing: dict[str, Any]) -> tuple[float, float, float, float] | None:
-    """Return the ``(left, top, right, bottom)`` bounds of a stroke's points."""
-    xs: list[float] = []
-    ys: list[float] = []
-    for kind, *args in drawing.get("items", []):
-        if kind not in {"l", "c"}:
-            continue
-        for point in args:
-            xs.append(float(point.x))
-            ys.append(float(point.y))
-    if not xs:
-        return None
-    return min(xs), min(ys), max(xs), max(ys)
-
-
-def detect_quote_regions(pdf_path: Path) -> tuple[list[dict[str, Any]], list[str]]:
-    """Find quotation panels drawn as a top line plus a speech-bubble bottom.
-
-    A quote is a wide, mostly horizontal bracket drawn with vector strokes: a
-    flat line along the top of the text and, beneath the text, a line whose
-    centre drops into a short downward V-shaped tail (the bubble pointer).
-    Both strokes span most of the page width and share the same horizontal
-    extent, so the region they enclose (top line down to the deepest part of
-    the tail, which also catches the speaker attribution) is one quote.
-=======
 # Quote recognition uses PDF geometry plus typography/context, never paragraph
 # numbers or report-specific phrases. All bounds use top-left PDF coordinates.
 _SPEECH_CUE = re.compile(
@@ -543,63 +512,11 @@ def detect_quote_regions(pdf_path: Path) -> tuple[list[dict[str, Any]], list[str
     Rules alone are insufficient: straight panels must also contain mostly
     italic text or an explicit attribution. Indented prose requires a speech
     introduction (or an opening quote), so ordinary lists are left alone.
->>>>>>> 35abeff4997232a06f9894158d7dfdd2e5a3cd74
     """
     try:
         import fitz
     except ImportError:
         return [], ["PyMuPDF unavailable; quote detection was skipped."]
-<<<<<<< HEAD
-
-    regions: list[dict[str, Any]] = []
-    try:
-        pdf = fitz.open(pdf_path)
-        for page_index, page in enumerate(pdf):
-            page_width = float(page.rect.width)
-            page_height = float(page.rect.height)
-            flat_lines: list[dict[str, Any]] = []
-            tailed_lines: list[dict[str, Any]] = []
-            for drawing in page.get_drawings():
-                if drawing.get("type") not in {"s", "fs"}:
-                    continue
-                if drawing.get("color") is None:
-                    continue
-                extent = _stroke_extent(drawing)
-                if extent is None:
-                    continue
-                left, top, right, bottom = extent
-                span = right - left
-                excursion = bottom - top
-                if span < page_width * _MIN_QUOTE_SPAN_FRACTION:
-                    continue
-                if excursion <= _MAX_FLAT_EXCURSION:
-                    flat_lines.append(
-                        {"left": left, "right": right, "top": top, "bottom": bottom}
-                    )
-                elif excursion >= _MIN_TAIL_EXCURSION:
-                    tailed_lines.append(
-                        {"left": left, "right": right, "top": top, "bottom": bottom}
-                    )
-            for top_line in flat_lines:
-                for bottom_line in tailed_lines:
-                    if bottom_line["top"] <= top_line["bottom"] + 4:
-                        continue
-                    overlap_left = max(top_line["left"], bottom_line["left"])
-                    overlap_right = min(top_line["right"], bottom_line["right"])
-                    if overlap_right - overlap_left < page_width * 0.4:
-                        continue
-                    regions.append(
-                        {
-                            "page": page_index + 1,
-                            "left": overlap_left,
-                            "top": top_line["top"],
-                            "right": overlap_right,
-                            "bottom": bottom_line["bottom"],
-                            "page_width": page_width,
-                            "page_height": page_height,
-                        }
-                    )
-=======
     regions: list[dict[str, Any]] = []
     try:
         with fitz.open(pdf_path) as pdf:
@@ -675,79 +592,11 @@ def detect_quote_regions(pdf_path: Path) -> tuple[list[dict[str, Any]], list[str
                             page_regions.append(region)
                 previous_page_tail = [line for line in prose if line["size"] >= 9][-4:]
                 regions.extend(sorted(page_regions, key=lambda r:(r["top"],r["left"])))
->>>>>>> 35abeff4997232a06f9894158d7dfdd2e5a3cd74
     except Exception as exc:
         return [], [f"Quote detection failed ({exc})."]
     return regions, []
 
 
-<<<<<<< HEAD
-def group_quote_blocks(
-    blocks: list[dict[str, Any]],
-    regions: list[dict[str, Any]],
-) -> list[dict[str, Any]]:
-    """Collapse each quote panel into one ``quote`` semantic block."""
-    used: set[str] = set()
-    replacements: dict[str, dict[str, Any]] = {}
-    for region in regions:
-        contained = [
-            block
-            for block in blocks
-            if str(block.get("id", "")) not in used
-            and block.get("label") not in {
-                "title",
-                "chapter_title",
-                "box_section",
-                "header",
-                "footer",
-                "document_index",
-            }
-            and _block_in_region(block, region)
-        ]
-        contained.sort(key=lambda block: int(block.get("order", 0)))
-        if len(contained) < 1 or not any(
-            str(block.get("text", "")).strip() for block in contained
-        ):
-            continue
-        confidence_values = [
-            float(block["confidence"])
-            for block in contained
-            if block.get("confidence") is not None
-        ]
-        quote = {
-            "id": f"quote:{contained[0]['id']}",
-            "label": "quote",
-            "text": "\n\n".join(
-                str(block.get("text", "")).strip()
-                for block in contained
-                if str(block.get("text", "")).strip()
-            ),
-            "quote_detected": True,
-            "quote_blocks": contained,
-            "page": int(region["page"]),
-            "confidence": min(confidence_values) if confidence_values else None,
-            "source_bounds": {
-                "left": region["left"],
-                "top": region["top"],
-                "right": region["right"],
-                "bottom": region["bottom"],
-                "page_width": region["page_width"],
-                "page_height": region["page_height"],
-            },
-            "order": int(contained[0].get("order", 0)),
-        }
-        replacements[str(contained[0]["id"])] = quote
-        used.update(str(block.get("id", "")) for block in contained)
-
-    output: list[dict[str, Any]] = []
-    for block in blocks:
-        block_id = str(block.get("id", ""))
-        replacement = replacements.get(block_id)
-        if replacement is not None:
-            output.append(replacement)
-        elif block_id not in used:
-            output.append(block)
-=======
 def group_quote_blocks(blocks: list[dict[str, Any]], regions: list[dict[str, Any]]) -> list[dict[str, Any]]:
     """Group only text contained by a quote, preserving source order/evidence."""
     output = list(blocks)
@@ -805,5 +654,4 @@ def group_quote_blocks(blocks: list[dict[str, Any]], regions: list[dict[str, Any
         }
         selected_set = set(selected)
         output = [quote if i == selected[0] else b for i,b in enumerate(output) if i == selected[0] or i not in selected_set]
->>>>>>> 35abeff4997232a06f9894158d7dfdd2e5a3cd74
     return [{**block, "order": index} for index, block in enumerate(output)]

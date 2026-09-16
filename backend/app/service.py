@@ -442,6 +442,8 @@ class ProcessingManager:
         document_id: str,
         actor_id: str | None = None,
         actor_email: str | None = None,
+        *,
+        skip_postprocessing: bool = False,
     ) -> dict[str, Any]:
         record = self.store.get_record(document_id)
         current = record["job"]
@@ -475,6 +477,7 @@ class ProcessingManager:
             "progress": 1,
             "remaining_seconds": estimate_seconds,
             "message": "Preparing document",
+            "skip_postprocessing": skip_postprocessing,
         }
         self.store.update_record(
             document_id, job=job, approved_at=None, metadata_confirmed=False
@@ -550,10 +553,12 @@ class ProcessingManager:
         started = time.monotonic()
         log.info("processing started")
         try:
+            record = self.store.get_record(document_id)
             output = self.pipeline.process(
                 self.store.source_path(document_id),
                 lambda step, message: self._set_stage(document_id, step, message),
                 document_id,
+                skip_postprocessing=bool(record["job"].get("skip_postprocessing")),
             )
             if self._is_cancelled(document_id):
                 log.info("processing stopped by user")
@@ -1110,13 +1115,8 @@ class WorkflowService:
         pending = [
             item
             for item in items
-<<<<<<< HEAD
-            if item["status"] in {"pending", "needs_attention"}
+if item["status"] in {"pending", "needs_attention"}
             and _is_blocking_review_item(item)
-=======
-            if item["status"] == "pending"
-            and _is_blocking_review_item(str(item.get("type", "")))
->>>>>>> 35abeff4997232a06f9894158d7dfdd2e5a3cd74
         ]
         if pending:
             raise ValueError(f"{len(pending)} review item(s) are still unresolved")

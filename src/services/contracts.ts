@@ -20,7 +20,7 @@ export interface DocumentService {
   listAllDocuments(): Promise<DocumentSummary[]>
   getDocument(documentId?: string): Promise<DocumentSummary>
   removeDocument(documentId: string): Promise<void>
-  startProcessing(documentId: string): Promise<DocumentProcessingJob>
+  startProcessing(documentId: string, skipPostprocessing?: boolean): Promise<DocumentProcessingJob>
   getProcessingStatus(documentId: string): Promise<DocumentProcessingJob>
   getProcessingSummary(documentId: string): Promise<ProcessingSummary>
   stopProcessing(documentId: string): Promise<DocumentProcessingJob>

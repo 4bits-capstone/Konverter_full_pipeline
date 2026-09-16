@@ -70,7 +70,7 @@ interface KonverterContextValue {
   documentProcessing: Record<string, DocumentProcessingJob>;
   completedDocuments: DocumentSummary[];
   runningDocuments: DocumentSummary[];
-  startDocumentProcessing: (id: string) => void;
+  startDocumentProcessing: (id: string, skipPostprocessing?: boolean) => void;
   stopDocumentProcessing: (id: string) => void;
   uploaded: boolean;
   setUploaded: (value: boolean) => void;
@@ -375,7 +375,7 @@ export function KonverterProvider({ children }: PropsWithChildren) {
   );
 
   const startDocumentProcessing = useCallback(
-    (id: string) => {
+    (id: string, skipPostprocessing?: boolean) => {
       const documentIndex = Math.max(
         0,
         documents.findIndex((document) => document.id === id),
@@ -396,7 +396,7 @@ export function KonverterProvider({ children }: PropsWithChildren) {
       patchWorkflow(id, emptyWorkflow());
       setUploaded(true);
       void documentService
-        .startProcessing(id)
+        .startProcessing(id, skipPostprocessing)
         .then((job) =>
           setDocumentProcessing((current) => ({ ...current, [id]: job })),
         )

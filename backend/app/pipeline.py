@@ -1322,17 +1322,17 @@ class KonverterPipeline:
         self.settings = settings
 
     def process(
-        self, pdf_path: Path, stage: StageCallback, document_id: str
+        self,
+        pdf_path: Path,
+        stage: StageCallback,
+        document_id: str,
+        *,
+        skip_postprocessing: bool = False,
     ) -> PipelineOutput:
         started = time.monotonic()
         stage(1, "Preparing document")
-<<<<<<< HEAD
         raw_document, blocks, doc_confidence, warnings, resolver = self._run_docling(
-            pdf_path, stage
-=======
-        raw_document, blocks, doc_confidence, warnings = self._run_docling(
-            pdf_path, stage, document_id
->>>>>>> 35abeff4997232a06f9894158d7dfdd2e5a3cd74
+            pdf_path, stage, document_id, skip_postprocessing=skip_postprocessing
         )
         blocks = self._annotate_segments(resolver, raw_document, blocks)
 
@@ -1395,7 +1395,9 @@ class KonverterPipeline:
         self,
         pdf_path: Path,
         stage: StageCallback,
-<<<<<<< HEAD
+        document_id: str,
+        *,
+        skip_postprocessing: bool = False,
     ) -> tuple[
         dict[str, Any],
         list[dict[str, Any]],
@@ -1403,10 +1405,6 @@ class KonverterPipeline:
         list[str],
         TocHierarchyResolver,
     ]:
-=======
-        document_id: str,
-    ) -> tuple[dict[str, Any], list[dict[str, Any]], dict[str, Any], list[str]]:
->>>>>>> 35abeff4997232a06f9894158d7dfdd2e5a3cd74
         stage(2, "Extracting content")
         if self.settings.docling_mode == "remote":
             docling_result = self._run_docling_remote(pdf_path, stage, document_id)
@@ -1424,14 +1422,19 @@ class KonverterPipeline:
         doc_confidence = docling_result["doc_confidence"]
 
         stage(3, "Detecting document structure")
-        warnings = annotate_pdf_artifacts(raw_document, pdf_path)
-        _relabel_misclassified_page_furniture(raw_document)
-        _synthesize_missing_pictures(raw_document, pdf_path)
-        _exclude_repeating_decorative_pictures(raw_document)
-        callout_regions, callout_warnings = detect_callout_regions(pdf_path)
-        warnings.extend(callout_warnings)
-        quote_regions, quote_warnings = detect_quote_regions(pdf_path)
-        warnings.extend(quote_warnings)
+        if skip_postprocessing:
+            warnings: list[str] = []
+            callout_regions: list[dict[str, Any]] = []
+            quote_regions: list[dict[str, Any]] = []
+        else:
+            warnings = annotate_pdf_artifacts(raw_document, pdf_path)
+            _relabel_misclassified_page_furniture(raw_document)
+            _synthesize_missing_pictures(raw_document, pdf_path)
+            _exclude_repeating_decorative_pictures(raw_document)
+            callout_regions, callout_warnings = detect_callout_regions(pdf_path)
+            warnings.extend(callout_warnings)
+            quote_regions, quote_warnings = detect_quote_regions(pdf_path)
+            warnings.extend(quote_warnings)
         confidence_by_ref = self._confidence_by_reference(
             raw_document, cluster_confidences
         )
@@ -1441,30 +1444,18 @@ class KonverterPipeline:
             pdf_path,
         )
         warnings.extend(hierarchy_warnings)
-        blocks = _split_merged_footnotes(blocks)
-        blocks = _merge_indented_footnote_continuations(blocks)
-        blocks = _repair_split_footnote_markers(blocks)
-        blocks = _reorder_inverted_adjacent_footnotes(blocks)
-        blocks = _recover_orphaned_footnote_markers(blocks, pdf_path)
-        blocks = _relabel_footnote_lists(blocks, callout_regions)
-        blocks = group_visual_callouts(blocks, callout_regions)
-        blocks = group_quote_blocks(blocks, quote_regions)
-        blocks = _flag_orphaned_captions(blocks)
+        if not skip_postprocessing:
+            blocks = _split_merged_footnotes(blocks)
+            blocks = _merge_indented_footnote_continuations(blocks)
+            blocks = _repair_split_footnote_markers(blocks)
+            blocks = _reorder_inverted_adjacent_footnotes(blocks)
+            blocks = _recover_orphaned_footnote_markers(blocks, pdf_path)
+            blocks = _relabel_footnote_lists(blocks, callout_regions)
+            blocks = group_visual_callouts(blocks, callout_regions)
+            blocks = group_quote_blocks(blocks, quote_regions)
+            blocks = _flag_orphaned_captions(blocks)
 
-<<<<<<< HEAD
-        confidence = getattr(result, "confidence", None)
-        doc_confidence = {
-            "layout_score": getattr(confidence, "layout_score", None),
-            "mean_score": getattr(confidence, "mean_score", None),
-            "mean_grade": str(getattr(confidence, "mean_grade", "")) or None,
-            "ocr_score": getattr(confidence, "ocr_score", None),
-            "table_score": getattr(confidence, "table_score", None),
-            "parse_score": getattr(confidence, "parse_score", None),
-        }
         return raw_document, blocks, doc_confidence, warnings, resolver
-=======
-        return raw_document, blocks, doc_confidence, warnings
->>>>>>> 35abeff4997232a06f9894158d7dfdd2e5a3cd74
 
     def _run_docling_remote(
         self,
@@ -2611,19 +2602,12 @@ class KonverterPipeline:
                     "kind": kind,
                     # Footnotes are already non-blocking (see
                     # NON_BLOCKING_REVIEW_TYPES in service.py) and are
-<<<<<<< HEAD
-                    # low-stakes reference text, so they start pre-accepted
-                    # rather than sitting in the queue as "pending" —
-                    # reviewers can still reopen and edit any of them.
-                    "status": "accepted" if label == "footnote" else "pending",
-                    "segment": block.get("segment"),
-                    "extracted_text": None if kind == "table" else text,
-=======
                     # low-stakes reference text, so a verified one starts
                     # pre-accepted rather than sitting in the queue as
                     # "pending" — reviewers can still reopen and edit any
                     # of them regardless.
                     "status": "accepted" if footnote_verified else "pending",
+                    "segment": block.get("segment"),
                     # This "accepted" is the pipeline's own decision, made
                     # before any person has seen the item — distinct from a
                     # reviewer's own accept/edit/bulk-resolve action later
@@ -2639,7 +2623,6 @@ class KonverterPipeline:
                     # that gap visible instead of hidden.
                     "reviewed_by": "system" if footnote_verified else None,
                     "extracted_text": None if kind == "table" else extracted_text,
->>>>>>> 35abeff4997232a06f9894158d7dfdd2e5a3cd74
                     "corrected_text": None,
                     "note": (
                         "This reads like one of the report's own recommendations, not a "

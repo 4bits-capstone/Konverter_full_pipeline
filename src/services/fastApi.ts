@@ -32,8 +32,9 @@ export const fastApiDocumentService: DocumentService = {
   removeDocument(documentId) {
     return apiRequest(`/documents/${encodeURIComponent(documentId)}`, { method: 'DELETE' })
   },
-  startProcessing(documentId) {
-    return apiRequest(`/documents/${encodeURIComponent(documentId)}/process`, { method: 'POST' })
+  startProcessing(documentId, skipPostprocessing) {
+    const body = skipPostprocessing ? JSON.stringify({ skipPostprocessing: true }) : undefined
+    return apiRequest(`/documents/${encodeURIComponent(documentId)}/process`, { method: 'POST', body })
   },
   getProcessingStatus(documentId) {
     return apiRequest(`/documents/${encodeURIComponent(documentId)}/processing-state`, {
