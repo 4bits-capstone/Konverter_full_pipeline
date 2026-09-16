@@ -1,15 +1,27 @@
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
-import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
+import { act, cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import { useEffect } from 'react'
 import { MemoryRouter } from 'react-router-dom'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { DocumentBar } from '../components/DocumentBar'
 import { KonverterProvider, useKonverter } from '../state/KonverterContext'
-import { testDocument } from '../test/fixtures'
+import { testDocument, testReviewItems } from '../test/fixtures'
 import { resetTestServices } from '../test/serviceMocks'
 import { MetadataPage, normaliseMetadataFields } from './MetadataPage'
 
 vi.mock('../services', () => import('../test/serviceMocks'))
+vi.mock('../services/httpClient', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../services/httpClient')>()
+  return {
+    ...actual,
+    // The metadata evidence crop loads through an authenticated blob fetch
+    // (see src/lib/useAuthenticatedObjectUrl.ts) rather than a plain
+    // <img src>, so a real Blob stands in for the network here.
+    apiRequest: vi.fn(async (path: string, init?: Parameters<typeof actual.apiRequest>[1]) =>
+      init?.responseType === 'blob' ? new Blob([path], { type: 'image/png' }) : actual.apiRequest(path, init),
+    ),
+  }
+})
 
 function SeedCompletedDocument() {
   const { addDocuments, resolveAllReviews, setUploaded } = useKonverter()
@@ -21,8 +33,7 @@ function SeedCompletedDocument() {
   return null
 }
 
-function renderMetadata() {
-  const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } })
+function renderMetadata(queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } })) {
   return render(
     <QueryClientProvider client={queryClient}>
       <MemoryRouter initialEntries={['/metadata']}>
@@ -66,8 +77,8 @@ describe('MetadataPage', () => {
     expect(within(panel).getByText('Accessibility Standards Report')).toBeInTheDocument()
     expect(within(panel).getByText('18 June 2026')).toBeInTheDocument()
     expect(screen.queryByRole('textbox', { name: /Title/ })).not.toBeInTheDocument()
-    expect(screen.getByRole('link', { name: /Open original page/ })).toHaveAttribute('target', '_blank')
-    expect(screen.getByRole('img', { name: /Original PDF page .* evidence/ })).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: /Open original page/ })).toBeInTheDocument()
+    expect(await screen.findByRole('img', { name: /Original PDF page .* evidence/ })).toBeInTheDocument()
 
     fireEvent.click(screen.getAllByRole('button', { name: 'Edit' })[0])
 
@@ -105,6 +116,66 @@ describe('MetadataPage', () => {
     expect(screen.getByRole('button', { name: /Resolve 3 fields to continue/ })).toBeDisabled()
   })
 
+  it('shows ticks for passed checks and empty boxes for incomplete checks', async () => {
+    const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } })
+    renderMetadata(queryClient)
+    await screen.findByRole('heading', { name: 'Document metadata' })
+    approveMetadataFields()
+    fireEvent.click(screen.getByRole('button', { name: /Run final system checks/ }))
+    const checks = within(await screen.findByRole('list', { name: 'Approval system checks' }))
+    expect(checks.getAllByRole('img', { name: 'Passed' })).toHaveLength(4)
+    for (const passed of checks.getAllByRole('img', { name: 'Passed' })) {
+      expect(passed.querySelector('svg.lucide-check')).not.toBeNull()
+    }
+
+    // A blocking quote flag becoming unresolved while the dialog is open must not
+    // display a warning icon or allow approval of incomplete work.
+    await act(async () => {
+      queryClient.setQueryData(['review-items', testDocument.id], testReviewItems.map((item, index) => ({
+        ...item,
+        type: index === 0 ? 'quote' : item.type,
+        status: index === 0 ? 'pending' : 'accepted',
+      })))
+    })
+    await waitFor(() => expect(checks.getAllByRole('img', { name: 'Blocked' })).toHaveLength(2))
+    for (const unchecked of checks.getAllByRole('img', { name: 'Blocked' })) {
+      expect(unchecked).toBeEmptyDOMElement()
+    }
+    expect(screen.getByRole('button', { name: 'Approve and open preview' })).toBeDisabled()
+  })
+
+  it('keeps the checklist and the resolved-count summary consistent when a non-blocking flag is still pending', async () => {
+    // pendingCount only tracks *blocking* flags — approval doesn't require
+    // a decision on non-blocking types (pictures/tables/footnotes) — so it
+    // can read 0 while resolvedCount is still short of the total. Both
+    // pieces of text in this same modal must agree, not contradict each
+    // other (one saying "all flags have a decision", the other showing a
+    // count short of the total).
+    const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } })
+    renderMetadata(queryClient)
+    await screen.findByRole('heading', { name: 'Document metadata' })
+    approveMetadataFields()
+    fireEvent.click(screen.getByRole('button', { name: /Run final system checks/ }))
+    await screen.findByRole('list', { name: 'Approval system checks' })
+
+    await act(async () => {
+      queryClient.setQueryData(['review-items', testDocument.id], testReviewItems.map((item, index) => ({
+        ...item,
+        type: index === 0 ? 'table' : item.type,
+        status: index === 0 ? 'pending' : 'accepted',
+      })))
+    })
+
+    const summary = await screen.findByLabelText('Document approval summary')
+    await waitFor(() => expect(within(summary).getByText(/resolved$/).textContent).not.toMatch(
+      new RegExp(`^${testReviewItems.length}/${testReviewItems.length}`),
+    ))
+    const checklist = within(screen.getByRole('list', { name: 'Approval system checks' }))
+    expect(checklist.getByText(/flags have a decision/)).not.toHaveTextContent(
+      `All ${testReviewItems.length} flags have a decision`,
+    )
+  })
+
   it('updates the top bar after revised metadata is saved', async () => {
     renderMetadata()
     await screen.findByRole('heading', { name: 'Document metadata' })
@@ -125,5 +196,9 @@ describe('MetadataPage', () => {
     expect(screen.getByRole('dialog', { name: 'Approve Revised Committals Report?' })).toBeInTheDocument()
     expect(screen.getByRole('list', { name: 'Approval system checks' })).toBeInTheDocument()
     expect(screen.getByRole('button', { name: 'Approve and open preview' })).toBeEnabled()
+    expect(screen.getByRole('button', { name: 'Approve and open preview' })).toHaveClass('btn-primary')
+    expect(screen.getByRole('dialog')).toHaveAccessibleDescription(/Review the completed checks/)
+    fireEvent.click(within(screen.getByRole('dialog')).getByRole('button', { name: 'Cancel' }))
+    expect(screen.queryByRole('dialog')).not.toBeInTheDocument()
   })
 })

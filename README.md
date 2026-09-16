@@ -40,13 +40,17 @@ npm run dev
 
 Open `http://localhost:5173`. API documentation is at `http://localhost:8000/docs`.
 
-## Confidence settings
+## Environment (.env) Configurations:
+
+Konverter supports customisable options for uses in special cases.
+
+### Confidence settings
 
 ```dotenv
 KONVERTER_HIGH_CONFIDENCE=0.75
 KONVERTER_MEDIUM_CONFIDENCE=0.60
 ```
-## Other settings
+### Other settings
 
 ```dotenv
 KONVERTER_DO_OCR=false            # keep off for text-based PDFs
@@ -66,7 +70,7 @@ KONVERTER_DESCRIPTION_MAX_CHARS=600
 KONVERTER_LOG_LEVEL=INFO          # DEBUG | INFO | WARNING | ERROR
 ```
 
-## Auth settings
+### Auth settings
 
 ```dotenv
 VITE_SUPABASE_URL=                # Supabase project URL
@@ -74,6 +78,54 @@ VITE_SUPABASE_ANON_KEY=           # Supabase anon public key
 SUPABASE_URL=                     # same as VITE_SUPABASE_URL
 SUPABASE_ANON_KEY=                # same as VITE_SUPABASE_ANON_KEY
 SUPABASE_SERVICE_ROLE_KEY=        # backend only, never exposed to the frontend
+```
+
+### WordPress staging publishing
+
+The Preview page uses Nam Builder API through FastAPI. Update these
+values in your existing project-root `.env` (keep your other settings):
+
+```dotenv
+KONVERTER_WORDPRESS_PUBLISH_URL=https://vlrc.komosion.com/wp-json/nam-builder/v1/pages
+KONVERTER_WORDPRESS_BEARER_TOKEN= # paste the supplied token locally, without "Bearer "
+KONVERTER_WORDPRESS_TIMEOUT_SECONDS=30
+```
+
+FastAPI sends `POST` with `Authorization: Bearer <token>` and
+`Content-Type: application/json`. Its JSON body contains exactly:
+
+```json
+{
+  "title": "Reviewed report title",
+  "html": "<main>Reviewed report HTML</main>",
+  "status": "draft"
+}
+```
+
+Process and approve a document, then select **Publish to WordPress** on Preview.
+Choose **Save draft** or **Publish live**, then confirm. The body above uses
+`"status": "publish"` when live publishing is selected.
+
+The Nam Builder endpoint can only create pages — there is no update/upsert
+call — so publishing the same document twice always creates a second,
+separate page. To guard against this, every successful publish is also
+recorded in a `wordpress_publications` table in Supabase (create it with
+`backend/sql/004_wordpress_publications.sql` — see `backend/sql/README.md`
+for the full schema; requires `SUPABASE_URL` and
+`SUPABASE_SERVICE_ROLE_KEY`). If you edit and re-approve a document that was
+already published, the next publish attempt is blocked with a warning
+naming the existing page instead of silently creating a duplicate — the UI
+requires an explicit "Publish anyway" confirmation to proceed. Without
+Supabase configured, this safeguard is skipped (same as `audit_log`).
+
+### Remote Docling settings
+
+```dotenv
+KONVERTER_DOCLING_MODE=local      # local | remote — offload PDF parsing to a RunPod serverless worker
+KONVERTER_DOCLING_ENDPOINT_URL=   # RunPod endpoint, e.g. https://api.runpod.ai/v2/<ENDPOINT_ID>
+KONVERTER_RUNPOD_API_KEY=         # backend only, never exposed to the frontend
+KONVERTER_STORAGE_BUCKET=konverter-docs  # Supabase Storage bucket used to hand off PDFs to the worker
+KONVERTER_SIGNED_URL_TTL=3600     # seconds a signed upload/download URL stays valid
 ```
 
 ## Document chat assistant
@@ -121,6 +173,24 @@ Also add the site that will host the export to CORS:
 ```dotenv
 KONVERTER_CORS_ORIGINS=http://localhost:5173,https://your-wordpress-site.example
 ```
+
+## Remote Docling mode
+
+By default (`KONVERTER_DOCLING_MODE=local`) PDFs are parsed with Docling
+in-process, same as always — nothing to configure. Setting it to `remote`
+instead offloads parsing to a GPU-backed
+[RunPod](https://www.runpod.io/) serverless worker: the backend uploads the
+PDF to Supabase Storage, invokes the worker via
+`KONVERTER_DOCLING_ENDPOINT_URL`, and downloads the resulting Docling output
+once the job completes.
+
+This requires:
+
+- `SUPABASE_SERVICE_ROLE_KEY` set (used to create signed upload/download URLs)
+- the `KONVERTER_STORAGE_BUCKET` bucket to already exist in your Supabase project
+- a deployed RunPod endpoint running the worker image in `docling_worker/`
+  (its own `Dockerfile` and `requirements.txt` — build and push it to RunPod
+  separately; it isn't part of the regular backend/frontend build)
 
 ## Verify
 

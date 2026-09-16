@@ -124,6 +124,16 @@ def render_pdf_regions(source_path: Path, jobs: list[dict[str, Any]]) -> list[Pa
                 destination = Path(job["destination"])
                 try:
                     page_number = int(job["page"])
+                    if page_number < 1:
+                        # pdfium's page list is 0-indexed; a page_number of
+                        # 0 or negative (missing/zero provenance from
+                        # Docling) would otherwise turn into pdf[-1] or
+                        # further negative indices — Python's negative-index
+                        # wraparound silently renders the *last* page (or
+                        # another wrong one) instead of failing, rather than
+                        # skipping this job the way an out-of-range page
+                        # already does below.
+                        raise ValueError(f"page_number must be >= 1, got {page_number}")
                     dpi = int(job.get("dpi", 144))
                     cache_key = (page_number, dpi)
                     image = page_cache.get(cache_key)

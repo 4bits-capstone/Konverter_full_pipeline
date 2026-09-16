@@ -58,9 +58,9 @@ class ProcessingSummary(ApiModel):
     tables: ProcessingElementCoverage
 
 
-ReviewStatus = Literal["pending", "accepted", "edited", "needs_attention", "removed"]
+ReviewStatus = Literal["pending", "accepted", "edited", "removed"]
 ConfidenceBand = Literal["high", "med", "low"]
-ReviewKind = Literal["kv", "text", "table"]
+ReviewKind = Literal["kv", "text", "table", "image"]
 
 ReviewType = Literal[
     "box_section",
@@ -73,6 +73,7 @@ ReviewType = Literal[
     "header",
     "list",
     "picture",
+    "quote",
     "section_header_1",
     "section_header_2",
     "section_header_3",
@@ -117,6 +118,10 @@ class ReviewItem(ApiModel):
     title: str
     kind: ReviewKind
     status: ReviewStatus = "pending"
+    # Who last made the decision behind `status` — the pipeline itself
+    # (footnotes start pre-accepted, unseen by anyone) or a reviewer
+    # (any accept/edit/bulk-resolve action). None until either happens.
+    reviewed_by: Literal["system", "reviewer"] | None = None
     extracted_text: str | None = None
     corrected_text: str | None = None
     note: str | None = None
@@ -175,6 +180,26 @@ class PublicationPayload(ApiModel):
 
 class ApprovalResult(ApiModel):
     approved_at: str
+
+
+class WordPressPublishRequest(ApiModel):
+    model_config = ConfigDict(extra="forbid")
+    status: Literal["draft", "publish"] = "draft"
+    # Explicit acknowledgement that this document was already published
+    # before and this call will create an ADDITIONAL WordPress page (the
+    # Nam Builder API has no update/upsert endpoint). Required whenever the
+    # backend finds a prior publish for this document that the local cache
+    # no longer matches (e.g. the document was edited and re-approved).
+    confirm_duplicate: bool = False
+
+
+class WordPressPublicationResult(ApiModel):
+    success: bool = True
+    page_id: int = Field(gt=0)
+    status: Literal["draft", "publish"] = "draft"
+    edit_url: str = Field(max_length=2_048)
+    preview_url: str = Field(max_length=2_048)
+    published_at: str
 
 
 class ChatMessage(ApiModel):

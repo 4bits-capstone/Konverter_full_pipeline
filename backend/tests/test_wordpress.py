@@ -1,0 +1,619 @@
+from __future__ import annotations
+
+import asyncio
+import json
+from dataclasses import replace
+
+import httpx
+import pytest
+
+import app.main as app_main
+from app.config import Settings, load_settings
+from app.models import WordPressPublicationResult
+from app.wordpress import (
+    WordPressAuthenticationError,
+    WordPressNotConfiguredError,
+    WordPressPublisher,
+    WordPressPublishingError,
+    WordPressTimeoutError,
+)
+from test_api import confirm_metadata, load_client, upload_and_process
+
+
+TEST_TOKEN = "test-only-bearer-token.not-a-real-credential"
+ENDPOINT = "https://vlrc.komosion.com/wp-json/nam-builder/v1/pages"
+
+
+def _configured_settings(monkeypatch) -> Settings:
+    monkeypatch.setenv(
+        "KONVERTER_WORDPRESS_PUBLISH_URL",
+        ENDPOINT,
+    )
+    monkeypatch.setenv("KONVERTER_WORDPRESS_BEARER_TOKEN", TEST_TOKEN)
+    return load_settings()
+
+
+def test_wordpress_client_keeps_credentials_out_of_payload_and_uses_draft(monkeypatch, caplog):
+    captured: dict = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        captured["request"] = request
+        return httpx.Response(
+            201,
+            json={
+                "success": True,
+                "page_id": 26036,
+                "edit_url": "https://vlrc.komosion.com/wp-admin/post.php?post=26036&action=edit",
+                "preview_url": "https://vlrc.komosion.com/?page_id=26036&preview=true",
+            },
+        )
+
+    settings = _configured_settings(monkeypatch)
+    assert TEST_TOKEN not in repr(settings)
+    publisher = WordPressPublisher(
+        settings,
+        transport=httpx.MockTransport(handler),
+    )
+    result = asyncio.run(
+        publisher.publish(
+            title="Accessibility Standards Report",
+            html="<main>Reviewed report</main>",
+            idempotency_key="konverter-test-signature",
+        )
+    )
+
+    request = captured["request"]
+    payload = json.loads(request.content)
+    assert payload == {
+        "title": "Accessibility Standards Report",
+        "html": "<main>Reviewed report</main>",
+        "status": "draft",
+    }
+    assert request.headers["Idempotency-Key"] == "konverter-test-signature"
+    assert request.method == "POST"
+    assert str(request.url) == ENDPOINT
+    assert request.headers["Content-Type"] == "application/json"
+    assert request.headers["Authorization"] == f"Bearer {TEST_TOKEN}"
+    assert "Cookie" not in request.headers
+    assert "X-NB-Nonce" not in request.headers
+    assert TEST_TOKEN not in str(request.url)
+    assert TEST_TOKEN not in request.content.decode()
+    assert TEST_TOKEN not in result.model_dump_json()
+    assert TEST_TOKEN not in caplog.text
+    assert result.page_id == 26036
+    assert result.status == "draft"
+
+
+def test_wordpress_config_rejects_plain_http_for_remote_hosts(monkeypatch):
+    monkeypatch.setenv(
+        "KONVERTER_WORDPRESS_PUBLISH_URL",
+        "http://vlrc.komosion.com/wp-json/nam-builder/v1/pages",
+    )
+    with pytest.raises(ValueError, match="must use HTTPS"):
+        load_settings()
+
+
+@pytest.mark.parametrize("remote_url", [
+    "https://malicious.example/redirect",
+    "javascript:alert(1)",
+    f"https://vlrc.komosion.com/?access_token={TEST_TOKEN}&preview_nonce=private",
+    "https://vlrc.komosion.com\\@malicious.example/",
+])
+def test_wordpress_client_never_forwards_remote_links_or_secrets(monkeypatch, remote_url):
+    def handler(_request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200,
+            json={
+                "success": True,
+                "page_id": 26036,
+                "preview_url": remote_url,
+                "edit_url": remote_url,
+                "token": TEST_TOKEN,
+            },
+        )
+
+    publisher = WordPressPublisher(
+        _configured_settings(monkeypatch),
+        transport=httpx.MockTransport(handler),
+    )
+    result = _publish(publisher)
+    assert result.preview_url == "https://vlrc.komosion.com/?page_id=26036&preview=true"
+    assert result.edit_url == "https://vlrc.komosion.com/wp-admin/post.php?post=26036&action=edit"
+    assert TEST_TOKEN not in result.model_dump_json()
+    assert "nonce" not in result.model_dump_json()
+
+
+def _publish(publisher):
+    return asyncio.run(publisher.publish(
+        title="Report", html="<main>Report</main>", idempotency_key="konverter-test-signature",
+    ))
+
+
+@pytest.mark.parametrize("response", [
+    {"id": 26036, "status": "draft"},
+    {"page_id": 26036},
+    {"pageId": 26036},
+    {"post_id": 26036},
+    {"ID": 26036},
+    {"id": "26036"},
+    {"success": True, "data": {"id": 26036, "status": "draft"}},
+    {"data": {"page_id": 26036}},
+    {"page": {"id": 26036}},
+    {"success": True, "data": {"page": {"id": 26036}}},
+])
+def test_wordpress_supported_response_shapes(monkeypatch, response):
+    publisher = WordPressPublisher(_configured_settings(monkeypatch), transport=httpx.MockTransport(
+        lambda request: httpx.Response(201, json=response),
+    ))
+    assert _publish(publisher).page_id == 26036
+
+
+@pytest.mark.parametrize("response", [
+    {}, None, [], "created", {"success": True}, {"id": True}, {"id": False},
+    {"id": 0}, {"id": -1}, {"id": 1.5}, {"id": "26036?token=private"},
+    {"id": "٢٦٠٣٦"}, {"id": 2**64}, {"id": "9" * 100}, {"id": []},
+    {"success": False, "id": 26036}, {"success": "true", "id": 26036},
+    {"error": TEST_TOKEN, "id": 26036}, {"id": 26036, "status": "publish"},
+    {"id": 26036, "status": []}, {"success": True, "data": []},
+    {"data": {"success": False, "id": 26036}},
+    {"data": {"id": 26036, "status": "publish"}},
+])
+def test_wordpress_unconfirmed_response_does_not_claim_success(monkeypatch, response):
+    publisher = WordPressPublisher(_configured_settings(monkeypatch), transport=httpx.MockTransport(
+        lambda request: httpx.Response(200, json=response),
+    ))
+    with pytest.raises(WordPressPublishingError) as exc:
+        _publish(publisher)
+    assert "Check WordPress Pages before retrying" in str(exc.value)
+    assert TEST_TOKEN not in str(exc.value)
+
+
+@pytest.mark.parametrize("token", ["Bearer test-secret", "test\r\nsecret", "test secret", "秘密", "x" * 8193])
+def test_wordpress_config_rejects_malformed_tokens_without_echoing_them(monkeypatch, token):
+    monkeypatch.setenv("KONVERTER_WORDPRESS_BEARER_TOKEN", token)
+    with pytest.raises(ValueError) as exc:
+        load_settings()
+    assert token not in str(exc.value)
+
+
+@pytest.mark.parametrize("missing", ["KONVERTER_WORDPRESS_PUBLISH_URL", "KONVERTER_WORDPRESS_BEARER_TOKEN"])
+def test_wordpress_requires_backend_configuration_before_network(monkeypatch, missing):
+    _configured_settings(monkeypatch)
+    monkeypatch.delenv(missing)
+    def unexpected_request(request):
+        pytest.fail("No network request should happen without configuration")
+    publisher = WordPressPublisher(load_settings(), transport=httpx.MockTransport(unexpected_request))
+    with pytest.raises(WordPressNotConfiguredError):
+        _publish(publisher)
+
+
+def test_wordpress_legacy_credentials_cannot_replace_bearer_token(monkeypatch):
+    _configured_settings(monkeypatch)
+    monkeypatch.delenv("KONVERTER_WORDPRESS_BEARER_TOKEN")
+    monkeypatch.setenv("KONVERTER_WORDPRESS_USERNAME", "old-user")
+    monkeypatch.setenv("KONVERTER_WORDPRESS_APPLICATION_PASSWORD", "old-password")
+    with pytest.raises(WordPressNotConfiguredError):
+        _publish(WordPressPublisher(load_settings()))
+
+
+@pytest.mark.parametrize("status_code", [301, 302, 307, 308, 400, 401, 403, 404, 413, 429, 500])
+def test_wordpress_errors_never_forward_secrets_or_follow_redirects(monkeypatch, status_code, caplog):
+    calls = []
+    def handler(request):
+        calls.append(request)
+        return httpx.Response(status_code, headers={"Location": "https://malicious.example"},
+                             json={"message": TEST_TOKEN, "Authorization": f"Bearer {TEST_TOKEN}"})
+    publisher = WordPressPublisher(_configured_settings(monkeypatch), transport=httpx.MockTransport(handler))
+    with pytest.raises(WordPressPublishingError) as exc:
+        _publish(publisher)
+    assert len(calls) == 1
+    assert TEST_TOKEN not in str(exc.value)
+    assert TEST_TOKEN not in caplog.text
+    if status_code in {401, 403}:
+        assert isinstance(exc.value, WordPressAuthenticationError)
+
+
+@pytest.mark.parametrize("error_type", [httpx.ReadTimeout, httpx.ConnectError, httpx.WriteError])
+def test_wordpress_transport_errors_are_safe_and_never_retried(monkeypatch, error_type):
+    calls = []
+    def handler(request):
+        calls.append(request)
+        raise error_type(TEST_TOKEN, request=request)
+    publisher = WordPressPublisher(_configured_settings(monkeypatch), transport=httpx.MockTransport(handler))
+    with pytest.raises(WordPressPublishingError) as exc:
+        _publish(publisher)
+    assert len(calls) == 1
+    assert TEST_TOKEN not in str(exc.value)
+    assert exc.value.__suppress_context__ is True
+    assert "Check WordPress Pages before retrying" in str(exc.value)
+    if error_type is httpx.ReadTimeout:
+        assert isinstance(exc.value, WordPressTimeoutError)
+
+
+def test_wordpress_non_json_success_is_safe(monkeypatch):
+    publisher = WordPressPublisher(_configured_settings(monkeypatch), transport=httpx.MockTransport(
+        lambda request: httpx.Response(200, text=f"<html>{TEST_TOKEN}</html>"),
+    ))
+    with pytest.raises(WordPressPublishingError) as exc:
+        _publish(publisher)
+    assert TEST_TOKEN not in str(exc.value)
+    assert exc.value.__suppress_context__ is True
+
+
+def test_wordpress_links_support_subdirectory_install(monkeypatch):
+    _configured_settings(monkeypatch)
+    monkeypatch.setenv("KONVERTER_WORDPRESS_PUBLISH_URL", "https://vlrc.komosion.com/staging/wp-json/nam-builder/v1/pages")
+    publisher = WordPressPublisher(load_settings(), transport=httpx.MockTransport(
+        lambda request: httpx.Response(201, json={"id": 26036}),
+    ))
+    result = _publish(publisher)
+    assert result.preview_url == "https://vlrc.komosion.com/staging/?page_id=26036&preview=true"
+    assert result.edit_url == "https://vlrc.komosion.com/staging/wp-admin/post.php?post=26036&action=edit"
+
+
+class _FakeWordPressPublisher:
+    def __init__(self) -> None:
+        self.calls: list[dict[str, str]] = []
+
+    async def publish(self, *, title: str, html: str, idempotency_key: str, status="draft"):
+        self.calls.append(
+            {"title": title, "html": html, "idempotency_key": idempotency_key, "status": status}
+        )
+        return WordPressPublicationResult(
+            success=True,
+            page_id=26036 if status == "draft" else 26037,
+            status=status,
+            edit_url="https://vlrc.komosion.com/wp-admin/post.php?post=26036&action=edit",
+            preview_url="https://vlrc.komosion.com/?page_id=26036&preview=true" if status == "draft" else "https://vlrc.komosion.com/?page_id=26037",
+            published_at="2026-09-06T10:00:00+00:00",
+        )
+
+
+def _approved_document(client) -> str:
+    document_id = upload_and_process(client)
+    assert client.post(
+        f"/api/documents/{document_id}/review-items/resolve-all"
+    ).status_code == 200
+    confirm_metadata(client, document_id)
+    assert client.post(f"/api/documents/{document_id}/approval").status_code == 200
+    return document_id
+
+
+def test_publish_endpoint_is_authenticated_persistent_and_idempotent(tmp_path, monkeypatch):
+    with load_client(tmp_path) as client:
+        document_id = _approved_document(client)
+        fake = _FakeWordPressPublisher()
+        monkeypatch.setattr(app_main, "wordpress", fake)
+
+        first = client.post(f"/api/documents/{document_id}/wordpress-publication")
+        assert first.status_code == 200
+        assert first.json()["pageId"] == 26036
+        assert first.json()["status"] == "draft"
+        assert len(fake.calls) == 1
+        assert fake.calls[0]["title"] == "Accessibility Standards Report"
+        assert "Accessibility Standards Report" in fake.calls[0]["html"]
+
+        status = client.get(f"/api/documents/{document_id}/wordpress-publication")
+        assert status.status_code == 200
+        assert status.json() == first.json()
+
+        retry = client.post(f"/api/documents/{document_id}/wordpress-publication")
+        assert retry.status_code == 200
+        assert retry.json() == first.json()
+        assert len(fake.calls) == 1
+
+        cached = app_main.store.read_artifact(
+            document_id, app_main.WORDPRESS_PUBLICATION_ARTIFACT
+        )
+        serialised = json.dumps(cached)
+        assert "application-password" not in serialised
+        assert "Authorization" not in serialised
+        assert "nonce" not in serialised.lower()
+
+
+def test_publish_endpoint_requires_approval_and_owner(tmp_path, monkeypatch):
+    with load_client(tmp_path) as client:
+        document_id = upload_and_process(client)
+        fake = _FakeWordPressPublisher()
+        monkeypatch.setattr(app_main, "wordpress", fake)
+
+        unapproved = client.post(
+            f"/api/documents/{document_id}/wordpress-publication"
+        )
+        assert unapproved.status_code == 409
+        assert fake.calls == []
+
+        client.app.dependency_overrides[app_main.get_current_user] = lambda: {
+            "id": "another-user",
+            "email": "another@example.test",
+        }
+        hidden = client.post(f"/api/documents/{document_id}/wordpress-publication")
+        assert hidden.status_code == 404
+        assert fake.calls == []
+
+
+def test_publish_endpoint_rejects_a_missing_session(tmp_path):
+    with load_client(tmp_path) as client:
+        document_id = _approved_document(client)
+        client.app.dependency_overrides.pop(app_main.get_current_user, None)
+        response = client.post(
+            f"/api/documents/{document_id}/wordpress-publication"
+        )
+        assert response.status_code == 401
+
+
+def test_bearer_api_through_fastapi_returns_and_caches_only_safe_metadata(tmp_path, monkeypatch):
+    with load_client(tmp_path) as client:
+        document_id = _approved_document(client)
+        calls = []
+        def handler(request):
+            calls.append(request)
+            assert request.headers["Authorization"] == f"Bearer {TEST_TOKEN}"
+            assert set(json.loads(request.content)) == {"title", "html", "status"}
+            return httpx.Response(201, json={
+                "success": True,
+                "data": {"id": 26036, "status": "draft", "token": TEST_TOKEN,
+                         "preview_url": f"https://vlrc.komosion.com/?token={TEST_TOKEN}"},
+            })
+        settings = _configured_settings(monkeypatch)
+        monkeypatch.setattr(app_main, "settings", settings)
+        monkeypatch.setattr(app_main, "wordpress", WordPressPublisher(settings, transport=httpx.MockTransport(handler)))
+        path = f"/api/documents/{document_id}/wordpress-publication"
+        first = client.post(path)
+        assert first.status_code == 200
+        assert first.json()["pageId"] == 26036
+        assert first.json()["previewUrl"] == "https://vlrc.komosion.com/?page_id=26036&preview=true"
+        assert TEST_TOKEN not in first.text
+        assert client.post(path).json() == first.json()
+        assert client.get(path).json() == first.json()
+        assert len(calls) == 1
+        cached = app_main.store.read_artifact(document_id, app_main.WORDPRESS_PUBLICATION_ARTIFACT)
+        assert TEST_TOKEN not in json.dumps(cached)
+        assert "Authorization" not in json.dumps(cached)
+
+
+@pytest.mark.parametrize("wp_status, api_status", [(401, 502), (403, 502), (404, 502), (500, 502), (200, 502)])
+def test_bearer_endpoint_failure_is_safe_and_not_cached(tmp_path, monkeypatch, wp_status, api_status):
+    with load_client(tmp_path) as client:
+        document_id = _approved_document(client)
+        calls = []
+        def handler(request):
+            calls.append(request)
+            return httpx.Response(wp_status, json={"message": TEST_TOKEN})
+        monkeypatch.setattr(app_main, "wordpress", WordPressPublisher(
+            _configured_settings(monkeypatch), transport=httpx.MockTransport(handler),
+        ))
+        path = f"/api/documents/{document_id}/wordpress-publication"
+        result = client.post(path)
+        assert result.status_code == api_status
+        assert TEST_TOKEN not in result.text
+        assert len(calls) == 1
+        assert client.get(path).json() is None
+
+
+def test_wordpress_cache_is_scoped_to_target_endpoint(monkeypatch):
+    record = {"id": "test-document", "approved_at": "test-approval"}
+    monkeypatch.setattr(app_main, "settings", _configured_settings(monkeypatch))
+    first = app_main._wordpress_source_signature(record, "<main>Report</main>")
+    monkeypatch.setenv("KONVERTER_WORDPRESS_PUBLISH_URL", "https://other.example/wp-json/nam-builder/v1/pages")
+    monkeypatch.setattr(app_main, "settings", load_settings())
+    second = app_main._wordpress_source_signature(record, "<main>Report</main>")
+    assert first != second
+
+
+def test_client_sends_live_status_and_returns_a_live_view_link(monkeypatch):
+    calls = []
+    def handler(request):
+        calls.append(json.loads(request.content))
+        return httpx.Response(201, json={"data": {"id": 26037, "status": "publish"}})
+    publisher = WordPressPublisher(_configured_settings(monkeypatch), transport=httpx.MockTransport(handler))
+    result = asyncio.run(publisher.publish(title="Report", html="<main>Report</main>", idempotency_key="live-test", status="publish"))
+    assert calls[0] == {"title": "Report", "html": "<main>Report</main>", "status": "publish"}
+    assert result.status == "publish"
+    assert result.preview_url == "https://vlrc.komosion.com/?page_id=26037"
+
+
+def test_client_does_not_claim_live_when_wordpress_returns_draft(monkeypatch):
+    publisher = WordPressPublisher(_configured_settings(monkeypatch), transport=httpx.MockTransport(
+        lambda request: httpx.Response(201, json={"id": 26036, "status": "draft"}),
+    ))
+    with pytest.raises(WordPressPublishingError):
+        asyncio.run(publisher.publish(title="Report", html="Report", idempotency_key="live-test", status="publish"))
+
+
+def test_publishing_flow_supports_draft_then_live_and_no_draft_after_live(tmp_path, monkeypatch):
+    with load_client(tmp_path) as client:
+        doc = _approved_document(client)
+        fake = _FakeWordPressPublisher()
+        monkeypatch.setattr(app_main, "wordpress", fake)
+        path = f"/api/documents/{doc}/wordpress-publication"
+        draft = client.post(path, json={"status": "draft"})
+        assert draft.status_code == 200
+        assert draft.json()["status"] == "draft"
+        live = client.post(path, json={"status": "publish"})
+        assert live.status_code == 200
+        assert live.json()["status"] == "publish"
+        assert client.get(path).json() == live.json()
+        assert client.post(path, json={"status": "draft"}).status_code == 409
+        assert [call["status"] for call in fake.calls] == ["draft", "publish"]
+        assert fake.calls[0]["idempotency_key"] != fake.calls[1]["idempotency_key"]
+
+
+def test_publishing_uses_unchanged_approved_html_without_extra_chat_configuration(tmp_path, monkeypatch):
+    with load_client(tmp_path) as client:
+        doc = _approved_document(client)
+        original_html = app_main.store.artifact_path(doc, "accessible.html").read_text(encoding="utf-8")
+        fake = _FakeWordPressPublisher()
+        monkeypatch.setattr(app_main, "wordpress", fake)
+        monkeypatch.setattr(app_main, "settings", replace(app_main.settings, public_api_url=""))
+        assert client.post(f"/api/documents/{doc}/wordpress-publication", json={"status": "publish"}).status_code == 200
+        assert fake.calls[0]["html"] == original_html
+        assert not (app_main.settings.data_dir / "wordpress-publications.sqlite3").exists()
+
+
+class _FakeWordPressRegistry:
+    """Stands in for the durable Supabase-backed registry (wordpress_registry.py).
+
+    The local per-document cache (wordpress-publication.json) is wiped by any
+    edit that unapproves the document, so it alone can't stop a re-approve +
+    re-publish from silently creating a second WordPress page. The registry
+    is the safeguard: it is never touched by edits, so it still remembers a
+    document was already published even after its local cache is gone.
+    """
+
+    def __init__(self) -> None:
+        self.rows: dict[str, list[dict]] = {}
+
+    async def record_publication(self, *, document_id: str, **fields) -> None:
+        self.rows.setdefault(document_id, []).append({"document_id": document_id, **fields})
+
+    async def find_latest(self, document_id: str) -> dict | None:
+        rows = self.rows.get(document_id)
+        return rows[-1] if rows else None
+
+
+def test_editing_after_publish_warns_before_creating_a_duplicate_page(tmp_path, monkeypatch):
+    with load_client(tmp_path) as client:
+        document_id = _approved_document(client)
+        fake_wp = _FakeWordPressPublisher()
+        fake_registry = _FakeWordPressRegistry()
+        monkeypatch.setattr(app_main, "wordpress", fake_wp)
+        monkeypatch.setattr(app_main, "wordpress_registry", fake_registry)
+        path = f"/api/documents/{document_id}/wordpress-publication"
+
+        first = client.post(path, json={"status": "draft"})
+        assert first.status_code == 200
+        assert first.json()["pageId"] == 26036
+        assert len(fake_wp.calls) == 1
+        assert fake_registry.rows[document_id][-1]["page_id"] == 26036
+
+        item_id = client.get(f"/api/documents/{document_id}/review-items").json()[0]["id"]
+        assert client.patch(
+            f"/api/documents/{document_id}/review-items/{item_id}", json={"label": "Corrected label"}
+        ).status_code == 200
+        assert client.get(path).json() is None  # local cache + approval wiped by the edit
+        assert client.post(f"/api/documents/{document_id}/approval").status_code == 200
+
+        blocked = client.post(path, json={"status": "publish"})
+        assert blocked.status_code == 409
+        detail = blocked.json()["detail"]
+        assert detail["code"] == "wordpress_duplicate_risk"
+        assert detail["existing"]["pageId"] == 26036
+        assert len(fake_wp.calls) == 1  # never called WordPress again without confirmation
+
+        confirmed = client.post(path, json={"status": "publish", "confirmDuplicate": True})
+        assert confirmed.status_code == 200
+        assert confirmed.json()["pageId"] == 26037
+        assert len(fake_wp.calls) == 2
+        assert [row["page_id"] for row in fake_registry.rows[document_id]] == [26036, 26037]
+
+
+def test_stale_approval_race_still_records_the_page_that_was_actually_created(tmp_path, monkeypatch):
+    """wordpress.publish() below has already created a real WordPress page
+    by the time the stale-approval check runs — if that check used to raise
+    before the durable registry write, a race where someone edits/re-
+    approves the document while the publish call is still in flight would
+    leave a real WordPress page with zero record of it anywhere in
+    Konverter, silently defeating the very duplicate-publish protection
+    this registry exists to provide (the next publish attempt's
+    find_latest() would see nothing and publish straight through again)."""
+    with load_client(tmp_path) as client:
+        document_id = _approved_document(client)
+        fake_registry = _FakeWordPressRegistry()
+        monkeypatch.setattr(app_main, "wordpress_registry", fake_registry)
+
+        original_approved_at = app_main.store.get_record(document_id)["approved_at"]
+
+        class _RaceyPublisher:
+            def __init__(self) -> None:
+                self.calls: list[dict] = []
+
+            async def publish(self, *, title, html, idempotency_key, status="draft"):
+                self.calls.append({"title": title})
+                # Simulate another request re-approving the document while
+                # this publish call is still in flight.
+                app_main.store.update_record(document_id, approved_at="2026-09-09T00:00:00+00:00")
+                return WordPressPublicationResult(
+                    success=True,
+                    page_id=99001,
+                    status=status,
+                    edit_url="https://vlrc.komosion.com/wp-admin/post.php?post=99001&action=edit",
+                    preview_url="https://vlrc.komosion.com/?page_id=99001&preview=true",
+                    published_at="2026-09-06T10:00:00+00:00",
+                )
+
+        monkeypatch.setattr(app_main, "wordpress", _RaceyPublisher())
+
+        response = client.post(f"/api/documents/{document_id}/wordpress-publication")
+        assert response.status_code == 409
+        assert "99001" in response.json()["detail"]
+
+        # The page WAS created — it must be durably recorded despite the 409.
+        assert fake_registry.rows[document_id][-1]["page_id"] == 99001
+        cached = app_main.store.read_artifact(document_id, app_main.WORDPRESS_PUBLICATION_ARTIFACT)
+        assert cached["pageId"] == 99001
+
+        app_main.store.update_record(document_id, approved_at=original_approved_at)
+
+
+def test_registry_lookup_failure_blocks_publish_instead_of_publishing_blind(tmp_path, monkeypatch):
+    """A transient Supabase error must never be treated the same as
+    "confirmed no prior publish" — that would silently disable the
+    duplicate-publish safeguard for exactly the kind of hiccup it needs to
+    be resilient to. The endpoint must fail closed (503), not publish."""
+    with load_client(tmp_path) as client:
+        document_id = _approved_document(client)
+        fake_wp = _FakeWordPressPublisher()
+        monkeypatch.setattr(app_main, "wordpress", fake_wp)
+
+        # Force the local cache to miss (as it would after an edit) so the
+        # endpoint falls through to the durable-registry lookup.
+        app_main.store.delete_artifacts(document_id, app_main.WORDPRESS_PUBLICATION_ARTIFACT)
+
+        from app.wordpress_registry import RegistryUnavailableError as _RealRegistryUnavailableError
+
+        class _BrokenRegistry:
+            RegistryUnavailableError = _RealRegistryUnavailableError
+
+            async def find_latest(self, document_id: str):
+                raise _RealRegistryUnavailableError("boom")
+
+        monkeypatch.setattr(app_main, "wordpress_registry", _BrokenRegistry())
+
+        response = client.post(f"/api/documents/{document_id}/wordpress-publication")
+        assert response.status_code == 503
+        assert fake_wp.calls == []
+
+
+def test_duplicate_safeguard_is_a_no_op_when_the_registry_is_unavailable(tmp_path, monkeypatch):
+    """Matches existing behaviour when Supabase isn't configured (the default
+    in this test suite, see app.config's pytest guard): publishing after an
+    edit still succeeds without requiring confirmation. The registry itself
+    already degrades gracefully (see wordpress_registry.find_latest); this
+    just documents that publish_to_wordpress doesn't hard-depend on it."""
+    with load_client(tmp_path) as client:
+        document_id = _approved_document(client)
+        fake_wp = _FakeWordPressPublisher()
+        monkeypatch.setattr(app_main, "wordpress", fake_wp)
+        path = f"/api/documents/{document_id}/wordpress-publication"
+
+        assert client.post(path, json={"status": "draft"}).status_code == 200
+        item_id = client.get(f"/api/documents/{document_id}/review-items").json()[0]["id"]
+        assert client.patch(
+            f"/api/documents/{document_id}/review-items/{item_id}", json={"label": "Corrected label"}
+        ).status_code == 200
+        assert client.post(f"/api/documents/{document_id}/approval").status_code == 200
+
+        again = client.post(path, json={"status": "draft"})
+        assert again.status_code == 200
+        assert len(fake_wp.calls) == 2
+
+
+@pytest.mark.parametrize("payload", [{"status": "private"}, {"status": None}, {"status": "publish", "token": "client-secret"}])
+def test_publish_rejects_unsupported_or_extra_client_fields(tmp_path, monkeypatch, payload):
+    with load_client(tmp_path) as client:
+        doc = _approved_document(client)
+        fake = _FakeWordPressPublisher()
+        monkeypatch.setattr(app_main, "wordpress", fake)
+        assert client.post(f"/api/documents/{doc}/wordpress-publication", json=payload).status_code == 422
+        assert not fake.calls

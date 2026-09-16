@@ -1,7 +1,9 @@
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import json
+import logging
 import os
 import tempfile
 import time
@@ -20,8 +22,8 @@ from .config import load_settings  # noqa: I001 (must import first: loads .env
 # before audit/auth capture SUPABASE_* into module-level constants at import
 # time, so a variable already exported blank in the shell doesn't shadow it)
 
-from . import audit
-from .auth import get_current_user, require_admin
+from . import audit, wordpress_registry
+from .auth import get_current_user, get_current_user_optional, require_admin
 from .chat import (
     OpenAINotConfiguredError,
     OpenAIRequestError,
@@ -44,15 +46,26 @@ from .models import (
     ReviewBulkPatch,
     ReviewPatch,
     TtsRequest,
+    WordPressPublicationResult,
+    WordPressPublishRequest,
 )
 from .service import ProcessingManager, WorkflowService
 from .storage import DocumentNotFoundError, LocalDocumentStore
+from .wordpress import (
+    WordPressAuthenticationError,
+    WordPressNotConfiguredError,
+    WordPressPublisher,
+    WordPressPublishingError,
+    WordPressTimeoutError,
+)
 
 MAX_PDF_BYTES = 200 * 1024 * 1024
 MAX_DOCUMENTS_PER_UPLOAD = 5
+MAX_REVIEW_IMAGE_BYTES = 20 * 1024 * 1024
 
 CurrentUser = Annotated[dict, Depends(get_current_user)]
 AdminUser = Annotated[dict, Depends(require_admin)]
+OptionalUser = Annotated[dict | None, Depends(get_current_user_optional)]
 
 settings = load_settings()
 configure_logging(settings.log_level)
@@ -60,6 +73,10 @@ settings.data_dir.mkdir(parents=True, exist_ok=True)
 store = LocalDocumentStore(settings.data_dir)
 processing = ProcessingManager(settings, store)
 workflow = WorkflowService(settings, store)
+wordpress = WordPressPublisher(settings)
+wordpress_publish_lock = asyncio.Lock()
+
+WORDPRESS_PUBLICATION_ARTIFACT = "wordpress-publication.json"
 
 
 @asynccontextmanager
@@ -190,6 +207,39 @@ def _pretty_json_download(
     )
 
 
+def _wordpress_source_signature(record: dict, html: str) -> str:
+    material = "\0".join(
+        (
+            str(record.get("id") or ""),
+            str(record.get("approved_at") or ""),
+            settings.wordpress_publish_url,
+            html,
+        )
+    )
+    return hashlib.sha256(material.encode("utf-8")).hexdigest()
+
+
+def _wordpress_content_hash(title: str, html: str) -> str:
+    """Identify what would actually be sent to WordPress, independent of
+    document_id/approved_at. Used to compare against the durable publish
+    registry, which survives edits that wipe the local per-document cache."""
+    material = "\0".join((title, html))
+    return hashlib.sha256(material.encode("utf-8")).hexdigest()
+
+
+def _cached_wordpress_publication(
+    document_id: str,
+    source_signature: str,
+) -> WordPressPublicationResult | None:
+    cached = store.read_artifact(document_id, WORDPRESS_PUBLICATION_ARTIFACT, {})
+    if not isinstance(cached, dict) or cached.get("source_signature") != source_signature:
+        return None
+    try:
+        return WordPressPublicationResult(**cached)
+    except (TypeError, ValueError):
+        return None
+
+
 def _render_cover(source_path: Path, destination: Path) -> None:
     try:
         render_pdf_region(source_path, destination, 1, dpi=120, padding=0)
@@ -241,6 +291,14 @@ async def audit_log(
     """Audit trail rows across all users, newest first, one page at a time.
     Admin only."""
     return await audit.list_recent(limit=limit, offset=offset)
+
+
+@app.get("/api/audit-log/count")
+async def audit_log_count(user: AdminUser) -> dict[str, int]:
+    """Exact total audit_log row count, uncapped by any page limit — backs
+    the audit event counters so they show the real total instead of freezing
+    at MAX_PAGE_LIMIT once the log outgrows one page. Admin only."""
+    return {"total": await audit.count_all()}
 
 
 @app.get("/api/audit-log/mine")
@@ -368,16 +426,18 @@ async def upload_documents(
 
 
 @app.get("/api/documents/{document_id}", response_model=DocumentSummary)
-def get_document(document_id: str) -> DocumentSummary:
-    return _summary(_record(document_id))
+def get_document(document_id: str, user: CurrentUser) -> DocumentSummary:
+    record = _record(document_id)
+    _require_owner(record, user)
+    return _summary(record)
 
 
 @app.get(
     "/api/documents/{document_id}/processing-summary",
     response_model=ProcessingSummary,
 )
-def processing_summary(document_id: str) -> ProcessingSummary:
-    _require_complete(document_id)
+def processing_summary(document_id: str, user: CurrentUser) -> ProcessingSummary:
+    _require_owner(_require_complete(document_id), user)
     try:
         return ProcessingSummary(**workflow.processing_summary(document_id))
     except RuntimeError as exc:
@@ -435,8 +495,8 @@ async def stop_processing(document_id: str, user: CurrentUser) -> DocumentProces
     return job
 
 
-def _processing_state_response(document_id: str) -> Response:
-    _record(document_id)
+def _processing_state_response(document_id: str, user: dict) -> Response:
+    _require_owner(_record(document_id), user)
     job = DocumentProcessingJob(**processing.status(document_id))
     # Some browser download handlers intercept repeated application/json GETs
     # even when Content-Disposition says inline.  Polling uses a fetch-only
@@ -450,20 +510,20 @@ def _processing_state_response(document_id: str) -> Response:
 
 
 @app.get("/api/documents/{document_id}/status")
-def processing_status(document_id: str) -> Response:
+def processing_status(document_id: str, user: CurrentUser) -> Response:
     """Backward-compatible status endpoint for older clients."""
-    return _processing_state_response(document_id)
+    return _processing_state_response(document_id, user)
 
 
 @app.post("/api/documents/{document_id}/processing-state")
-def processing_state(document_id: str) -> Response:
+def processing_state(document_id: str, user: CurrentUser) -> Response:
     """Fetch-only polling endpoint that cannot become a JSON navigation."""
-    return _processing_state_response(document_id)
+    return _processing_state_response(document_id, user)
 
 
 @app.get("/api/documents/{document_id}/review-items", response_model=list[ReviewItem])
-def get_review_items(document_id: str) -> list[ReviewItem]:
-    _require_complete(document_id)
+def get_review_items(document_id: str, user: CurrentUser) -> list[ReviewItem]:
+    _require_owner(_require_complete(document_id), user)
     try:
         return [ReviewItem(**item) for item in workflow.get_review_items(document_id)]
     except RuntimeError as exc:
@@ -500,6 +560,48 @@ async def update_review_item(
             "changes": _safe_review_changes(changes),
             "before": before,
             "after": after,
+        },
+    )
+    return ReviewItem(**item)
+
+
+@app.post(
+    "/api/documents/{document_id}/review-items/{item_id}/image",
+    response_model=ReviewItem,
+)
+async def upload_review_item_image(
+    document_id: str,
+    item_id: str,
+    user: CurrentUser,
+    file: Annotated[UploadFile, File(description="Replacement image for a figure")],
+) -> ReviewItem:
+    record = _require_complete(document_id)
+    _require_owner(record, user)
+    # Chunked and size-checked as it arrives, the same way upload_documents
+    # handles a PDF above -- an unbounded `await file.read()` would buffer
+    # an oversized request body in full before the size check ever runs.
+    chunks: list[bytes] = []
+    size = 0
+    while chunk := await file.read(1024 * 1024):
+        size += len(chunk)
+        if size > MAX_REVIEW_IMAGE_BYTES:
+            raise HTTPException(status_code=413, detail="Image is too large")
+        chunks.append(chunk)
+    image_bytes = b"".join(chunks)
+    try:
+        item = workflow.upload_review_item_image(document_id, item_id, image_bytes)
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail="Review item not found") from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    await audit.record_audit(
+        "upload_review_item_image",
+        document_id=document_id,
+        actor_id=user.get("id"),
+        actor_email=user.get("email"),
+        detail={
+            "file_name": record.get("file_name"),
+            "item": _review_item_label(item),
         },
     )
     return ReviewItem(**item)
@@ -543,9 +645,7 @@ async def resolve_all(document_id: str, user: CurrentUser) -> list[ReviewItem]:
     record = _require_complete(document_id)
     _require_owner(record, user)
     before = workflow.get_review_items(document_id)
-    changed_ids = {
-        item["id"] for item in before if item["status"] in {"pending", "needs_attention"}
-    }
+    changed_ids = {item["id"] for item in before if item["status"] == "pending"}
     items = workflow.resolve_all(document_id)
     changed_items = [item for item in items if item["id"] in changed_ids]
     await audit.record_audit(
@@ -564,8 +664,8 @@ async def resolve_all(document_id: str, user: CurrentUser) -> list[ReviewItem]:
 
 
 @app.get("/api/documents/{document_id}/metadata", response_model=MetadataPayload)
-def get_metadata(document_id: str) -> MetadataPayload:
-    _require_complete(document_id)
+def get_metadata(document_id: str, user: CurrentUser) -> MetadataPayload:
+    _require_owner(_require_complete(document_id), user)
     try:
         return MetadataPayload(**workflow.get_metadata(document_id))
     except RuntimeError as exc:
@@ -627,17 +727,201 @@ async def revoke_approval(document_id: str, user: CurrentUser) -> Response:
 
 
 @app.get("/api/documents/{document_id}/publication", response_model=PublicationPayload)
-def publication(document_id: str) -> PublicationPayload:
-    _record(document_id)
+def publication(document_id: str, user: CurrentUser) -> PublicationPayload:
+    _require_owner(_record(document_id), user)
     try:
         return PublicationPayload(**workflow.publication_payload(document_id))
     except ValueError as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from exc
 
 
-@app.get("/api/documents/{document_id}/source")
-def source_pdf(document_id: str) -> FileResponse:
+@app.get(
+    "/api/documents/{document_id}/wordpress-publication",
+    response_model=WordPressPublicationResult | None,
+)
+def wordpress_publication(
+    document_id: str,
+    user: CurrentUser,
+) -> WordPressPublicationResult | None:
     record = _record(document_id)
+    _require_owner(record, user)
+    if not record.get("approved_at"):
+        return None
+    path = store.artifact_path(document_id, "accessible.html")
+    if not path.is_file():
+        return None
+    html = path.read_text(encoding="utf-8")
+    return _cached_wordpress_publication(
+        document_id,
+        _wordpress_source_signature(record, html),
+    )
+
+
+@app.post(
+    "/api/documents/{document_id}/wordpress-publication",
+    response_model=WordPressPublicationResult,
+)
+async def publish_to_wordpress(
+    document_id: str,
+    user: CurrentUser,
+    payload: WordPressPublishRequest = WordPressPublishRequest(),
+) -> WordPressPublicationResult:
+    record = _record(document_id)
+    _require_owner(record, user)
+    if not record.get("approved_at"):
+        raise HTTPException(
+            status_code=409,
+            detail="Approve the document before publishing to WordPress",
+        )
+    path = store.artifact_path(document_id, "accessible.html")
+    if not path.is_file():
+        raise HTTPException(
+            status_code=409,
+            detail="The approved HTML export is not available",
+        )
+    html = path.read_text(encoding="utf-8")
+    source_signature = _wordpress_source_signature(record, html)
+    metadata = workflow.get_metadata(document_id).get("metadata") or {}
+    title = str(metadata.get("title") or record.get("title") or "Document").strip()
+    content_hash = _wordpress_content_hash(title, html)
+
+    # Serialise the local check-and-publish operation. The same stable key is
+    # also sent to WordPress, but remote idempotency support is not confirmed.
+    # Do not automatically retry ambiguous failures: a draft may already exist.
+    async with wordpress_publish_lock:
+        cached = _cached_wordpress_publication(document_id, source_signature)
+        if cached is not None:
+            if cached.status == payload.status:
+                return cached
+            if cached.status == "publish":
+                raise HTTPException(status_code=409, detail="This document is already live. Draft publishing is no longer available.")
+        else:
+            # The local per-document cache misses whenever the document was
+            # edited and re-approved since its last publish (edits wipe it).
+            # That alone doesn't mean WordPress has no page for it — check
+            # the durable registry, which edits never touch, so a stale
+            # local cache can't lead to a silent duplicate page.
+            try:
+                previous = await wordpress_registry.find_latest(document_id)
+            except wordpress_registry.RegistryUnavailableError as exc:
+                # A transient Supabase hiccup must never be treated as
+                # "confirmed no prior publish" — that would silently
+                # disable the very safeguard this lookup exists to
+                # provide. Fail the request instead of publishing blind.
+                raise HTTPException(
+                    status_code=503,
+                    detail=(
+                        "Could not verify whether this document was already "
+                        "published — try again in a moment."
+                    ),
+                ) from exc
+            if previous is not None and not payload.confirm_duplicate:
+                raise HTTPException(
+                    status_code=409,
+                    detail={
+                        "code": "wordpress_duplicate_risk",
+                        "message": (
+                            "This document was already published to WordPress "
+                            f"as page {previous['page_id']} ({previous['status']}) "
+                            "on " + str(previous.get("published_at", "")) + ". "
+                            "The document has changed since then, and WordPress "
+                            "has no way to update that page from here — "
+                            "publishing again will create a separate, additional "
+                            "page. Confirm to continue."
+                        ),
+                        "existing": {
+                            "pageId": previous["page_id"],
+                            "status": previous["status"],
+                            "publishedAt": previous.get("published_at"),
+                            "editUrl": previous.get("edit_url"),
+                            "previewUrl": previous.get("preview_url"),
+                        },
+                    },
+                )
+        try:
+            result = await wordpress.publish(
+                title=title,
+                html=html,
+                idempotency_key=f"konverter-{source_signature}-{payload.status}",
+                status=payload.status,
+            )
+        except WordPressNotConfiguredError as exc:
+            raise HTTPException(status_code=503, detail=str(exc)) from exc
+        except WordPressAuthenticationError as exc:
+            raise HTTPException(status_code=502, detail=str(exc)) from exc
+        except WordPressTimeoutError as exc:
+            raise HTTPException(status_code=504, detail=str(exc)) from exc
+        except WordPressPublishingError as exc:
+            raise HTTPException(status_code=502, detail=str(exc)) from exc
+
+        # wordpress.publish() above already created a real page — that must
+        # be durably recorded no matter what happens next, or a later
+        # approval-change race would silently orphan it: a real WordPress
+        # page existing with zero record of it anywhere in Konverter,
+        # defeating the very duplicate-publish protection this function
+        # implements (the next publish attempt's find_latest() lookup
+        # above would see nothing and publish straight through again).
+        # The stale-approval check below is deliberately informational
+        # only, checked *after* persistence, never a reason to skip it.
+        store.write_artifact(
+            document_id,
+            WORDPRESS_PUBLICATION_ARTIFACT,
+            {
+                **result.model_dump(by_alias=True),
+                "source_signature": source_signature,
+            },
+        )
+        await wordpress_registry.record_publication(
+            document_id=document_id,
+            page_id=result.page_id,
+            status=result.status,
+            content_hash=content_hash,
+            title=title,
+            edit_url=result.edit_url,
+            preview_url=result.preview_url,
+            published_at=result.published_at,
+            actor_id=user.get("id"),
+            actor_email=user.get("email"),
+        )
+
+        current = _record(document_id)
+        if current.get("approved_at") != record.get("approved_at"):
+            raise HTTPException(
+                status_code=409,
+                detail=(
+                    "WordPress page "
+                    f"{result.page_id} was published successfully, but the "
+                    "document's approval changed while that publish was in "
+                    "flight — review the document before publishing again."
+                ),
+            )
+
+    await audit.record_audit(
+        "publish_wordpress",
+        document_id=document_id,
+        actor_id=user.get("id"),
+        actor_email=user.get("email"),
+        detail={
+            "file_name": record.get("file_name"),
+            "page_id": result.page_id,
+            "status": result.status,
+            "preview_url": result.preview_url,
+        },
+    )
+    return result
+
+
+@app.get("/api/documents/{document_id}/source")
+def source_pdf(document_id: str, user: OptionalUser) -> FileResponse:
+    record = _record(document_id)
+    # The published, approved export embeds this as a public "view original
+    # source" citation link — no Supabase session exists for that visitor.
+    # Before approval, the source is still in review and only its owner (or
+    # an admin) may fetch it.
+    if not record.get("approved_at"):
+        if user is None:
+            raise HTTPException(status_code=401, detail="Not authenticated")
+        _require_owner(record, user)
     return FileResponse(
         store.source_path(document_id),
         media_type="application/pdf",
@@ -647,8 +931,9 @@ def source_pdf(document_id: str) -> FileResponse:
 
 
 @app.get("/api/documents/{document_id}/review-items/{item_id}/evidence.png")
-def review_evidence(document_id: str, item_id: str) -> FileResponse:
+def review_evidence(document_id: str, item_id: str, user: CurrentUser) -> FileResponse:
     record = _require_complete(document_id)
+    _require_owner(record, user)
     items = workflow.get_review_items(document_id)
     item = next((value for value in items if value["id"] == item_id), None)
     if item is None:
@@ -705,8 +990,9 @@ def review_evidence(document_id: str, item_id: str) -> FileResponse:
 
 
 @app.get("/api/documents/{document_id}/metadata/{field_name}/evidence.png")
-def metadata_evidence(document_id: str, field_name: str) -> FileResponse:
+def metadata_evidence(document_id: str, field_name: str, user: CurrentUser) -> FileResponse:
     record = _require_complete(document_id)
+    _require_owner(record, user)
     payload = workflow.get_metadata(document_id)
     legacy_name = "published_date" if field_name == "publishedDate" else field_name
     field = payload.get("fields", {}).get(field_name) or payload.get("fields", {}).get(
@@ -823,8 +1109,8 @@ def structured_json(document_id: str) -> Response:
 
 
 @app.get("/api/documents/{document_id}/exports/docling.json")
-def raw_docling_json(document_id: str) -> Response:
-    _require_complete(document_id)
+def raw_docling_json(document_id: str, user: CurrentUser) -> Response:
+    _require_owner(_require_complete(document_id), user)
     return _pretty_json_download(
         store.read_artifact(document_id, "docling.json", {}),
         "docling.json",
@@ -908,7 +1194,7 @@ async def text_to_speech(payload: TtsRequest, user: CurrentUser) -> StreamingRes
         try:
             async for chunk in synthesize_speech(settings, payload.text):
                 yield chunk
-        except (OpenAINotConfiguredError, OpenAIRequestError):
-            return
+        except (OpenAINotConfiguredError, OpenAIRequestError) as exc:
+            logging.getLogger("app.chat").warning("tts request failed: %s", exc)
 
     return StreamingResponse(stream(), media_type="audio/mpeg")

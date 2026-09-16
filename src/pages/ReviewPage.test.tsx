@@ -4,16 +4,36 @@ import { useEffect } from 'react'
 import { MemoryRouter } from 'react-router-dom'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { KonverterProvider, useKonverter } from '../state/KonverterContext'
-import { testDocument } from '../test/fixtures'
-import { resetTestServices } from '../test/serviceMocks'
+import { testDocument, testOrphanedCaptionReviewItem, testPictureReviewItem, testReviewItems } from '../test/fixtures'
+import { addTestReviewItem, resetTestServices, reviewService } from '../test/serviceMocks'
+import type { ReviewItem } from '../types/konverter'
 import { ReviewPage } from './ReviewPage'
 
 vi.mock('../services', () => import('../test/serviceMocks'))
+vi.mock('../services/httpClient', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../services/httpClient')>()
+  return {
+    ...actual,
+    // Evidence crops and the source PDF now load through an authenticated
+    // blob fetch (see src/lib/useAuthenticatedObjectUrl.ts) rather than a
+    // plain <img src>/<a href>, so a real Blob keyed by the requested path
+    // stands in for the network here — distinct paths must still yield
+    // distinct blob URLs for the "uniquely versioned crop" test below.
+    apiRequest: vi.fn(async (path: string, init?: Parameters<typeof actual.apiRequest>[1]) =>
+      init?.responseType === 'blob' ? new Blob([path], { type: 'image/png' }) : actual.apiRequest(path, init),
+    ),
+  }
+})
 
 function SeedCompletedDocument() {
   const { addDocuments } = useKonverter()
   useEffect(() => addDocuments([testDocument]), [addDocuments])
   return null
+}
+
+function ToastProbe() {
+  const { toastState } = useKonverter()
+  return <div data-testid="toast-probe">{toastState?.message ?? ''}</div>
 }
 
 function renderReview() {
@@ -23,6 +43,7 @@ function renderReview() {
       <MemoryRouter>
         <KonverterProvider>
           <SeedCompletedDocument />
+          <ToastProbe />
           <ReviewPage />
         </KonverterProvider>
       </MemoryRouter>
@@ -57,12 +78,11 @@ describe('ReviewPage', () => {
     const guide = screen.getByLabelText('Structure label definitions')
     const h4Guide = within(guide).getByText('H4').parentElement!
     fireEvent.mouseEnter(h4Guide)
-    expect(screen.getByRole('tooltip')).toHaveTextContent('A lower-level heading nested under an H3.')
+    expect(screen.getByRole('tooltip')).toHaveTextContent('Use this for a smaller subsection within an H3 section.')
     expect(screen.getByRole('tooltip').parentElement).toBe(document.body)
 
     await screen.findAllByText('Section heading needs confirmation')
     expect(screen.getByRole('button', { name: /Remove from output/ })).toBeInTheDocument()
-    expect(screen.queryByRole('button', { name: /Needs attention/ })).not.toBeInTheDocument()
     expect(screen.queryByRole('button', { name: /Accept all/ })).not.toBeInTheDocument()
   })
 
@@ -102,17 +122,102 @@ describe('ReviewPage', () => {
     await screen.findAllByText('Section heading needs confirmation')
     fireEvent.click(screen.getByRole('button', { name: /Section heading needs confirmation/ }))
 
-    expect(screen.getByText('Extracted result (reference only)')).toBeInTheDocument()
+    expect(screen.getByText('Extracted result')).toBeInTheDocument()
     expect(screen.getByRole('button', { name: 'Structure label: H2' })).toBeDisabled()
-    expect(screen.queryByRole('textbox', { name: 'Corrected text' })).not.toBeInTheDocument()
+    expect(screen.getByRole('textbox', { name: 'Extracted text' })).toHaveAttribute('readonly')
 
+    const extracted = screen.getByRole('textbox', { name: 'Extracted text' })
     fireEvent.click(screen.getByRole('button', { name: 'Edit flagged item' }))
+    expect(screen.getByRole('textbox', { name: 'Extracted text' })).toBe(extracted)
+    expect(extracted).not.toHaveAttribute('readonly')
     expect(screen.getByRole('button', { name: 'Structure label: H2' })).toBeEnabled()
     expect(screen.getByText('Section within the current H1.')).toBeInTheDocument()
-    expect(screen.getByRole('textbox', { name: 'Corrected text' })).toHaveValue('Purpose')
-    expect(screen.getByRole('link', { name: /Open original page/ })).toHaveAttribute('target', '_blank')
+    expect(screen.getByRole('textbox', { name: 'Extracted text' })).toHaveValue('Purpose')
+    expect(screen.getByRole('button', { name: /Open original page/ })).toBeInTheDocument()
     expect(screen.getByRole('button', { name: 'Save changes' })).toHaveClass('btn-primary')
     expect(screen.queryByRole('button', { name: 'Accept' })).not.toBeInTheDocument()
+  })
+
+  it('saves and cancels edits in the same extracted text field', async () => {
+    const save = vi.spyOn(reviewService, 'saveItem')
+    renderReview()
+    await screen.findAllByText('Section heading needs confirmation')
+    fireEvent.click(screen.getByRole('button', { name: /Section heading needs confirmation/ }))
+    const field = screen.getByRole('textbox', { name: 'Extracted text' })
+    fireEvent.click(screen.getByRole('button', { name: 'Edit flagged item' }))
+    fireEvent.change(field, { target: { value: 'Updated purpose' } })
+    fireEvent.click(screen.getByRole('button', { name: 'Save changes' }))
+    await waitFor(() => expect(field).toHaveAttribute('readonly'))
+    expect(field).toHaveValue('Updated purpose')
+    const stored = (await reviewService.getReviewItems(testDocument.id)).find(item => item.id === 'review-heading')!
+    expect(stored.correctedText).toBe('Updated purpose')
+    expect(stored.extractedText).toBe('Purpose')
+    save.mockClear()
+    fireEvent.click(screen.getByRole('button', { name: 'Edit flagged item' }))
+    expect(screen.getByRole('textbox', { name: 'Extracted text' })).toBe(field)
+    fireEvent.change(field, { target: { value: 'Discard this draft' } })
+    fireEvent.click(screen.getByRole('button', { name: 'Cancel' }))
+    expect(field).toHaveValue('Updated purpose')
+    expect(field).toHaveAttribute('readonly')
+    expect(save).not.toHaveBeenCalled()
+  })
+
+  it('ignores a repeated click on Save changes while the edit is still saving', async () => {
+    let resolveSave!: (item: ReviewItem) => void
+    const save = vi.spyOn(reviewService, 'saveItem').mockImplementationOnce(
+      () => new Promise((resolve) => { resolveSave = resolve }),
+    )
+    renderReview()
+    await screen.findAllByText('Section heading needs confirmation')
+    fireEvent.click(screen.getByRole('button', { name: /Section heading needs confirmation/ }))
+    const field = screen.getByRole('textbox', { name: 'Extracted text' })
+    fireEvent.click(screen.getByRole('button', { name: 'Edit flagged item' }))
+    fireEvent.change(field, { target: { value: 'Updated purpose' } })
+    const button = screen.getByRole('button', { name: 'Save changes' })
+    fireEvent.click(button)
+    await waitFor(() => expect(button).toBeDisabled())
+    fireEvent.click(button)
+    resolveSave({ ...testReviewItems[0], correctedText: 'Updated purpose', status: 'edited' })
+    await waitFor(() => expect(field).toHaveAttribute('readonly'))
+    expect(save).toHaveBeenCalledTimes(1)
+  })
+
+  it('shows an error and keeps the edit open when saving a change fails', async () => {
+    vi.spyOn(reviewService, 'saveItem').mockRejectedValueOnce(new Error('network error'))
+    renderReview()
+    await screen.findAllByText('Section heading needs confirmation')
+    fireEvent.click(screen.getByRole('button', { name: /Section heading needs confirmation/ }))
+    const field = screen.getByRole('textbox', { name: 'Extracted text' })
+    fireEvent.click(screen.getByRole('button', { name: 'Edit flagged item' }))
+    fireEvent.change(field, { target: { value: 'Updated purpose' } })
+    fireEvent.click(screen.getByRole('button', { name: 'Save changes' }))
+
+    await waitFor(() =>
+      expect(screen.getByTestId('toast-probe')).toHaveTextContent(
+        'This change could not be saved. Please try again.',
+      ),
+    )
+    // The edit was not silently discarded — the field stays open and
+    // editable with the reviewer's in-progress change still there.
+    expect(field).not.toHaveAttribute('readonly')
+    expect(field).toHaveValue('Updated purpose')
+  })
+
+  it('does not fire a second save request while one is already in flight', async () => {
+    const save = vi.spyOn(reviewService, 'saveItem')
+    renderReview()
+    await screen.findAllByText('Section heading needs confirmation')
+    fireEvent.click(screen.getByRole('button', { name: /Section heading needs confirmation/ }))
+    fireEvent.click(screen.getByRole('button', { name: 'Edit flagged item' }))
+    const saveButton = screen.getByRole('button', { name: 'Save changes' })
+    fireEvent.click(saveButton)
+    fireEvent.click(saveButton)
+    await waitFor(() =>
+      expect(screen.getByRole('textbox', { name: 'Extracted text' })).toHaveAttribute(
+        'readonly',
+      ),
+    )
+    expect(save).toHaveBeenCalledTimes(1)
   })
 
   it('loads a uniquely versioned original-PDF crop for each selected flag', async () => {
@@ -120,14 +225,14 @@ describe('ReviewPage', () => {
     await screen.findAllByText('Definitions table needs confirmation')
 
     fireEvent.click(screen.getByRole('button', { name: /Definitions table needs confirmation/ }))
-    const tableEvidence = screen.getByRole('img', { name: /Original PDF evidence for Table on page 4/ })
+    const tableEvidence = await screen.findByRole('img', { name: /Original PDF evidence for Table on page 4/ })
     expect(tableEvidence).toHaveAttribute('loading', 'eager')
-    expect(tableEvidence.getAttribute('src')).toContain('/review-items/review-table/evidence.png?v=')
+    expect(tableEvidence.getAttribute('src')).toMatch(/^blob:/)
     const firstSource = tableEvidence.getAttribute('src')
 
     fireEvent.click(screen.getByRole('button', { name: /Section heading needs confirmation/ }))
-    const headingEvidence = screen.getByRole('img', { name: /Original PDF evidence for H2 on page 2/ })
-    expect(headingEvidence.getAttribute('src')).toContain('/review-items/review-heading/evidence.png?v=')
+    const headingEvidence = await screen.findByRole('img', { name: /Original PDF evidence for H2 on page 2/ })
+    expect(headingEvidence.getAttribute('src')).toMatch(/^blob:/)
     expect(headingEvidence.getAttribute('src')).not.toBe(firstSource)
   })
 
@@ -168,13 +273,28 @@ describe('ReviewPage', () => {
 
     expect(screen.getByRole('group', { name: 'Editable corrected list' })).toBeInTheDocument()
     const firstListItem = screen.getByLabelText('List item 1') as HTMLTextAreaElement
-    expect(firstListItem.value).toContain('Accessible format — Content that people can perceive')
+    expect(firstListItem.value).toContain('Term: Accessible format; Definition: Content that people can perceive')
     expect(firstListItem.value).not.toContain('|')
     expect(screen.queryByText('Term | Definition')).not.toBeInTheDocument()
 
     fireEvent.click(screen.getByRole('button', { name: 'Save changes' }))
     await waitFor(() => expect(screen.queryByRole('group', { name: 'Editable corrected list' })).not.toBeInTheDocument())
     expect(screen.getByRole('button', { name: 'Structure label: List' })).toBeDisabled()
+  })
+
+  it('keeps a real column header on a decimal-numbered clause instead of treating it as a numbered paragraph', async () => {
+    renderReview()
+    await screen.findAllByText('Definitions table needs confirmation')
+
+    fireEvent.click(screen.getByRole('button', { name: /Definitions table needs confirmation/ }))
+    fireEvent.click(screen.getByRole('button', { name: 'Edit flagged item' }))
+    fireEvent.click(screen.getByRole('button', { name: 'Structure label: Table' }))
+    fireEvent.click(within(screen.getByRole('listbox', { name: 'Structure label' })).getByRole('option', { name: 'List' }))
+
+    const fourthListItem = screen.getByLabelText('List item 4') as HTMLTextAreaElement
+    expect(fourthListItem.value).toBe(
+      'Term: 7.1; Definition: A clause that references a specific numbered provision.',
+    )
   })
 
   it('converts a table directly into footnote prose without table delimiters', async () => {
@@ -186,16 +306,16 @@ describe('ReviewPage', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Structure label: Table' }))
     fireEvent.click(within(screen.getByRole('listbox', { name: 'Structure label' })).getByRole('option', { name: 'Footnote' }))
 
-    const correction = screen.getByRole('textbox', { name: 'Corrected text' }) as HTMLTextAreaElement
+    const correction = screen.getByRole('textbox', { name: 'Extracted text' }) as HTMLTextAreaElement
     await waitFor(() => expect(correction.value).toContain('Term: Accessible format; Definition: Content that people can perceive'))
     expect(correction.value).not.toContain('|')
     fireEvent.click(screen.getByRole('button', { name: 'Save changes' }))
 
-    await waitFor(() => expect(screen.queryByRole('textbox', { name: 'Corrected text' })).not.toBeInTheDocument())
+    await waitFor(() => expect(screen.getByRole('textbox', { name: 'Extracted text' })).toHaveAttribute('readonly'))
     expect(screen.getByRole('button', { name: 'Structure label: Footnote' })).toBeDisabled()
   })
 
-  it('does not offer Unspecified as a structure label a reviewer can assign', async () => {
+  it('offers Quote instead of Unspecified as a structure label', async () => {
     renderReview()
     await screen.findAllByText('Definitions table needs confirmation')
 
@@ -205,7 +325,27 @@ describe('ReviewPage', () => {
 
     const menu = screen.getByRole('listbox', { name: 'Structure label' })
     expect(within(menu).queryByRole('option', { name: 'Unspecified' })).not.toBeInTheDocument()
+    expect(within(menu).getByRole('option', { name: 'Quote' })).toBeInTheDocument()
     expect(within(menu).getByRole('option', { name: 'Footnote' })).toBeInTheDocument()
+  })
+
+  it('shows an unspecified item honestly instead of silently defaulting to Title', async () => {
+    // Real, live shape: an item the extraction couldn't confidently
+    // classify has type "unspecified", which wasn't in the structure-label
+    // list at all — structureLabels.findIndex() returned -1, and
+    // Math.max(0, -1) silently fell back to index 0 ("Title"), showing a
+    // Table-of-Cases citation as if it were the document's own title.
+    vi.spyOn(reviewService, 'getReviewItems').mockResolvedValueOnce(
+      testReviewItems.map((item) =>
+        item.id === 'review-heading' ? { ...item, type: 'unspecified', label: 'Unspecified' } : item,
+      ),
+    )
+    renderReview()
+    await screen.findAllByText('Section heading needs confirmation')
+    fireEvent.click(screen.getByRole('button', { name: /Section heading needs confirmation/ }))
+
+    expect(screen.getByRole('button', { name: 'Structure label: Unspecified' })).toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: 'Structure label: Title' })).not.toBeInTheDocument()
   })
 
   it('removes unnecessary content from output and allows it to be restored', async () => {
@@ -223,7 +363,8 @@ describe('ReviewPage', () => {
     await screen.findAllByText('Section heading needs confirmation')
     const queue = screen.getByRole('list', { name: 'Flagged items' })
 
-    expect(within(queue).queryByRole('checkbox')).not.toBeInTheDocument()
+    expect(within(queue).getAllByRole('checkbox')).toHaveLength(3)
+    expect(screen.queryByText('Shift+click or Tab+click')).not.toBeInTheDocument()
     fireEvent.click(screen.getByRole('button', { name: 'Select all visible' }))
     expect(screen.getByText('3 selected')).toBeInTheDocument()
     expect(within(queue).getAllByRole('checkbox')).toHaveLength(3)
@@ -241,20 +382,20 @@ describe('ReviewPage', () => {
     expect(screen.getByText('3 selected')).toBeInTheDocument()
   })
 
-  it('supports Shift+click and Tab+click multi-selection without permanent checkboxes', async () => {
+  it('keeps selection checkboxes visible while supporting Shift+click and Tab+click', async () => {
     renderReview()
     await screen.findAllByText('Section heading needs confirmation')
     const queue = screen.getByRole('list', { name: 'Flagged items' })
     const flags = screen.getAllByRole('button', { name: /needs confirmation/ })
 
     fireEvent.click(flags[0])
-    expect(within(queue).queryByRole('checkbox')).not.toBeInTheDocument()
+    expect(within(queue).getAllByRole('checkbox')).toHaveLength(3)
     fireEvent.click(flags[2], { shiftKey: true })
     expect(screen.getByText('3 selected')).toBeInTheDocument()
     expect(within(queue).getAllByRole('checkbox')).toHaveLength(3)
 
     fireEvent.click(screen.getByRole('button', { name: 'Clear visible selection' }))
-    expect(within(queue).queryByRole('checkbox')).not.toBeInTheDocument()
+    expect(within(queue).getAllByRole('checkbox')).toHaveLength(3)
     fireEvent.keyDown(window, { key: 'Tab' })
     fireEvent.click(flags[0])
     fireEvent.click(flags[1])
@@ -300,5 +441,49 @@ describe('ReviewPage', () => {
     expect(screen.getByLabelText('Table')).not.toBeChecked()
     expect(screen.getByText(/Flag 1 of 2/)).toBeInTheDocument()
     expect(screen.queryByRole('button', { name: /Definitions table needs confirmation/ })).not.toBeInTheDocument()
+  })
+
+  it('lets a reviewer upload a replacement image for a caption with no matching figure', async () => {
+    addTestReviewItem(testOrphanedCaptionReviewItem)
+    renderReview()
+    await screen.findAllByText('Caption structure needs confirmation')
+    fireEvent.click(screen.getByRole('button', { name: /Caption structure needs confirmation/ }))
+
+    // The upload control shows immediately on selecting the item — a
+    // reviewer shouldn't need to enter edit mode just to attach a file.
+    expect(screen.getByText('No matching figure was found on this page')).toBeInTheDocument()
+    const file = new File(['image-bytes'], 'figure2.png', { type: 'image/png' })
+    fireEvent.change(screen.getByLabelText('Upload image'), { target: { files: [file] } })
+
+    await waitFor(() =>
+      expect(screen.getByTestId('toast-probe')).toHaveTextContent('Image uploaded'),
+    )
+  })
+
+  it('shows confirm-against-original guidance for a genuine low-confidence picture, not the upload control', async () => {
+    addTestReviewItem(testPictureReviewItem)
+    renderReview()
+    await screen.findAllByText('Picture structure needs confirmation')
+    fireEvent.click(screen.getByRole('button', { name: /Picture structure needs confirmation/ }))
+
+    expect(screen.getByText('Confirm this figure against the original page')).toBeInTheDocument()
+    expect(screen.queryByLabelText('Upload image')).not.toBeInTheDocument()
+  })
+
+  it('shows an error toast when an image upload fails', async () => {
+    vi.spyOn(reviewService, 'uploadImage').mockRejectedValueOnce(new Error('network error'))
+    addTestReviewItem(testOrphanedCaptionReviewItem)
+    renderReview()
+    await screen.findAllByText('Caption structure needs confirmation')
+    fireEvent.click(screen.getByRole('button', { name: /Caption structure needs confirmation/ }))
+
+    const file = new File(['image-bytes'], 'figure2.png', { type: 'image/png' })
+    fireEvent.change(screen.getByLabelText('Upload image'), { target: { files: [file] } })
+
+    await waitFor(() =>
+      expect(screen.getByTestId('toast-probe')).toHaveTextContent(
+        'This image could not be uploaded. Please try again.',
+      ),
+    )
   })
 })

@@ -48,8 +48,18 @@ SYSTEM_PROMPT_TEMPLATE = (
     "You are a helpful assistant answering questions about a single "
     "reviewed document for its publisher. For questions about the "
     "document's content, answer only using the document context below; "
-    "if the answer isn't in the context, say you don't know rather than "
-    "guessing. Greetings, thanks, and other small talk aren't document "
+    "don't guess or add details that aren't there. When you can't answer, "
+    "don't just say \"I don't know\" — say so in a way that helps the "
+    "reader move forward: "
+    "- If the question asks for your own opinion, judgment, or a "
+    "\"verdict\" rather than what the document itself says, explain that "
+    "you don't offer opinions, and offer instead to summarize the "
+    "document's own findings, conclusions, or recommendations. "
+    "- If the topic genuinely isn't covered in the context you were "
+    "given, say that plainly and suggest a more specific way to ask (a "
+    "chapter or topic name) or point to what you can help with instead, "
+    "such as its key findings, recommendations, or a summary. "
+    "Greetings, thanks, and other small talk aren't document "
     "questions — respond to those naturally and briefly, the way a "
     "helpful assistant would, without saying you don't know. Keep "
     "answers concise.\n\n"
@@ -67,7 +77,7 @@ class OpenAIRequestError(RuntimeError):
 
 def _render_block_text(block: dict[str, Any]) -> str:
     block_type = str(block.get("type", ""))
-    if block_type == "paragraph":
+    if block_type in {"paragraph", "heading", "quote", "footnote", "caption", "formula"}:
         return str(block.get("text", "")).strip()
     if block_type == "list":
         return "\n".join(
@@ -75,10 +85,29 @@ def _render_block_text(block: dict[str, Any]) -> str:
             for item in block.get("items", [])
             if str(item.get("text", "")).strip()
         )
-    if block_type == "box_section":
+    if block_type == "table":
+        caption = str(block.get("caption", "")).strip()
+        lines = [f"Table: {caption}" if caption else "Table:"]
+        has_rows = False
+        for row in block.get("rows", []):
+            cells = [str(cell.get("text", "")).strip() for cell in row]
+            if any(cells):
+                lines.append(" | ".join(cells))
+                has_rows = True
+        return "\n".join(lines) if (caption or has_rows) else ""
+    if block_type == "figure":
+        caption = str(block.get("caption", "")).strip()
+        return f"Figure: {caption}" if caption else ""
+    if block_type in {"box_section", "callout"}:
         return "\n".join(
             _render_block_text(child) for child in block.get("blocks", [])
         ).strip()
+    if block_type == "group":
+        return "\n".join(
+            str(item.get("text", "")).strip()
+            for item in block.get("items", [])
+            if str(item.get("text", "")).strip()
+        )
     return ""
 
 
@@ -214,58 +243,70 @@ async def stream_chat_completion(
         {"role": "user", "content": message},
     ]
 
-    async with httpx.AsyncClient(timeout=60.0) as client:
-        async with client.stream(
-            "POST",
-            f"{OPENAI_API_BASE}/chat/completions",
-            headers={"Authorization": f"Bearer {settings.openai_api_key}"},
-            json={"model": CHAT_MODEL, "messages": messages, "stream": True},
-        ) as response:
-            if response.status_code >= 400:
-                body = await response.aread()
-                raise OpenAIRequestError(
-                    f"OpenAI chat request failed ({response.status_code}): "
-                    f"{body.decode('utf-8', 'replace')}"
-                )
-            async for line in response.aiter_lines():
-                if not line.startswith("data: "):
-                    continue
-                payload = line[len("data: ") :].strip()
-                if payload == "[DONE]":
-                    break
-                try:
-                    event = json.loads(payload)
-                except json.JSONDecodeError:
-                    continue
-                choices = event.get("choices") or []
-                if not choices:
-                    continue
-                content = (choices[0].get("delta") or {}).get("content")
-                if content:
-                    yield content
+    try:
+        async with httpx.AsyncClient(timeout=60.0) as client:
+            async with client.stream(
+                "POST",
+                f"{OPENAI_API_BASE}/chat/completions",
+                headers={"Authorization": f"Bearer {settings.openai_api_key}"},
+                json={"model": CHAT_MODEL, "messages": messages, "stream": True},
+            ) as response:
+                if response.status_code >= 400:
+                    body = await response.aread()
+                    raise OpenAIRequestError(
+                        f"OpenAI chat request failed ({response.status_code}): "
+                        f"{body.decode('utf-8', 'replace')}"
+                    )
+                async for line in response.aiter_lines():
+                    if not line.startswith("data: "):
+                        continue
+                    payload = line[len("data: ") :].strip()
+                    if payload == "[DONE]":
+                        break
+                    try:
+                        event = json.loads(payload)
+                    except json.JSONDecodeError:
+                        continue
+                    choices = event.get("choices") or []
+                    if not choices:
+                        continue
+                    content = (choices[0].get("delta") or {}).get("content")
+                    if content:
+                        yield content
+    except httpx.HTTPError as exc:
+        # A connect/read timeout, DNS failure, or any other transport-level
+        # error isn't a 4xx/5xx response — the status check above never
+        # sees it. Left uncaught, this would escape the async generator
+        # after the StreamingResponse has already sent its 200, producing
+        # an abrupt connection drop in the client instead of the graceful,
+        # logged failure every other error path here gets.
+        raise OpenAIRequestError(f"OpenAI chat request failed: {exc}") from exc
 
 
 async def synthesize_speech(settings: Settings, text: str) -> AsyncIterator[bytes]:
     if not settings.openai_api_key:
         raise OpenAINotConfiguredError("OPENAI_API_KEY is not configured")
 
-    async with httpx.AsyncClient(timeout=60.0) as client:
-        async with client.stream(
-            "POST",
-            f"{OPENAI_API_BASE}/audio/speech",
-            headers={"Authorization": f"Bearer {settings.openai_api_key}"},
-            json={
-                "model": TTS_MODEL,
-                "voice": TTS_VOICE,
-                "input": text,
-                "response_format": "mp3",
-            },
-        ) as response:
-            if response.status_code >= 400:
-                body = await response.aread()
-                raise OpenAIRequestError(
-                    f"OpenAI TTS request failed ({response.status_code}): "
-                    f"{body.decode('utf-8', 'replace')}"
-                )
-            async for chunk in response.aiter_bytes():
-                yield chunk
+    try:
+        async with httpx.AsyncClient(timeout=60.0) as client:
+            async with client.stream(
+                "POST",
+                f"{OPENAI_API_BASE}/audio/speech",
+                headers={"Authorization": f"Bearer {settings.openai_api_key}"},
+                json={
+                    "model": TTS_MODEL,
+                    "voice": TTS_VOICE,
+                    "input": text,
+                    "response_format": "mp3",
+                },
+            ) as response:
+                if response.status_code >= 400:
+                    body = await response.aread()
+                    raise OpenAIRequestError(
+                        f"OpenAI TTS request failed ({response.status_code}): "
+                        f"{body.decode('utf-8', 'replace')}"
+                    )
+                async for chunk in response.aiter_bytes():
+                    yield chunk
+    except httpx.HTTPError as exc:
+        raise OpenAIRequestError(f"OpenAI TTS request failed: {exc}") from exc

@@ -96,6 +96,14 @@ export const fastApiReviewService: ReviewService = {
   resolveAll(documentId) {
     return apiRequest(`/documents/${requireDocumentId(documentId)}/review-items/resolve-all`, { method: 'POST' })
   },
+  uploadImage(id: string, file: File, documentId?: string) {
+    const body = new FormData()
+    body.append('file', file)
+    return apiRequest(`/documents/${requireDocumentId(documentId)}/review-items/${encodeURIComponent(id)}/image`, {
+      method: 'POST',
+      body,
+    })
+  },
 }
 
 export const fastApiMetadataService: MetadataService = {
@@ -140,6 +148,9 @@ export const fastApiAuditService: AuditService = {
   listMine(params) {
     return apiRequest(`/audit-log/mine${auditQuery(params)}`)
   },
+  count() {
+    return apiRequest<{ total: number }>('/audit-log/count').then((result) => result.total)
+  },
 }
 
 const documentUrl = (documentId: string, suffix: string) => (
@@ -147,6 +158,9 @@ const documentUrl = (documentId: string, suffix: string) => (
 )
 
 export const fastApiPublicationService: PublicationService = {
+  getHtml(documentId) {
+    return apiRequest(`/documents/${encodeURIComponent(documentId)}/exports/accessible.html`, { responseType: 'text' })
+  },
   get(documentId) {
     return apiRequest(`/documents/${encodeURIComponent(documentId)}/publication`)
   },
@@ -173,5 +187,17 @@ export const fastApiPublicationService: PublicationService = {
         ? '/exports/schema.jsonld'
         : '/exports/structured.json'
     return documentUrl(documentId, suffix)
+  },
+  getWordPressPublication(documentId) {
+    return apiRequest(`/documents/${encodeURIComponent(documentId)}/wordpress-publication`)
+  },
+  publishToWordPress(documentId, status, confirmDuplicate) {
+    return apiRequest(`/documents/${encodeURIComponent(documentId)}/wordpress-publication`, {
+      method: 'POST',
+      body: JSON.stringify({ status, confirmDuplicate: confirmDuplicate ?? false }),
+      // Allow FastAPI's maximum 120-second WordPress timeout to finish and
+      // return a safe error before the browser gives up on the request.
+      timeoutMs: 150_000,
+    })
   },
 }

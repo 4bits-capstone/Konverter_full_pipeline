@@ -183,6 +183,20 @@ function ContentBlock({
       : <p className="docling-paragraph"><InlineText text={block.text} targets={targets} /></p>
   }
 
+  if (block.type === 'quote') {
+    const paragraphs = block.text.split(/\n\s*\n/).filter((text) => text.trim())
+    return (
+      <figure className="report-quote report-quote--inline">
+        <blockquote className="docling-quote">
+          {paragraphs.map((text, index) => (
+            <p className="docling-paragraph" key={`${text}-${index}`}><InlineText text={text} targets={targets} /></p>
+          ))}
+        </blockquote>
+        {block.attribution && <figcaption><cite>{block.attribution}</cite></figcaption>}
+      </figure>
+    )
+  }
+
   if (block.type === 'list') {
     if (block.style === 'numbered-paragraphs') {
       return (

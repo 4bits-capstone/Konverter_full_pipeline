@@ -9,10 +9,12 @@ import type {
 import type {
   DocumentMetadata,
   DocumentSummary,
+  ReviewItem,
   ReviewStatus,
   ReviewTableData,
   ReviewType,
   ReviewUpdate,
+  WordPressPublication,
 } from '../types/konverter'
 import {
   testDocument,
@@ -24,11 +26,21 @@ import {
 let documents = new Map<string, DocumentSummary>([[testDocument.id, structuredClone(testDocument)]])
 let reviewItems = structuredClone(testReviewItems)
 let metadataPayload = structuredClone(testMetadataPayload)
+let wordpressPublication: WordPressPublication | null = null
 
 export function resetTestServices(): void {
   documents = new Map([[testDocument.id, structuredClone(testDocument)]])
   reviewItems = structuredClone(testReviewItems)
   metadataPayload = structuredClone(testMetadataPayload)
+  wordpressPublication = null
+}
+
+// For the one review item shape not in the shared fixture list (an
+// orphaned-caption "upload image" item) -- kept out of testReviewItems
+// itself since several other tests assert exact counts/positions against
+// that list, and this shape only matters to its own test.
+export function addTestReviewItem(item: ReviewItem): void {
+  reviewItems = [...reviewItems, structuredClone(item)]
 }
 
 export const documentService: DocumentService = {
@@ -117,6 +129,10 @@ export const reviewService: ReviewService = {
   async setStatus(id: string, status: ReviewStatus) {
     const item = findReviewItem(id)
     item.status = status
+    // Mirrors service.py's _apply_review_item_changes: any reviewer-driven
+    // change (including re-confirming an already-accepted item) supersedes
+    // the pipeline's own "system" pre-acceptance.
+    item.reviewedBy = 'reviewer'
     return structuredClone(item)
   },
   async updateText(id: string, text: string) {
@@ -143,6 +159,7 @@ export const reviewService: ReviewService = {
     if (changes.correctedText !== undefined) item.correctedText = changes.correctedText
     if (changes.correctedTable !== undefined) item.correctedTable = structuredClone(changes.correctedTable)
     item.status = changes.status ?? 'edited'
+    item.reviewedBy = 'reviewer'
     return structuredClone(item)
   },
   async bulkUpdate(ids: string[], changes: ReviewUpdate) {
@@ -152,11 +169,19 @@ export const reviewService: ReviewService = {
   },
   async resolveAll() {
     reviewItems = reviewItems.map((item) => (
-      item.status === 'pending' || item.status === 'needs_attention'
-        ? { ...item, status: 'accepted' as const }
+      item.status === 'pending'
+        ? { ...item, status: 'accepted' as const, reviewedBy: 'reviewer' as const }
         : item
     ))
     return structuredClone(reviewItems)
+  },
+  async uploadImage(id: string) {
+    const item = findReviewItem(id)
+    item.type = 'picture'
+    item.label = 'Picture'
+    item.status = 'edited'
+    item.reviewedBy = 'reviewer'
+    return structuredClone(item)
   },
 }
 
@@ -184,11 +209,15 @@ export const auditService: AuditService = {
   async listMine(_params) {
     return []
   },
+  async count() {
+    return 0
+  },
 }
 
 const documentUrl = (documentId: string, suffix: string) => `/api/documents/${documentId}${suffix}`
 
 export const publicationService: PublicationService = {
+  async getHtml() { return '<!doctype html><html><head></head><body><h1>Accessibility Standards Report</h1><blockquote>Reviewed quotation.</blockquote></body></html>' },
   async get() {
     return structuredClone(testPublicationPayload)
   },
@@ -210,5 +239,19 @@ export const publicationService: PublicationService = {
   },
   exportUrl(documentId, type) {
     return documentUrl(documentId, `/exports/${type}`)
+  },
+  async getWordPressPublication() {
+    return structuredClone(wordpressPublication)
+  },
+  async publishToWordPress(_documentId, status) {
+    wordpressPublication = {
+      success: true,
+      pageId: 26036,
+      status,
+      editUrl: 'https://vlrc.komosion.com/wp-admin/post.php?post=26036&action=edit',
+      previewUrl: 'https://vlrc.komosion.com/?page_id=26036' + (status === 'draft' ? '&preview=true' : ''),
+      publishedAt: '2026-09-06T10:00:00Z',
+    }
+    return structuredClone(wordpressPublication)
   },
 }

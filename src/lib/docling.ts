@@ -23,6 +23,13 @@ export interface DoclingParagraphBlock {
   page?: number
 }
 
+export interface DoclingQuoteBlock {
+  type: 'quote'
+  attribution?: string
+  text: string
+  page?: number
+}
+
 export interface DoclingListBlock {
   type: 'list'
   style: 'unordered' | 'ordered' | 'numbered-paragraphs'
@@ -99,6 +106,7 @@ export interface DoclingGroupBlock {
 export type DoclingBlock =
   | DoclingHeadingBlock
   | DoclingParagraphBlock
+  | DoclingQuoteBlock
   | DoclingListBlock
   | DoclingBoxSectionBlock
   | DoclingTableBlock

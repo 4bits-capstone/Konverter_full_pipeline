@@ -1,5 +1,6 @@
 import {
   CheckCircle2,
+  ChevronDown,
   FileUp,
   Pencil,
   Play,
@@ -10,9 +11,10 @@ import {
   Square,
   Trash2,
   TriangleAlert,
+  X,
   type LucideIcon,
 } from 'lucide-react'
-import { useState } from 'react'
+import { Fragment, useState, type ReactNode } from 'react'
 import {
   auditActionLabel,
   auditActionTone,
@@ -73,7 +75,7 @@ export function TimeStack({ value }: { value: string }) {
   )
 }
 
-function ChainBadge({ status }: { status: AuditChainStatus }) {
+export function ChainBadge({ status }: { status: AuditChainStatus }) {
   if (status === 'linked') {
     return (
       <span className="conf conf--high" title="Hash chain intact">
@@ -180,17 +182,20 @@ export function DetailArrayValue({ items }: { items: unknown[] }) {
   )
 }
 
-export function AuditLedgerTable({ entries, selectedId, onSelect, showActor = false, getChainStatus, caption }: {
+export function AuditLedgerTable({ entries, selectedId, onSelect, showActor = false, getChainStatus, caption, renderInlineDetail }: {
   entries: AuditLogEntry[]
   selectedId: number | null
-  onSelect: (id: number) => void
+  onSelect: (id: number | null) => void
   showActor?: boolean
   /** Omit to hide the Chain column. Must be computed against the full,
    * unfiltered entry list — chain links depend on true adjacency, not on
    * whatever subset happens to be visible after filtering. */
   getChainStatus?: (entry: AuditLogEntry) => AuditChainStatus
   caption: string
+  renderInlineDetail?: (entry: AuditLogEntry, inlineId: string, onClose: () => void) => ReactNode
 }) {
+  const columnCount = 3 + (showActor ? 1 : 0) + (getChainStatus ? 1 : 0) + (renderInlineDetail ? 1 : 0)
+
   return (
     <div className="audit-ledger-table-wrap">
       <table className="audit-ledger-table">
@@ -202,45 +207,88 @@ export function AuditLedgerTable({ entries, selectedId, onSelect, showActor = fa
             <th scope="col">Action</th>
             <th scope="col">Summary</th>
             {getChainStatus ? <th scope="col">Chain</th> : null}
+            {renderInlineDetail ? <th scope="col"><span className="sr-only">Details</span></th> : null}
           </tr>
         </thead>
         <tbody>
-          {entries.map((entry) => (
-            <tr
-              key={entry.id}
-              className={`audit-ledger-record${selectedId === entry.id ? ' is-selected' : ''}`}
-              onClick={() => onSelect(entry.id)}
-            >
-              <td>
-                <button
-                  className="audit-ledger-select"
-                  type="button"
-                  aria-current={selectedId === entry.id ? 'true' : undefined}
-                  onClick={(event) => {
-                    event.stopPropagation()
-                    onSelect(entry.id)
-                  }}
+          {entries.map((entry) => {
+            const expanded = selectedId === entry.id
+            const panelId = `audit-action-detail-${entry.id}`
+            const triggerId = `audit-action-detail-trigger-${entry.id}`
+            const closeDetails = () => {
+              onSelect(null)
+              requestAnimationFrame(() => document.getElementById(triggerId)?.focus())
+            }
+            return (
+              <Fragment key={entry.id}>
+                <tr
+                  className={`audit-ledger-record${expanded ? renderInlineDetail ? ' is-expanded' : ' is-selected' : ''}`}
+                  onClick={renderInlineDetail
+                    ? () => onSelect(expanded ? null : entry.id)
+                    : () => onSelect(entry.id)}
                 >
-                  <TimeStack value={entry.created_at} />
-                </button>
-              </td>
-              {showActor ? <td><ActorChip email={entry.actor_email} /></td> : null}
-              <td><ActionBadge action={entry.action} /></td>
-              <td className="audit-summary-cell" title={auditEntrySummary(entry)}>{auditEntrySummary(entry)}</td>
-              {getChainStatus ? <td><ChainBadge status={getChainStatus(entry)} /></td> : null}
-            </tr>
-          ))}
+                  <td>
+                    {renderInlineDetail ? (
+                      <TimeStack value={entry.created_at} />
+                    ) : (
+                      <button
+                        className="audit-ledger-select"
+                        type="button"
+                        aria-current={expanded ? 'true' : undefined}
+                        onClick={(event) => {
+                          event.stopPropagation()
+                          onSelect(entry.id)
+                        }}
+                      >
+                        <TimeStack value={entry.created_at} />
+                      </button>
+                    )}
+                  </td>
+                  {showActor ? <td><ActorChip email={entry.actor_email} /></td> : null}
+                  <td><ActionBadge action={entry.action} /></td>
+                  <td className="audit-summary-cell" title={auditEntrySummary(entry)}>{auditEntrySummary(entry)}</td>
+                  {getChainStatus ? <td><ChainBadge status={getChainStatus(entry)} /></td> : null}
+                  {renderInlineDetail ? (
+                    <td className="audit-ledger-action-cell">
+                      <button
+                        id={triggerId}
+                        className="audit-disclosure-button"
+                        type="button"
+                        aria-label={`${expanded ? 'Hide' : 'Show'} action details: ${auditActionLabel(entry.action)}`}
+                        aria-expanded={expanded}
+                        aria-controls={panelId}
+                        title={expanded ? 'Hide details' : 'Show details'}
+                        onClick={(event) => {
+                          event.stopPropagation()
+                          onSelect(expanded ? null : entry.id)
+                        }}
+                      >
+                        <ChevronDown aria-hidden="true" />
+                      </button>
+                    </td>
+                  ) : null}
+                </tr>
+                {expanded && renderInlineDetail ? (
+                  <tr className="audit-inline-detail-row is-action-detail">
+                    <td colSpan={columnCount}>{renderInlineDetail(entry, panelId, closeDetails)}</td>
+                  </tr>
+                ) : null}
+              </Fragment>
+            )
+          })}
         </tbody>
       </table>
     </div>
   )
 }
 
-export function AuditActionDetailPanel({ entry, documentTitle, documentFileName, showActor = false }: {
+export function AuditActionDetailPanel({ entry, documentTitle, documentFileName, showActor = false, inlineId, onClose }: {
   entry: AuditLogEntry
   documentTitle: string | null
   documentFileName: string | null
   showActor?: boolean
+  inlineId?: string
+  onClose?: () => void
 }) {
   const details = entry.detail
     ? Object.entries(entry.detail).filter(([key]) => !CHANGE_PREVIEW_KEYS.has(key))
@@ -250,13 +298,14 @@ export function AuditActionDetailPanel({ entry, documentTitle, documentFileName,
   const Icon = actionIcon(entry.action)
   const tone: AuditActionTone = auditActionTone(entry.action)
   return (
-    <aside className="audit-detail-panel" aria-label="Selected action details">
+    <aside className={`audit-detail-panel${inlineId ? ' is-inline' : ''}`} id={inlineId} aria-label="Selected action details">
       <div className="audit-detail-heading">
         <span className={`audit-detail-icon audit-detail-icon--${tone}`} aria-hidden="true"><Icon /></span>
         <div>
           <span className="audit-detail-kicker">Selected action</span>
           <h3>{auditActionLabel(entry.action)}</h3>
         </div>
+        {onClose && <button type="button" className="btn btn-ghost btn-sm audit-detail-close" onClick={onClose} aria-label="Close details"><X aria-hidden="true" /></button>}
       </div>
       <dl className="audit-detail-facts">
         <div>

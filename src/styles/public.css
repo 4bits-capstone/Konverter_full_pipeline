@@ -1187,6 +1187,24 @@ p {
   margin: 0 0 19px;
 }
 
+.docling-quote {
+  margin: 28px 0;
+  padding: 22px 26px;
+  border-left: 5px solid var(--blue-700);
+  background: var(--blue-050, #f2f7fb);
+  color: var(--ink-900, #252b33);
+  font-size: 18px;
+  line-height: 1.65;
+}
+
+.docling-quote p {
+  margin: 0 0 12px;
+}
+
+.docling-quote p:last-child {
+  margin-bottom: 0;
+}
+
 .reader-numbered-paragraph {
   display: grid;
   grid-template-columns: 54px minmax(0, 1fr);
@@ -1675,4 +1693,3 @@ p {
     display: block;
   }
 }
-

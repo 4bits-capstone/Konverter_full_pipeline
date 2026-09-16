@@ -1,8 +1,17 @@
 from __future__ import annotations
 
-from app.chat import build_chat_context
+import httpx
+import pytest
+
+from app.chat import OpenAIRequestError, build_chat_context, stream_chat_completion, synthesize_speech
+from app.config import Settings, load_settings
 
 from test_api import confirm_metadata, load_client, make_pdf, upload_and_process
+
+
+def _settings_with_key(monkeypatch) -> Settings:
+    monkeypatch.setenv("OPENAI_API_KEY", "test-key")
+    return load_settings()
 
 
 def test_build_chat_context_uses_metadata_summary_and_sections():
@@ -54,6 +63,40 @@ def test_build_chat_context_uses_metadata_summary_and_sections():
     assert "This is the introduction." in context
     assert "- First point" in context
     assert "- Second point" in context
+
+
+def test_build_chat_context_includes_table_quote_figure_and_footnote_text():
+    structured = {
+        "metadata": {"title": "Example report"},
+        "publication": {
+            "sections": [
+                {
+                    "displayTitle": "1. Findings",
+                    "blocks": [
+                        {
+                            "type": "table",
+                            "caption": "Survey results",
+                            "rows": [
+                                [{"text": "Option", "columnHeader": True}, {"text": "Votes", "columnHeader": True}],
+                                [{"text": "Yes"}, {"text": "42"}],
+                            ],
+                        },
+                        {"type": "quote", "text": "This is a pull quote from a stakeholder."},
+                        {"type": "figure", "caption": "Diagram of the process"},
+                        {"type": "footnote", "text": "See appendix B for methodology."},
+                    ],
+                }
+            ],
+        },
+    }
+
+    context = build_chat_context(structured, {})
+
+    assert "Survey results" in context
+    assert "Yes | 42" in context
+    assert "This is a pull quote from a stakeholder." in context
+    assert "Diagram of the process" in context
+    assert "See appendix B for methodology." in context
 
 
 def test_build_chat_context_truncates_a_single_oversized_section():
@@ -332,3 +375,60 @@ def test_tts_streams_audio(tmp_path, monkeypatch):
         assert response.status_code == 200
         assert response.content == b"ID3restofmp3"
         assert response.headers["content-type"] == "audio/mpeg"
+
+
+async def _drain(iterator):
+    return [item async for item in iterator]
+
+
+def test_chat_completion_converts_a_connect_timeout_to_openai_request_error(
+    monkeypatch,
+):
+    """A DNS failure, connect timeout, or read timeout talking to OpenAI is
+    not an HTTP status response — the response.status_code >= 400 check a
+    few lines below never sees it. Left uncaught, this escaped the async
+    generator raw, past the only two exception types every caller in
+    main.py actually catches (OpenAINotConfiguredError, OpenAIRequestError),
+    producing an abrupt connection drop instead of the same graceful,
+    logged failure every other OpenAI error path gets."""
+    settings = _settings_with_key(monkeypatch)
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        raise httpx.ConnectTimeout("connect timed out", request=request)
+
+    real_async_client = httpx.AsyncClient
+    monkeypatch.setattr(
+        httpx,
+        "AsyncClient",
+        lambda **kwargs: real_async_client(transport=httpx.MockTransport(handler)),
+    )
+
+    import asyncio
+
+    async def run():
+        with pytest.raises(OpenAIRequestError):
+            await _drain(stream_chat_completion(settings, "context", "hi", []))
+
+    asyncio.run(run())
+
+
+def test_tts_converts_a_connect_timeout_to_openai_request_error(monkeypatch):
+    settings = _settings_with_key(monkeypatch)
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        raise httpx.ConnectTimeout("connect timed out", request=request)
+
+    real_async_client = httpx.AsyncClient
+    monkeypatch.setattr(
+        httpx,
+        "AsyncClient",
+        lambda **kwargs: real_async_client(transport=httpx.MockTransport(handler)),
+    )
+
+    import asyncio
+
+    async def run():
+        with pytest.raises(OpenAIRequestError):
+            await _drain(synthesize_speech(settings, "hello"))
+
+    asyncio.run(run())

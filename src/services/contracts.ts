@@ -11,6 +11,7 @@ import type {
   ReviewStatus,
   ReviewTableData,
   ReviewType,
+  WordPressPublication,
 } from '../types/konverter'
 
 export interface DocumentService {
@@ -34,6 +35,7 @@ export interface ReviewService {
   saveItem(id: string, changes: ReviewUpdate, documentId?: string): Promise<ReviewItem>
   bulkUpdate(ids: string[], changes: ReviewUpdate, documentId?: string): Promise<ReviewItem[]>
   resolveAll(documentId?: string): Promise<ReviewItem[]>
+  uploadImage(id: string, file: File, documentId?: string): Promise<ReviewItem>
 }
 
 export interface MetadataService {
@@ -54,9 +56,11 @@ export interface AuditListParams {
 export interface AuditService {
   list(params?: AuditListParams): Promise<AuditLogEntry[]>
   listMine(params?: AuditListParams): Promise<AuditLogEntry[]>
+  count(): Promise<number>
 }
 
 export interface PublicationService {
+  getHtml(documentId: string): Promise<string>
   get(documentId: string): Promise<PublicationPayload>
   sourceUrl(documentId: string, page?: number): string
   evidenceUrl(documentId: string, reviewItemId: string, version?: string): string
@@ -64,4 +68,10 @@ export interface PublicationService {
   figureUrl(documentId: string, imageKey: string): string
   coverUrl(documentId: string): string
   exportUrl(documentId: string, type: 'html' | 'jsonld' | 'structured'): string
+  getWordPressPublication(documentId: string): Promise<WordPressPublication | null>
+  publishToWordPress(
+    documentId: string,
+    status: 'draft' | 'publish',
+    confirmDuplicate?: boolean,
+  ): Promise<WordPressPublication>
 }

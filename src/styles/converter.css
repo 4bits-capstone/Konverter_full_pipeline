@@ -1545,16 +1545,20 @@
   color: var(--hi);
 }
 
+/* Deliberately not --hi (accepted): a pipeline pre-acceptance is not the
+   same claim as a reviewer's own decision, and needs to read differently
+   at a glance rather than blend in with items a person actually looked
+   at — reuses the medium-confidence tone to signal "not fully verified". */
+.converter-app .status-tag.system-validated {
+  background: var(--md-soft);
+  border-color: var(--md-line);
+  color: var(--md);
+}
+
 .converter-app .status-tag.edited {
   background: var(--accent-soft);
   border-color: #cfe0f0;
   color: var(--accent);
-}
-
-.converter-app .status-tag.needs_attention {
-  background: var(--lo-soft);
-  border-color: var(--lo-line);
-  color: var(--lo);
 }
 
 .converter-app .typechip {
@@ -1862,6 +1866,19 @@
   background: var(--blue-tint);
   border: 1px solid #cfe0f0;
   color: var(--blue-dark);
+}
+
+.converter-app .banner-centered {
+  flex-direction: column;
+  align-items: center;
+  text-align: center;
+  gap: 12px;
+}
+
+.converter-app .banner-centered .banner-centered-message {
+  display: flex;
+  align-items: flex-start;
+  gap: 11px;
 }
 
 .converter-app .banner b {
@@ -5047,6 +5064,14 @@
 
 .converter-app .source-page-link:hover {
   text-decoration: underline;
+}
+
+.converter-app .source-page-link.link-button {
+  background: none;
+  border: none;
+  padding: 0;
+  font-family: inherit;
+  cursor: pointer;
 }
 
 .converter-app .source-page-link svg {

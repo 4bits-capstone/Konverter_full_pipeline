@@ -72,3 +72,23 @@ def test_different_tokens_are_cached_independently(monkeypatch):
 
     assert _FakeAsyncClient.calls == 2
     assert set(auth._token_cache.keys()) == {"token-a", "token-b"}
+
+
+def test_expired_entries_for_other_tokens_are_pruned_not_kept_forever(monkeypatch):
+    """An entry used to be deleted only if the exact same token string came
+    back around — every distinct token a user ever presented (each access-
+    token rotation) otherwise stayed in the cache permanently, an unbounded
+    slow leak over a long-running process. A stale, unrelated entry must be
+    swept away by ordinary traffic on other tokens, not just its own."""
+    auth._token_cache.clear()
+    _FakeAsyncClient.calls = 0
+    monkeypatch.setattr(httpx, "AsyncClient", _FakeAsyncClient)
+
+    asyncio.run(auth.get_current_user(authorization="Bearer old-token"))
+    _, user = auth._token_cache["old-token"]
+    auth._token_cache["old-token"] = (time.monotonic() - 1, user)
+
+    asyncio.run(auth.get_current_user(authorization="Bearer new-token"))
+
+    assert "old-token" not in auth._token_cache
+    assert "new-token" in auth._token_cache

@@ -136,9 +136,9 @@ export function UploadPage() {
           Upload documents
         </h2>
         <p className="lead">
-          Add one or more legal or policy PDFs. Documents process independently,
-          so you can review the first completed document while the remaining
-          jobs continue in the background.
+          Add one or more PDFs. Documents process independently, so you can
+          review the first completed document while the remaining jobs continue
+          in the background.
         </p>
 
         <input
@@ -192,7 +192,7 @@ export function UploadPage() {
             </p>
             <p className="dz-hint">
               <span className="mono">PDF only</span> · up to 200 MB per file ·
-              maximum 5 documents
+              maximum {MAX_DOCUMENTS} documents
             </p>
           </div>
         ) : (

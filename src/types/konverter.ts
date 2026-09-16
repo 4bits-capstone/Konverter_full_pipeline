@@ -1,6 +1,6 @@
 export type Stage = 'upload' | 'review' | 'metadata' | 'approval' | 'preview'
 export type ConfidenceBand = 'high' | 'med' | 'low'
-export type ReviewStatus = 'pending' | 'accepted' | 'edited' | 'needs_attention' | 'removed'
+export type ReviewStatus = 'pending' | 'accepted' | 'edited' | 'removed'
 export type ReviewType =
   | 'box_section'
   | 'caption'
@@ -12,6 +12,7 @@ export type ReviewType =
   | 'header'
   | 'list'
   | 'picture'
+  | 'quote'
   | 'section_header_1'
   | 'section_header_2'
   | 'section_header_3'
@@ -64,8 +65,12 @@ export interface ReviewItem {
   confidence: number
   band: ConfidenceBand
   title: string
-  kind: 'kv' | 'text' | 'table'
+  kind: 'kv' | 'text' | 'table' | 'image'
   status: ReviewStatus
+  /** Who last made the decision behind `status` — the pipeline itself
+   * (footnotes start pre-accepted, unseen by anyone) or a reviewer (any
+   * accept/edit/bulk-resolve action). Absent until either happens. */
+  reviewedBy?: 'system' | 'reviewer'
   extractedText?: string
   correctedText?: string
   note?: string
@@ -107,6 +112,27 @@ export interface PublicationPayload {
   metadata: DocumentMetadata
   jsonLd: Record<string, unknown>
   confidence?: DocumentConfidence | null
+}
+
+export interface WordPressPublication {
+  success: true
+  pageId: number
+  status: 'draft' | 'publish'
+  editUrl: string
+  previewUrl: string
+  publishedAt: string
+}
+
+export interface WordPressDuplicateRisk {
+  code: 'wordpress_duplicate_risk'
+  message: string
+  existing: {
+    pageId: number
+    status: 'draft' | 'publish'
+    publishedAt: string | null
+    editUrl: string | null
+    previewUrl: string | null
+  }
 }
 
 export interface ReviewUpdate {

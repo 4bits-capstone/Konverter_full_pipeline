@@ -3,6 +3,21 @@ import { describe, expect, it } from 'vitest'
 import { DoclingContent } from './DoclingContent'
 
 describe('DoclingContent Box Sections', () => {
+  it('renders detected quotes as a semantic blockquote with preserved paragraphs', () => {
+    const { container } = render(
+      <DoclingContent
+        footnotes={[]}
+        blocks={[{ type: 'quote', text: 'Quoted statement.\n\nSpeaker attribution' }]}
+      />,
+    )
+
+    const quote = container.querySelector('blockquote.docling-quote')
+    expect(quote).toBeInTheDocument()
+    expect(quote?.querySelectorAll('p')).toHaveLength(2)
+    expect(quote?.querySelectorAll('p')[0]).toHaveTextContent('Quoted statement.')
+    expect(quote?.querySelectorAll('p')[1]).toHaveTextContent('Speaker attribution')
+  })
+
   it('renders a labelled recommendations section with an ordered list', () => {
     render(
       <DoclingContent

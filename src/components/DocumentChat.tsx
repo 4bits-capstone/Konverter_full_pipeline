@@ -199,9 +199,18 @@ export function DocumentChat({ documentId }: { documentId: string }) {
   );
 
   const convoModeRef = useRef(convoMode);
+  // startListening() is invoked from audio.onended, a native callback that
+  // runs before React commits the setIsSpeaking(false)/setIsStreaming(false)
+  // that triggered it — reading the state values there would see a stale
+  // "still speaking/streaming" and bail out, killing conversation mode after
+  // one exchange. These refs are updated synchronously at each setState call
+  // site so the guard in startListening() always sees the current value.
+  const isStreamingRef = useRef(false);
+  const isSpeakingRef = useRef(false);
   const recognitionRef = useRef<SpeechRecognition | null>(null);
   const audioRef = useRef<HTMLAudioElement | null>(null);
   const audioUrlRef = useRef<string | null>(null);
+  const speechAbortRef = useRef<AbortController | null>(null);
   const abortRef = useRef<AbortController | null>(null);
   const messagesEndRef = useRef<HTMLDivElement | null>(null);
   const widgetRef = useRef<HTMLDivElement | null>(null);
@@ -251,6 +260,8 @@ export function DocumentChat({ documentId }: { documentId: string }) {
   // rather than waiting for 'ended'. Clearing the handlers first stops a
   // stray onended from re-triggering conversation mode's listen-again loop.
   const stopSpeaking = useCallback(() => {
+    speechAbortRef.current?.abort();
+    speechAbortRef.current = null;
     const audio = audioRef.current;
     if (audio) {
       audio.onended = null;
@@ -262,6 +273,7 @@ export function DocumentChat({ documentId }: { documentId: string }) {
       audioUrlRef.current = null;
     }
     audioRef.current = null;
+    isSpeakingRef.current = false;
     setIsSpeaking(false);
   }, []);
 
@@ -331,41 +343,53 @@ export function DocumentChat({ documentId }: { documentId: string }) {
   const speak = useCallback(async (text: string) => {
     const spoken = stripMarkdown(text);
     if (!spoken) return;
+    stopSpeaking();
+    const controller = new AbortController();
+    speechAbortRef.current = controller;
+    isSpeakingRef.current = true;
     setIsSpeaking(true);
     try {
       const headers = await authHeaders();
+      if (controller.signal.aborted) return;
       const response = await fetch(`${runtimeConfig.apiBaseUrl}/tts`, {
         method: "POST",
         headers,
+        signal: controller.signal,
         body: JSON.stringify({ text: spoken }),
       });
+      if (controller.signal.aborted) return;
       if (!response.ok) {
         setError(await readErrorDetail(response, "Voice reply isn't available right now."));
+        isSpeakingRef.current = false;
         setIsSpeaking(false);
         return;
       }
       const blob = await response.blob();
+      if (controller.signal.aborted) return;
       const url = URL.createObjectURL(blob);
       audioUrlRef.current = url;
       const audio = new Audio(url);
       audioRef.current = audio;
       audio.onended = () => {
+        isSpeakingRef.current = false;
         setIsSpeaking(false);
         URL.revokeObjectURL(url);
         audioUrlRef.current = null;
         if (convoModeRef.current) startListeningRef.current();
       };
       audio.onerror = () => {
+        isSpeakingRef.current = false;
         setIsSpeaking(false);
         URL.revokeObjectURL(url);
         audioUrlRef.current = null;
       };
       await audio.play();
     } catch {
-      setIsSpeaking(false);
+      if (controller.signal.aborted) return;
+      stopSpeaking();
       setError("Voice reply isn't available right now.");
     }
-  }, []);
+  }, [stopSpeaking]);
 
   const sendMessage = useCallback(
     async (text: string) => {
@@ -380,6 +404,7 @@ export function DocumentChat({ documentId }: { documentId: string }) {
         { role: "user", content: trimmed },
         { role: "assistant", content: "" },
       ]);
+      isStreamingRef.current = true;
       setIsStreaming(true);
 
       const controller = new AbortController();
@@ -443,6 +468,7 @@ export function DocumentChat({ documentId }: { documentId: string }) {
         setMessages((current) => current.slice(0, -1));
         setError("The connection was interrupted. Please try again.");
       } finally {
+        isStreamingRef.current = false;
         setIsStreaming(false);
         abortRef.current = null;
       }
@@ -456,7 +482,7 @@ export function DocumentChat({ documentId }: { documentId: string }) {
       setError("Voice input isn't supported in this browser.");
       return;
     }
-    if (recognitionRef.current || isStreaming || isSpeaking) return;
+    if (recognitionRef.current || isStreamingRef.current || isSpeakingRef.current) return;
 
     const recognition = new Recognition();
     recognition.lang = SPEECH_LANG;
@@ -477,7 +503,7 @@ export function DocumentChat({ documentId }: { documentId: string }) {
     recognitionRef.current = recognition;
     setIsListening(true);
     recognition.start();
-  }, [isSpeaking, isStreaming, sendMessage]);
+  }, [sendMessage]);
 
   useEffect(() => {
     startListeningRef.current = startListening;
@@ -543,8 +569,8 @@ export function DocumentChat({ documentId }: { documentId: string }) {
           <div>
             <h4>Ask about this document</h4>
             <p className="chatcard-hint">
-              Answers use this document&rsquo;s reviewed content and
-              structured export as context.
+              Answers are based only on this document&rsquo;s own content —
+              not general knowledge or current legislation.
             </p>
           </div>
           <button

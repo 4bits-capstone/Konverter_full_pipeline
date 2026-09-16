@@ -21,6 +21,10 @@ import { ConfidenceBadge } from "../components/ConfidenceBadge";
 import { emptyMetadata } from "../config/workflow";
 import { converterStagePath } from "../lib/converterRoutes";
 import {
+  openAuthenticatedDocument,
+  useAuthenticatedObjectUrl,
+} from "../lib/useAuthenticatedObjectUrl";
+import {
   approvalService,
   metadataService,
   publicationService,
@@ -143,6 +147,7 @@ export function MetadataPage() {
     metadataResolved,
     setMetadataResolved,
     pendingCount,
+    resolvedCount,
     reviewItems,
     setApprovedAt,
     unlock,
@@ -163,7 +168,6 @@ export function MetadataPage() {
   const [snapshots, setSnapshots] = useState<
     Partial<Record<MetadataField, { value: string; extras: string[] }>>
   >({});
-  const [evidenceFailed, setEvidenceFailed] = useState(false);
   const [approvalModalOpen, setApprovalModalOpen] = useState(false);
   const [approving, setApproving] = useState(false);
   const [pendingApprovalMetadata, setPendingApprovalMetadata] =
@@ -249,10 +253,20 @@ export function MetadataPage() {
     },
     {
       label: "Review flags resolved",
+      // pendingCount only tracks *blocking* flags (approval doesn't
+      // require a decision on non-blocking types like pictures, tables,
+      // or footnotes — see NON_BLOCKING_REVIEW_TYPES), so it can be zero
+      // while resolvedCount is still short of reviewItems.length. Basing
+      // the detail text on the same resolvedCount shown in the approval
+      // summary below avoids the two contradicting each other in the
+      // same modal (e.g. this saying "all 10 have a decision" while the
+      // summary says "6/10 resolved").
       ok: pendingCount === 0,
       detail: pendingCount
         ? `${pendingCount} of ${reviewItems.length} flags still need a decision`
-        : `All ${reviewItems.length} flags have a decision`,
+        : resolvedCount === reviewItems.length
+          ? `All ${reviewItems.length} flags have a decision`
+          : `${resolvedCount} of ${reviewItems.length} flags have a decision — the rest are optional`,
     },
     {
       label: "Metadata confirmed",
@@ -280,6 +294,9 @@ export function MetadataPage() {
       setApprovedAt(result.approvedAt);
       await queryClient.invalidateQueries({
         queryKey: ["publication", activeDocumentId],
+      });
+      await queryClient.invalidateQueries({
+        queryKey: ["report-html", activeDocumentId],
       });
       unlock("preview");
       markDone("approval");
@@ -402,10 +419,7 @@ export function MetadataPage() {
     activeDocumentId ?? "",
     activeEvidence,
   );
-
-  useEffect(() => {
-    setEvidenceFailed(false);
-  }, [activeDocumentId, activeEvidence, evidence.page]);
+  const evidenceCrop = useAuthenticatedObjectUrl(evidenceImageUrl);
 
   const renderField = (config: FieldConfig) => {
     const {
@@ -670,27 +684,36 @@ export function MetadataPage() {
             <div className="panel panel-pad">
               <div className="metadata-evidence-heading">
                 <div className="field-label">{evidenceLabel} evidence</div>
-                <a
-                  className="source-page-link"
-                  href={evidencePageUrl}
-                  target="_blank"
-                  rel="noreferrer"
+                <button
+                  type="button"
+                  className="source-page-link link-button"
+                  onClick={() =>
+                    openAuthenticatedDocument(evidencePageUrl).catch(() =>
+                      showToast(
+                        "The original page could not be opened. Please try again.",
+                      ),
+                    )
+                  }
                 >
                   Open original page <ExternalLink aria-hidden="true" />
-                </a>
+                </button>
               </div>
               <div className="evidence">
                 {evidence.evidence}
                 <span className="src">↳ {evidence.source}</span>
               </div>
               <div className="page-doc metadata-page-preview source-evidence-preview">
-                {!evidenceFailed ? (
+                {evidenceCrop.src ? (
                   <img
-                    src={evidenceImageUrl}
+                    src={evidenceCrop.src}
                     alt={`Original PDF page ${evidence.page} containing ${evidenceLabel.toLowerCase()} evidence`}
                     loading="lazy"
-                    onError={() => setEvidenceFailed(true)}
                   />
+                ) : evidenceCrop.loading ? (
+                  <div className="source-evidence-loading" role="status">
+                    <LoaderCircle className="spinner-icon" aria-hidden="true" />
+                    Loading the matching source crop…
+                  </div>
                 ) : (
                   <div className="source-evidence-fallback">
                     <TriangleAlert aria-hidden="true" />
@@ -727,17 +750,20 @@ export function MetadataPage() {
             role="dialog"
             aria-modal="true"
             aria-labelledby="confirm-approval-heading"
+            aria-describedby="approval-popup-description"
           >
-            <div className="modal-ic">
-              <CircleCheck aria-hidden="true" />
+            <div className="approval-popup-header">
+              <div className="modal-ic"><CircleCheck aria-hidden="true" /></div>
+              <div>
+                <span className="eyebrow">Final system checks</span>
+                <h3 id="confirm-approval-heading">
+                  Approve {approvalMetadata.title || "this document"}?
+                </h3>
+              </div>
             </div>
-            <span className="eyebrow">Final system checks</span>
-            <h3 id="confirm-approval-heading">
-              Approve {approvalMetadata.title || "this document"}?
-            </h3>
-            <p>
-              Konverter checked the document state automatically. No separate
-              reviewer checklist or approval page is required.
+            <p className="approval-popup-intro" id="approval-popup-description">
+              Review the completed checks, then approve this document to generate
+              its accessible outputs.
             </p>
             <ul className="checklist" aria-label="Approval system checks">
               {approvalChecks.map((check) => (
@@ -750,7 +776,7 @@ export function MetadataPage() {
                     role="img"
                     aria-label={check.ok ? "Passed" : "Blocked"}
                   >
-                    <Check aria-hidden="true" />
+                    {check.ok ? <Check aria-hidden="true" /> : null}
                   </span>
                   <div>
                     <div className="check-txt">{check.label}</div>
@@ -769,7 +795,7 @@ export function MetadataPage() {
               </span>
               <span>
                 <b>Review flags</b>
-                {reviewItems.length - pendingCount}/{reviewItems.length}{" "}
+                {resolvedCount}/{reviewItems.length}{" "}
                 resolved
               </span>
               <span>
@@ -788,7 +814,7 @@ export function MetadataPage() {
               </button>
               <button
                 ref={approvalButtonRef}
-                className="btn btn-seal"
+                className="btn btn-primary"
                 type="button"
                 disabled={!approvalReady || approving}
                 onClick={approveAndOpenPreview}

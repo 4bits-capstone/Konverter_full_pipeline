@@ -87,6 +87,72 @@ def test_printed_contents_drives_two_level_outline(tmp_path: Path) -> None:
     assert all(entry.target_page is not None for entry in outline.entries)
 
 
+def test_bare_recommendations_chapter_at_top_level_indent_is_not_demoted(
+    tmp_path: Path,
+) -> None:
+    """A standalone "Recommendations" chapter — its own dedicated title
+    page, printed at the exact same indentation as every other numbered
+    chapter — is common in legal/government reports and is often the
+    single most important chapter. The demotion rule existed to catch
+    "Recommendations" printed as an *indented sub-heading* under some
+    other chapter, but applied unconditionally regardless of indentation,
+    so a genuine top-level "Recommendations" chapter was always force-
+    demoted to H2 and silently nested under whatever chapter preceded it."""
+    pdf_path = tmp_path / "recommendations.pdf"
+    document = pymupdf.open()
+    for _ in range(5):
+        document.new_page(width=595, height=842)
+
+    document[0].insert_text((72, 90), "Example report", fontsize=24)
+    contents = document[1]
+    contents.insert_text((72, 70), "Contents", fontsize=20)
+    contents.insert_text((72, 115), "1. Introduction ................. 1", fontsize=11)
+    contents.insert_text((72, 140), "2. Findings ...................... 2", fontsize=11)
+    contents.insert_text((72, 165), "Recommendations .................. 3", fontsize=11)
+    contents.insert_text((72, 190), "Appendices ....................... 4", fontsize=11)
+
+    document[2].insert_text((72, 90), "1. Introduction", fontsize=18)
+    document[3].insert_text((72, 90), "2. Findings", fontsize=18)
+    document[4].insert_text((72, 90), "Recommendations", fontsize=18)
+    document.save(pdf_path)
+    document.close()
+
+    outline = extract_toc_outline(pdf_path)
+
+    assert outline.warnings == []
+    levels = {entry.title: entry.level for entry in outline.entries}
+    assert levels["Recommendations"] == 1, levels
+
+
+def test_indented_recommendations_subheading_is_still_demoted(tmp_path: Path) -> None:
+    """The complementary case: "Recommendations" printed as an indented
+    sub-heading at the end of a chapter (not its own dedicated chapter)
+    must still be demoted to H2, exactly as before this fix — only the
+    unconditional, indentation-blind version of the rule was wrong."""
+    pdf_path = tmp_path / "indented-recommendations.pdf"
+    document = pymupdf.open()
+    for _ in range(4):
+        document.new_page(width=595, height=842)
+
+    document[0].insert_text((72, 90), "Example report", fontsize=24)
+    contents = document[1]
+    contents.insert_text((72, 70), "Contents", fontsize=20)
+    contents.insert_text((72, 115), "1. Introduction ................. 1", fontsize=11)
+    contents.insert_text((96, 140), "Recommendations .................. 2", fontsize=11)
+    contents.insert_text((72, 165), "2. Findings ...................... 3", fontsize=11)
+
+    document[2].insert_text((72, 90), "1. Introduction", fontsize=18)
+    document[3].insert_text((72, 90), "2. Findings", fontsize=18)
+    document.save(pdf_path)
+    document.close()
+
+    outline = extract_toc_outline(pdf_path)
+
+    assert outline.warnings == []
+    levels = {entry.title: entry.level for entry in outline.entries}
+    assert levels["Recommendations"] == 2, levels
+
+
 def test_only_contents_regions_are_suppressed_on_mixed_page(tmp_path: Path) -> None:
     pdf_path = tmp_path / "mixed.pdf"
     _make_contents_pdf(pdf_path)

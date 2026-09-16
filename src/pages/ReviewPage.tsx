@@ -4,7 +4,6 @@ import {
   CircleHelp,
   ExternalLink,
   FileText,
-  ImageUp,
   LoaderCircle,
   Pencil,
   Plus,
@@ -31,6 +30,10 @@ import { StatusTag } from "../components/StatusTag";
 import { documentService, publicationService } from "../services";
 import { useKonverter } from "../state/KonverterContext";
 import { converterStagePath } from "../lib/converterRoutes";
+import {
+  openAuthenticatedDocument,
+  useAuthenticatedObjectUrl,
+} from "../lib/useAuthenticatedObjectUrl";
 import type {
   ReviewItem,
   ReviewStatus,
@@ -59,7 +62,7 @@ const itemTone = (item: ReviewItem) => {
     item.status === "removed"
   )
     return "ok";
-  if (item.status === "needs_attention" || item.band === "low") return "alert";
+  if (item.band === "low") return "alert";
   return "warn";
 };
 
@@ -72,126 +75,150 @@ const structureLabels: Array<{
   {
     value: "title",
     label: "Title",
-    description: "The single main title of the whole document.",
+    description:
+      "Use this for the document's main title. A document usually has only one title.",
     shortMeaning: "Main title of the document.",
   },
   {
     value: "section_header_1",
     label: "H1",
     description:
-      "A top-level printed-contents entry. Numbered chapters are collapsible; front and back matter are direct links.",
+      "Use this for a main chapter or major section, such as '1 Introduction'.",
     shortMeaning: "Main chapter or top-level section.",
   },
   {
     value: "section_header_2",
     label: "H2",
-    description: "A printed-contents entry nested under the current H1.",
+    description: "Use this for a section within a main chapter or H1 section.",
     shortMeaning: "Section within the current H1.",
   },
   {
     value: "section_header_3",
     label: "H3",
-    description: "A body subsection below the H1/H2 navigation level.",
+    description: "Use this for a smaller subsection within an H2 section.",
     shortMeaning: "Subsection within an H2.",
   },
   {
     value: "section_header_4",
     label: "H4",
-    description: "A lower-level heading nested under an H3.",
+    description: "Use this for a smaller subsection within an H3 section.",
     shortMeaning: "Subsection within an H3.",
   },
   {
     value: "section_header_5",
     label: "H5",
-    description: "The fifth level in the document hierarchy.",
+    description:
+      "Use this for the smallest heading level, within an H4 section.",
     shortMeaning: "Lowest heading level.",
   },
   {
     value: "caption",
     label: "Caption",
-    description: "Text identifying or explaining a table, picture, or figure.",
+    description:
+      "Use this for text that names or explains a table, picture, chart, or figure.",
     shortMeaning: "Description for a table or image.",
   },
   {
     value: "box_section",
     label: "Box Section",
     description:
-      "A bounded section that preserves its own paragraphs, lists, tables, figures and other child elements.",
+      "Use this for content grouped inside a visible box, callout, sidebar, or highlighted area.",
     shortMeaning: "Grouped callout or highlighted content.",
   },
   {
     value: "document_index",
     label: "Document index",
-    description: "A table of contents or document index.",
-    shortMeaning: "Contents or index listing.",
+    description:
+      "Use this for a glossary, back-of-book index, or submitter/consultee list shown as a table — not the document's own table of contents, which is detected and hidden automatically and doesn't need this label.",
+    shortMeaning: "Glossary, index, or submitter list (not the table of contents).",
   },
   {
     value: "footnote",
     label: "Footnote",
     description:
-      "A note referenced from the main text, usually at the bottom of a page.",
+      "Use this for an extra note linked to the main text, usually shown at the bottom of a page.",
     shortMeaning: "Reference note outside the main text.",
   },
   {
     value: "header",
     label: "Header",
-    description: "Repeated page-header content excluded from the reading flow.",
+    description:
+      "Use this for content repeated at the top of pages, such as a document name or chapter title.",
     shortMeaning: "Repeated content at the page top.",
   },
   {
     value: "footer",
     label: "Footer",
-    description: "Repeated page-footer content excluded from the reading flow.",
+    description:
+      "Use this for content repeated at the bottom of pages, such as a page number or copyright notice.",
     shortMeaning: "Repeated content at the page bottom.",
   },
   {
     value: "form",
     label: "Form",
-    description: "A group of fields or controls intended for user input.",
+    description:
+      "Use this for an area where someone can enter or select information, such as names, dates, or choices.",
     shortMeaning: "Fields or controls for user input.",
   },
   {
     value: "formula",
     label: "Formula",
-    description: "A mathematical or scientific expression.",
+    description:
+      "Use this for a mathematical or scientific equation or calculation.",
     shortMeaning: "Mathematical or scientific expression.",
   },
   {
     value: "list",
     label: "List",
-    description: "Related items presented in an ordered or unordered sequence.",
+    description:
+      "Use this for items shown with bullets, numbers, or separate lines.",
     shortMeaning: "Ordered or unordered sequence of items.",
   },
   {
     value: "picture",
     label: "Picture",
-    description: "A photograph, illustration, chart, or other embedded image.",
+    description:
+      "Use this for a photograph, drawing, diagram, chart, or other image.",
     shortMeaning: "Photograph, chart, or illustration.",
   },
   {
     value: "table",
     label: "Table",
-    description: "Information organised into rows and columns.",
+    description:
+      "Use this for information arranged in rows and columns, sometimes it could be borderless table.",
     shortMeaning: "Information in rows and columns.",
   },
   {
     value: "text",
     label: "Text",
-    description: "A paragraph or other body-text content.",
+    description:
+      "Use this for normal paragraphs or other main written content.",
     shortMeaning: "Paragraph or body-text content.",
+  },
+  {
+    value: "quote",
+    label: "Quote",
+    description:
+      "Use this for words quoted from a person or source, including a testimonial.",
+    shortMeaning: "Quoted content or testimonial.",
   },
   {
     value: "unspecified",
     label: "Unspecified",
-    description: "Content whose structure cannot yet be determined.",
-    shortMeaning: "Structure not yet identified.",
+    description:
+      "The extraction couldn't confidently classify this content — it's shown as a normal paragraph. Choose a more specific label above if one fits.",
+    shortMeaning: "Not yet classified; shown as plain text.",
   },
 ];
 
-// "Unspecified" is a fallback the pipeline uses when it genuinely can't
-// classify a block — it stays in structureLabels above so an existing item
-// with that type still displays and describes correctly, but it's excluded
-// here so a reviewer can never manually assign it going forward.
+// "Unspecified" is a real value a block can already have (the extraction
+// couldn't confidently classify it), and the trigger/description lookups
+// below need an entry for it so they show that honestly instead of
+// silently falling back to whatever happens to be first in the list
+// ("Title") when .findIndex() finds no match. But it must stay out of the
+// dropdown a reviewer actively picks from — nothing should let a reviewer
+// regress an already-classified item back to "not classified"; "Quote" is
+// offered instead as the catch-all for genuinely ambiguous content.
 const ASSIGNABLE_STRUCTURE_LABELS = structureLabels.filter(
   (item) => item.value !== "unspecified",
 );
@@ -339,17 +366,13 @@ function StructureLabelMenu({
   const [open, setOpen] = useState(false);
   const rootRef = useRef<HTMLDivElement | null>(null);
   const optionRefs = useRef<Array<HTMLButtonElement | null>>([]);
-  // The trigger button shows the item's actual current value (which, for an
-  // existing item, could still be "unspecified"), looked up against the
-  // full list so it always displays correctly.
+  // The trigger button shows the item's actual current value.
   const selectedIndex = Math.max(
     0,
     structureLabels.findIndex((item) => item.value === value),
   );
   const selected = structureLabels[selectedIndex];
-  // The dropdown's options and keyboard navigation operate only over the
-  // assignable subset, so "Unspecified" can't be (re-)selected — index math
-  // below is kept relative to this list, separate from selectedIndex above.
+  // Keep dropdown and keyboard-navigation index math relative to this list.
   const assignableSelectedIndex = Math.max(
     0,
     ASSIGNABLE_STRUCTURE_LABELS.findIndex((item) => item.value === value),
@@ -493,36 +516,86 @@ function tableToText(table: ReviewTableData): string {
     .join("\n");
 }
 
-function tableToListText(table: ReviewTableData): string {
-  const dataRows = table.rows
-    .map((row) => row.map((cell) => cell.trim()).filter(Boolean))
-    .filter((row) => row.length);
+// Decimal paragraph numbering (7.1, 1.2.3 — common in these reports) needs
+// a bare space, not a colon, before its text: the export step's own
+// numbered-paragraph detection looks for exactly "<number> <text>" and
+// otherwise the item silently loses its numbered styling and renders as a
+// plain bullet instead.
+const PARAGRAPH_NUMBER_RE = /^\d+(?:\.\d+)+$/;
 
+function isGenericHeader(value: string): boolean {
+  return !value.trim() || /^column \d+$/i.test(value.trim());
+}
+
+// `indexed` pairs each present cell with its original column index so it
+// can be matched back to `headers` after empty cells have been filtered out.
+function joinRowValues(indexed: [number, string][], headers: string[]): string {
+  const values = indexed.map(([, value]) => value);
+  // A cell with a real column header (not "Column N") gets that header as
+  // its label; a cell without one is left as a bare value rather than
+  // guessed at — labeling *some* of a row and leaving the rest bare is
+  // still more honest than falling back to "the first cell labels the
+  // second" the moment even one column's header is missing or generic.
+  const hasAnyHeader = indexed.some(
+    ([index]) => headers[index] && !isGenericHeader(headers[index]),
+  );
+  if (hasAnyHeader) {
+    return indexed
+      .map(([index, value]) =>
+        headers[index] && !isGenericHeader(headers[index])
+          ? `${headers[index]}: ${value}`
+          : value,
+      )
+      .join("; ");
+  }
+  return values.length === 2 ? `${values[0]}: ${values[1]}` : values.join("; ");
+}
+
+function tableToListText(table: ReviewTableData): string {
+  const indexRow = (row: string[]) =>
+    row
+      .map((cell, index): [number, string] => [index, cell.trim()])
+      .filter(([, value]) => value);
+
+  const dataRows = table.rows.map(indexRow).filter((row) => row.length);
+
+  // A header's own text, once it stands in for a missing data row, is
+  // content — not a value that header describes — so labeling it against
+  // `headers` (by position) is never right, even when the position happens
+  // to line up: "Definition" labeled by its own header reads as
+  // "Definition: Definition", not the plain header text it should be.
+  const usingHeaderFallback = !dataRows.length;
   const fallbackRows = dataRows.length
     ? dataRows
-    : [
-        table.headers
-          .map((header) => header.trim())
-          .filter((header) => header && !/^column \d+$/i.test(header)),
-      ];
+    : [indexRow(table.headers).filter(([, value]) => !isGenericHeader(value))];
+  const effectiveHeaders = usingHeaderFallback ? [] : table.headers;
 
   return fallbackRows
     .filter((row) => row.length)
     .map((row) => {
-      const [first, ...rest] = row;
+      const [[, first], ...rest] = row;
       const marker = first?.match(/^\(?([0-9]+|[A-Za-z]|[ivxlcdm]+)[.)]?$/i);
       if (marker && rest.length) {
         const sourceMarker =
           first.includes("(") || /[.)]$/.test(first) ? first : `${first}.`;
-        return `${sourceMarker} ${rest.join(" — ")}`;
+        return `${sourceMarker} ${joinRowValues(rest, effectiveHeaders)}`;
       }
-      return row.join(" — ");
+      // Decimal paragraph numbering (7.1, 1.2.3 — common in these reports)
+      // needs a bare space before its text, not the usual header-labeling
+      // shape — but only when there's no real column header to respect
+      // instead. A genuine "Clause"/"Description" table with a
+      // "7.1"-shaped clause number is a real label/value pair, not a
+      // numbered paragraph, and should keep its header.
+      const hasAnyHeader = row.some(
+        ([index]) =>
+          effectiveHeaders[index] && !isGenericHeader(effectiveHeaders[index]),
+      );
+      if (!hasAnyHeader && row.length === 2 && PARAGRAPH_NUMBER_RE.test(row[0][1])) {
+        return `${row[0][1]} ${row[1][1]}`;
+      }
+      return joinRowValues(row, effectiveHeaders);
     })
     .join("\n");
-}
-
-function isGenericHeader(value: string): boolean {
-  return !value.trim() || /^column \d+$/i.test(value.trim());
 }
 
 function tableToStructuredText(
@@ -541,11 +614,18 @@ function tableToStructuredText(
       ),
     )
     .filter((row) => row.some(Boolean));
+  const usingHeaderFallback = !rows.length;
   const dataRows = rows.length
     ? rows
     : headers
         .filter((header) => header && !isGenericHeader(header))
         .map((header) => [header]);
+  // A header's own text, once it stands in for a missing data row, is
+  // content — not a value that header describes — so labeling it against
+  // `headers` (by position) is never right, even when the position happens
+  // to line up: "Definition" labeled by its own header reads as
+  // "Definition: Definition", not the plain header text it should be.
+  const effectiveHeaders = usingHeaderFallback ? [] : headers;
 
   if (targetType === "form") {
     return dataRows
@@ -553,8 +633,8 @@ function tableToStructuredText(
         row
           .map((value, index) =>
             value
-              ? !isGenericHeader(headers[index] ?? "")
-                ? `${headers[index]}: ${value}`
+              ? !isGenericHeader(effectiveHeaders[index] ?? "")
+                ? `${effectiveHeaders[index]}: ${value}`
                 : value
               : "",
           )
@@ -568,23 +648,47 @@ function tableToStructuredText(
   if (targetType === "footnote") {
     return dataRows
       .map((row) => {
-        const facts = row
-          .map((value, index) =>
-            value
-              ? !isGenericHeader(headers[index] ?? "")
-                ? `${headers[index]}: ${value}`
-                : value
-              : "",
+        const cells = row
+          .map((value, index): [number, string] => [index, value])
+          .filter(([, value]) => value);
+        if (!cells.length) return "";
+        const [, firstValue] = cells[0];
+        // A bare leading number is the footnote's own citation index, not
+        // a value to label — "1 Smith v Tamworth..." not "1; Smith v
+        // Tamworth...". Every other footnote in the document uses that
+        // same "<number> <text>" shape, so a semicolon here reads wrong
+        // next to genuine footnotes and breaks the export's own recovery
+        // of the real citation number.
+        const isLeadingNumber = /^\d{1,4}$/.test(firstValue);
+        const bodyCells = isLeadingNumber ? cells.slice(1) : cells;
+        const facts = bodyCells
+          .map(([index, value]) =>
+            !isGenericHeader(effectiveHeaders[index] ?? "")
+              ? `${effectiveHeaders[index]}: ${value}`
+              : value,
           )
           .filter(Boolean);
-        return facts.length ? `${facts.join("; ").replace(/\.$/, "")}.` : "";
+        const body = facts.join("; ").replace(/\.$/, "");
+        if (!isLeadingNumber) return body ? `${body}.` : "";
+        return body ? `${firstValue} ${body}.` : `${firstValue}.`;
       })
       .filter(Boolean)
-      .join(" ");
+      // Every other branch here joins rows with "\n" (see "form" above and
+      // the default branch below) — this one used to join with a plain
+      // space, collapsing a whole table of separate citations into one
+      // unbroken paragraph with no row boundary left to recover downstream.
+      .join("\n");
   }
 
   return dataRows
-    .map((row) => row.filter(Boolean).join(" — "))
+    .map((row) =>
+      joinRowValues(
+        row
+          .map((value, index): [number, string] => [index, value])
+          .filter(([, value]) => value),
+        effectiveHeaders,
+      ),
+    )
     .filter(Boolean)
     .join("\n");
 }
@@ -999,6 +1103,7 @@ export function ReviewPage() {
     pendingCount,
     setReviewStatus,
     saveReviewItem,
+    uploadReviewItemImage,
     bulkUpdateReviewItems,
     unlock,
     showToast,
@@ -1034,10 +1139,7 @@ export function ReviewPage() {
   const [editText, setEditText] = useState("");
   const [editType, setEditType] = useState<ReviewType>("text");
   const [editTable, setEditTable] = useState<ReviewTableData>(emptyTable);
-  const [uploadedPicture, setUploadedPicture] = useState<string | null>(null);
   const [showDetailMobile, setShowDetailMobile] = useState(false);
-  const [evidenceFailed, setEvidenceFailed] = useState(false);
-  const [evidenceLoading, setEvidenceLoading] = useState(true);
   const previousFilteredIds = useRef<string[]>([]);
   const queueListRef = useRef<HTMLDivElement | null>(null);
   const selectionAnchorRef = useRef("");
@@ -1095,17 +1197,14 @@ export function ReviewPage() {
   };
 
   const clearAllLabels = () => {
-    setExcludedLabels(
-      new Set(presentLabels.map((entry) => entry.value)),
-    );
+    setExcludedLabels(new Set(presentLabels.map((entry) => entry.value)));
     setShowDetailMobile(false);
   };
 
   const allLabelsSelected =
     presentLabels.length > 0 && selectedLabels.size === presentLabels.length;
   const filtersActive =
-    statusFilter !== "all" ||
-    (presentLabels.length > 0 && !allLabelsSelected);
+    statusFilter !== "all" || (presentLabels.length > 0 && !allLabelsSelected);
 
   const filteredItems = useMemo(() => {
     let list = [...reviewItems];
@@ -1152,6 +1251,15 @@ export function ReviewPage() {
   const selectedPosition = selected
     ? filteredItems.findIndex((item) => item.id === selected.id) + 1
     : 0;
+  const evidence = useAuthenticatedObjectUrl(
+    selected
+      ? publicationService.evidenceUrl(
+          activeDocumentId ?? "",
+          selected.id,
+          evidenceVersion(selected),
+        )
+      : undefined,
+  );
 
   useLayoutEffect(() => {
     const nextIds = filteredItems.map((item) => item.id);
@@ -1220,11 +1328,6 @@ export function ReviewPage() {
     };
   }, []);
 
-  useEffect(() => {
-    setEvidenceFailed(false);
-    setEvidenceLoading(true);
-  }, [activeDocumentId, selected?.id]);
-
   const preserveQueueScroll = () => {
     const scrollTop = queueListRef.current?.scrollTop ?? 0;
     window.requestAnimationFrame(() => {
@@ -1244,6 +1347,8 @@ export function ReviewPage() {
           : "Item removed from generated output",
       );
       setEditing(false);
+    } catch {
+      showToast("This change could not be saved. Please try again.");
     } finally {
       setActingItemId(null);
     }
@@ -1260,22 +1365,44 @@ export function ReviewPage() {
   };
 
   const saveEdit = async (item: ReviewItem) => {
-    const label =
-      structureLabels.find((entry) => entry.value === editType)?.label ??
-      editType;
-    await saveReviewItem(item.id, {
-      type: editType,
-      label,
-      status: "edited",
-      ...(editType === "box_section"
-        ? {}
-        : usesTableEditor(editType)
-          ? { correctedTable: editTable }
-          : { correctedText: editText }),
-    });
-    preserveQueueScroll();
-    setEditing(false);
-    showToast("Review changes saved");
+    if (actingItemId === item.id) return;
+    setActingItemId(item.id);
+    try {
+      const label =
+        structureLabels.find((entry) => entry.value === editType)?.label ??
+        editType;
+      await saveReviewItem(item.id, {
+        type: editType,
+        label,
+        status: "edited",
+        ...(editType === "box_section"
+          ? {}
+          : usesTableEditor(editType)
+            ? { correctedTable: editTable }
+            : { correctedText: editText }),
+      });
+      preserveQueueScroll();
+      setEditing(false);
+      showToast("Review changes saved");
+    } catch {
+      showToast("This change could not be saved. Please try again.");
+    } finally {
+      setActingItemId(null);
+    }
+  };
+
+  const uploadImage = async (item: ReviewItem, file: File) => {
+    if (actingItemId === item.id) return;
+    setActingItemId(item.id);
+    try {
+      await uploadReviewItemImage(item.id, file);
+      preserveQueueScroll();
+      showToast("Image uploaded");
+    } catch {
+      showToast("This image could not be uploaded. Please try again.");
+    } finally {
+      setActingItemId(null);
+    }
   };
 
   const changeEditType = (nextType: ReviewType) => {
@@ -1305,6 +1432,8 @@ export function ReviewPage() {
       await setReviewStatus(item.id, "accepted");
       preserveQueueScroll();
       showToast("Item restored to generated output");
+    } catch {
+      showToast("This change could not be saved. Please try again.");
     } finally {
       setActingItemId(null);
     }
@@ -1333,9 +1462,6 @@ export function ReviewPage() {
   const openReviewItem = (item: ReviewItem) => {
     setSelectedId(item.id);
     setEditing(false);
-    setUploadedPicture(null);
-    setEvidenceFailed(false);
-    setEvidenceLoading(true);
     setShowDetailMobile(true);
   };
 
@@ -1428,8 +1554,6 @@ export function ReviewPage() {
     setEditing(false);
     setSelectedId("");
     setShowDetailMobile(false);
-    setEvidenceFailed(false);
-    setEvidenceLoading(true);
     selectDocument(nextId);
     showToast(
       `Now reviewing ${nextDocument?.fileName ?? "the selected document"}`,
@@ -1467,13 +1591,6 @@ export function ReviewPage() {
     } finally {
       setConfirmationApplying(false);
     }
-  };
-
-  const uploadPicture = async (item: ReviewItem, file?: File) => {
-    if (!file) return;
-    setUploadedPicture(file.name);
-    await setReviewStatus(item.id, "edited");
-    showToast("Replacement picture uploaded");
   };
 
   const continueToMetadata = () => {
@@ -1841,11 +1958,11 @@ export function ReviewPage() {
                 ? "Clear visible selection"
                 : "Select all visible"}
             </button>
-            <span className="queue-count" role="status" aria-live="polite">
-              {bulkSelectedIds.size
-                ? `${bulkSelectedIds.size} selected`
-                : "Shift+click or Tab+click"}
-            </span>
+            {bulkSelectedIds.size > 0 && (
+              <span className="queue-count" role="status" aria-live="polite">
+                {bulkSelectedIds.size} selected
+              </span>
+            )}
           </div>
           {bulkSelectedIds.size > 0 && (
             <div
@@ -1906,14 +2023,12 @@ export function ReviewPage() {
                 key={item.id}
               >
                 <label className="batch-select">
-                  {bulkSelectedIds.size > 0 && (
-                    <input
-                      type="checkbox"
-                      checked={bulkSelectedIds.has(item.id)}
-                      onChange={() => toggleBulkItem(item.id)}
-                      aria-label={`Select ${item.title} for a bulk action`}
-                    />
-                  )}
+                  <input
+                    type="checkbox"
+                    checked={bulkSelectedIds.has(item.id)}
+                    onChange={() => toggleBulkItem(item.id)}
+                    aria-label={`Select ${item.title} for a bulk action`}
+                  />
                 </label>
                 <button
                   className={`qitem tone-${itemTone(item)}`}
@@ -1932,7 +2047,7 @@ export function ReviewPage() {
                   </div>
                   <div className="qitem-txt">{item.title}</div>
                   <div className="qitem-bot">
-                    <StatusTag status={item.status} />
+                    <StatusTag status={item.status} reviewedBy={item.reviewedBy} />
                   </div>
                 </button>
               </div>
@@ -1956,7 +2071,7 @@ export function ReviewPage() {
                   band={selected.band}
                   score={selected.confidence}
                 />
-                <StatusTag status={selected.status} />
+                <StatusTag status={selected.status} reviewedBy={selected.reviewedBy} />
                 <span className="mono detail-page">
                   Flag {selectedPosition} of {filteredItems.length} · page{" "}
                   {selected.page}
@@ -1978,25 +2093,32 @@ export function ReviewPage() {
                   <div className="detail-source-head">
                     <FileText />
                     Original PDF evidence
-                    <a
-                      className="source-page-link"
-                      href={publicationService.sourceUrl(
-                        activeDocumentId ?? "",
-                        selected.source.page,
-                      )}
-                      target="_blank"
-                      rel="noreferrer"
+                    <button
+                      type="button"
+                      className="source-page-link link-button"
+                      onClick={() =>
+                        openAuthenticatedDocument(
+                          publicationService.sourceUrl(
+                            activeDocumentId ?? "",
+                            selected.source.page,
+                          ),
+                        ).catch(() =>
+                          showToast(
+                            "The original page could not be opened. Please try again.",
+                          ),
+                        )
+                      }
                     >
                       Open original page <ExternalLink aria-hidden="true" />
-                    </a>
+                    </button>
                     <span className="mono">p.{selected.source.page}</span>
                   </div>
                   <div
-                    className={`page-doc source-evidence-preview${evidenceLoading && !evidenceFailed ? " is-loading" : ""}`}
+                    className={`page-doc source-evidence-preview${evidence.loading && !evidence.failed ? " is-loading" : ""}`}
                   >
-                    {!evidenceFailed ? (
+                    {!evidence.failed ? (
                       <>
-                        {evidenceLoading && (
+                        {evidence.loading && (
                           <div
                             className="source-evidence-loading"
                             role="status"
@@ -2008,22 +2130,14 @@ export function ReviewPage() {
                             Loading the matching source crop…
                           </div>
                         )}
-                        <img
-                          key={`${activeDocumentId}-${selected.id}-${evidenceVersion(selected)}`}
-                          className={evidenceLoading ? "is-loading" : undefined}
-                          src={publicationService.evidenceUrl(
-                            activeDocumentId ?? "",
-                            selected.id,
-                            evidenceVersion(selected),
-                          )}
-                          alt={`Original PDF evidence for ${selected.label} on page ${selected.source.page}`}
-                          loading="eager"
-                          onLoad={() => setEvidenceLoading(false)}
-                          onError={() => {
-                            setEvidenceLoading(false);
-                            setEvidenceFailed(true);
-                          }}
-                        />
+                        {evidence.src && (
+                          <img
+                            key={`${activeDocumentId}-${selected.id}-${evidenceVersion(selected)}`}
+                            src={evidence.src}
+                            alt={`Original PDF evidence for ${selected.label} on page ${selected.source.page}`}
+                            loading="eager"
+                          />
+                        )}
                       </>
                     ) : (
                       <div className="source-evidence-fallback">
@@ -2035,7 +2149,7 @@ export function ReviewPage() {
                       </div>
                     )}
                   </div>
-                  {!selected.source.bounds && !evidenceFailed && (
+                  {!selected.source.bounds && !evidence.failed && (
                     <p className="source-evidence-note">
                       Precise coordinates were unavailable, so the complete
                       source page is shown.
@@ -2061,129 +2175,108 @@ export function ReviewPage() {
                   />
                 </div>
 
-                <div className="field-label">
-                  Extracted result (reference only)
-                </div>
-                {selected.kind === "kv" ? (
-                  <dl className="kv extract-box">
-                    {selected.keyValues?.map(([key, value]) => (
-                      <div key={key} style={{ display: "contents" }}>
-                        <dt>{key}</dt>
-                        <dd>{value}</dd>
-                      </div>
-                    ))}
-                  </dl>
-                ) : selected.kind === "table" ? (
-                  <TableExtract
-                    table={selected.tableData}
-                    caption={selected.tableData?.caption}
-                  />
-                ) : (
-                  <div className="extract-box pre-wrap">
-                    {selected.extractedText || (
-                      <span style={{ color: "var(--muted)" }}>
-                        No text or image was extracted.
-                      </span>
-                    )}
-                  </div>
-                )}
-
-                {selected.correctedTable && !editing && (
-                  <>
-                    <div className="field-label">Saved corrected table</div>
-                    <TableExtract
-                      table={selected.correctedTable}
-                      caption={selected.correctedTable.caption}
-                    />
-                  </>
-                )}
-
-                {selected.correctedText &&
-                  !editing &&
-                  selected.type !== "box_section" && (
-                    <>
-                      <div className="field-label">Saved correction</div>
-                      {selected.type === "list" ? (
-                        <ReviewListPreview text={selected.correctedText} />
-                      ) : (
-                        <div className="corrected-result pre-wrap">
-                          {selected.correctedText}
-                        </div>
-                      )}
-                    </>
-                  )}
-
-                {editing && (
-                  <div className="correction-editor">
-                    <div className="field-label">
-                      {usesTableEditor(editType)
-                        ? "Corrected table"
-                        : editType === "box_section"
-                          ? "Box Section structure"
-                          : "Corrected result"}
+                <div className="review-extracted-field">
+                  <div className="field-label">Extracted result</div>
+                  {editing && usesTableEditor(editType) ? (
+                    <TableEditor table={editTable} onChange={setEditTable} />
+                  ) : editing && editType === "list" ? (
+                    <ListEditor text={editText} onChange={setEditText} />
+                  ) : editing && editType === "box_section" ? (
+                    <div className="box-section-edit-note">
+                      Child paragraphs, lists, tables, figures and footnotes
+                      stay as separate semantic elements. Change the container
+                      label here; its child content is not flattened into one
+                      text field.
                     </div>
-                    {usesTableEditor(editType) ? (
-                      <TableEditor table={editTable} onChange={setEditTable} />
-                    ) : editType === "list" ? (
-                      <ListEditor text={editText} onChange={setEditText} />
-                    ) : editType === "box_section" ? (
-                      <div className="box-section-edit-note">
-                        Child paragraphs, lists, tables, figures and footnotes
-                        stay as separate semantic elements. Change the container
-                        label here; its child content is not flattened into one
-                        text field.
-                      </div>
-                    ) : (
-                      <textarea
-                        className="extract-input"
-                        aria-label="Corrected text"
-                        rows={4}
-                        value={editText}
-                        onChange={(event) => setEditText(event.target.value)}
-                        autoFocus
-                      />
-                    )}
-                    <div className="hint">
-                      {usesTableEditor(editType)
-                        ? "This structure is corrected as rows and columns."
+                  ) : !editing && selected.kind === "kv" ? (
+                    <dl className="kv extract-box">
+                      {selected.keyValues?.map(([key, value]) => (
+                        <div key={key} style={{ display: "contents" }}>
+                          <dt>{key}</dt>
+                          <dd>{value}</dd>
+                        </div>
+                      ))}
+                    </dl>
+                  ) : !editing && usesTableEditor(selected.type) ? (
+                    <TableExtract
+                      table={selected.correctedTable ?? selected.tableData}
+                      caption={
+                        (selected.correctedTable ?? selected.tableData)?.caption
+                      }
+                    />
+                  ) : !editing && selected.type === "list" ? (
+                    <ReviewListPreview
+                      text={
+                        selected.correctedText ?? selected.extractedText ?? ""
+                      }
+                    />
+                  ) : (
+                    <textarea
+                      className="extract-box extract-input review-extracted-text"
+                      aria-label="Extracted text"
+                      aria-describedby="extracted-text-help"
+                      rows={6}
+                      readOnly={!editing}
+                      value={
+                        editing
+                          ? editText
+                          : (selected.correctedText ??
+                            selected.extractedText ??
+                            "")
+                      }
+                      onChange={(event) => setEditText(event.target.value)}
+                      placeholder="No text or image was extracted."
+                    />
+                  )}
+                  <div className="hint" id="extracted-text-help">
+                    {editing
+                      ? usesTableEditor(editType)
+                        ? "Edit the extracted rows and columns above."
                         : editType === "list"
-                          ? "Enter one list item per line."
+                          ? "Edit each list item above."
                           : editType === "box_section"
                             ? "The Box Section remains a container in every generated output."
-                            : "This structure is corrected as text."}
+                            : "Edit the extracted text above, then save your changes."
+                      : "Select Edit to change the extracted result."}
+                  </div>
+                </div>
+
+                {selected.kind === "image" && (
+                  <div className="manual-picture-upload">
+                    <div>
+                      <strong>No matching figure was found on this page</strong>
+                      <span>
+                        Check the original PDF page. If it has an image this
+                        caption belongs to, upload it here.
+                      </span>
                     </div>
+                    <label className="btn btn-outline manual-picture-upload-button">
+                      Upload image
+                      <input
+                        type="file"
+                        accept="image/png,image/jpeg,image/webp"
+                        hidden
+                        disabled={actingItemId === selected.id}
+                        onChange={(event) => {
+                          const file = event.target.files?.[0];
+                          event.target.value = "";
+                          if (file) void uploadImage(selected, file);
+                        }}
+                      />
+                    </label>
                   </div>
                 )}
 
-                {selected.type === "picture" && (
+                {selected.type === "picture" && selected.kind !== "image" && (
                   <div className="manual-picture-upload">
                     <div>
-                      <strong>
-                        {uploadedPicture
-                          ? "Replacement picture ready"
-                          : "Picture extraction failed"}
-                      </strong>
+                      <strong>Confirm this figure against the original page</strong>
                       <span>
-                        {uploadedPicture ??
-                          "Upload the picture manually if it is missing from the extracted result."}
+                        Compare the image above with the PDF evidence, then
+                        confirm or relabel it using the structure control
+                        above. If this isn&apos;t really a figure, reject it.
                       </span>
                     </div>
-                    <label
-                      className="btn btn-outline btn-sm"
-                      aria-disabled={!editing}
-                    >
-                      <ImageUp />
-                      Upload picture
-                      <input
-                        className="sr-only"
-                        type="file"
-                        accept="image/*"
-                        disabled={!editing}
-                        onChange={(event) =>
-                          void uploadPicture(selected, event.target.files?.[0])
-                        }
-                      />
-                    </label>
                   </div>
                 )}
               </div>
@@ -2192,6 +2285,7 @@ export function ReviewPage() {
                   <>
                     <button
                       className="btn btn-primary review-save-action"
+                      disabled={actingItemId === selected.id}
                       onClick={() => saveEdit(selected)}
                     >
                       <Check />
@@ -2209,13 +2303,17 @@ export function ReviewPage() {
                     <button
                       className="btn btn-outline"
                       disabled={
-                        selected.status === "accepted" ||
+                        (selected.status === "accepted" &&
+                          selected.reviewedBy !== "system") ||
                         actingItemId === selected.id
                       }
                       onClick={() => act(selected, "accepted")}
                     >
                       <Check />
-                      Accept
+                      {selected.status === "accepted" &&
+                      selected.reviewedBy === "system"
+                        ? "Confirm"
+                        : "Accept"}
                     </button>
                     <button
                       className="btn btn-outline"

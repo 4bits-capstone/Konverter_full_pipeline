@@ -1,11 +1,11 @@
 import { useQuery } from '@tanstack/react-query'
-import { ArrowLeft, Check, FileText, FolderOpen, Minus } from 'lucide-react'
-import { useEffect, useMemo, useState } from 'react'
+import { ArrowLeft, Check, ChevronDown, FileText, FolderOpen, Minus, X } from 'lucide-react'
+import { Fragment, useEffect, useMemo, useState } from 'react'
 import { Link, useNavigate } from 'react-router-dom'
 import { AdminModeSwitcher } from '../components/AdminModeSwitcher'
 import { ActorChip, PageCountBadge, TimeStack } from '../components/AuditActionDetail'
 import { converterStagePath } from '../lib/converterRoutes'
-import { AUDIT_LOG_FETCH_LIMIT, toLocalDateKey } from '../lib/auditFormatting'
+import { toLocalDateKey } from '../lib/auditFormatting'
 import { auditService, documentService } from '../services'
 import { useKonverter } from '../state/KonverterContext'
 import type { DocumentSummary, ProcessingState } from '../types/konverter'
@@ -56,9 +56,11 @@ export function DocumentListPage() {
     const stage = reopenDocument(document)
     navigate(converterStagePath(stage))
   }
-  const { data: auditEntries = [] } = useQuery({
-    queryKey: ['audit-log', AUDIT_LOG_FETCH_LIMIT],
-    queryFn: () => auditService.list({ limit: AUDIT_LOG_FETCH_LIMIT }),
+  // Just a badge count here, so ask for the true total directly rather than
+  // fetching (and capping at AUDIT_LOG_FETCH_LIMIT) the full entry list.
+  const { data: auditTotal = 0 } = useQuery({
+    queryKey: ['audit-log', 'count'],
+    queryFn: () => auditService.count(),
   })
 
   const visibleDocuments = useMemo(() => {
@@ -81,15 +83,23 @@ export function DocumentListPage() {
   }, [documents, search, statusFilter, dateFrom, dateTo, sortOrder])
 
   useEffect(() => {
-    if (selectedId && visibleDocuments.some((document) => document.id === selectedId)) return
-    setSelectedId(visibleDocuments[0]?.id ?? null)
+    if (!selectedId || visibleDocuments.some((document) => document.id === selectedId)) return
+    setSelectedId(null)
   }, [selectedId, visibleDocuments])
 
-  const selectedDocument = visibleDocuments.find((document) => document.id === selectedId) ?? null
   const hasFilters = Boolean(search) || statusFilter !== 'all' || Boolean(dateFrom) || Boolean(dateTo)
 
+  const toggleDetails = (documentId: string) => {
+    setSelectedId((current) => current === documentId ? null : documentId)
+  }
+
+  const closeDetails = (documentId: string) => {
+    setSelectedId(null)
+    requestAnimationFrame(() => document.getElementById(`document-detail-trigger-${documentId}`)?.focus())
+  }
+
   return (
-    <section className="screen active" aria-labelledby="doc-list-heading">
+    <section className="screen active audit-log-page" aria-labelledby="doc-list-heading">
       <div className="admin-page-header">
         <Link className="btn btn-ghost btn-sm" to={converterStagePath('upload')} aria-label="Back to converter">
           <ArrowLeft aria-hidden="true" />
@@ -101,7 +111,7 @@ export function DocumentListPage() {
         </div>
       </div>
 
-      <AdminModeSwitcher documentCount={documents.length} auditCount={auditEntries.length} />
+      <AdminModeSwitcher documentCount={documents.length} auditCount={auditTotal} />
 
       {isLoading ? (
         <div className="panel panel-pad">
@@ -194,97 +204,140 @@ export function DocumentListPage() {
                       </tr>
                     </thead>
                     <tbody>
-                      {visibleDocuments.map((document) => (
-                        <tr
-                          key={document.id}
-                          className={`audit-ledger-record${selectedId === document.id ? ' is-selected' : ''}`}
-                          onClick={() => setSelectedId(document.id)}
-                        >
-                          <td>
-                            <button
-                              className="audit-ledger-select"
-                              type="button"
-                              aria-current={selectedId === document.id ? 'true' : undefined}
-                              onClick={(event) => {
-                                event.stopPropagation()
-                                setSelectedId(document.id)
-                              }}
+                      {visibleDocuments.map((document) => {
+                        const expanded = selectedId === document.id
+                        const panelId = `document-detail-${document.id}`
+                        const titleId = `${panelId}-title`
+                        return (
+                          <Fragment key={document.id}>
+                            <tr
+                              className={`audit-ledger-record${expanded ? ' is-expanded' : ''}`}
+                              onClick={() => toggleDetails(document.id)}
                             >
-                              <strong>{document.title}</strong>
-                            </button>
-                          </td>
-                          <td><ActorChip email={document.uploadedByEmail} /></td>
-                          <td><StatusPill state={document.processingState} /></td>
-                          <td><ApprovedBadge approvedAt={document.approvedAt} /></td>
-                          <td>
-                            <button
-                              className="btn btn-outline btn-sm"
-                              type="button"
-                              disabled={document.processingState !== 'complete'}
-                              onClick={(event) => {
-                                event.stopPropagation()
-                                openDocument(document)
-                              }}
-                            >
-                              Open
-                            </button>
-                          </td>
-                        </tr>
-                      ))}
+                              <td>
+                                <button
+                                  className="audit-ledger-select"
+                                  type="button"
+                                  aria-expanded={expanded}
+                                  aria-controls={panelId}
+                                  onClick={(event) => {
+                                    event.stopPropagation()
+                                    toggleDetails(document.id)
+                                  }}
+                                >
+                                  <strong>{document.title}</strong>
+                                </button>
+                              </td>
+                              <td><ActorChip email={document.uploadedByEmail} /></td>
+                              <td><StatusPill state={document.processingState} /></td>
+                              <td><ApprovedBadge approvedAt={document.approvedAt} /></td>
+                              <td className="audit-ledger-action-cell">
+                                <div className="audit-row-end">
+                                  <button
+                                    className="btn btn-outline btn-sm"
+                                    type="button"
+                                    disabled={document.processingState !== 'complete'}
+                                    onClick={(event) => {
+                                      event.stopPropagation()
+                                      openDocument(document)
+                                    }}
+                                  >
+                                    Open
+                                  </button>
+                                  <button
+                                    id={`document-detail-trigger-${document.id}`}
+                                    className="audit-disclosure-button"
+                                    type="button"
+                                    aria-label={`${expanded ? 'Hide' : 'Show'} document details: ${document.title}`}
+                                    aria-expanded={expanded}
+                                    aria-controls={panelId}
+                                    title={expanded ? 'Hide details' : 'Show details'}
+                                    onClick={(event) => {
+                                      event.stopPropagation()
+                                      toggleDetails(document.id)
+                                    }}
+                                  >
+                                    <ChevronDown aria-hidden="true" />
+                                  </button>
+                                </div>
+                              </td>
+                            </tr>
+                            {expanded ? (
+                              <tr className="audit-inline-detail-row is-document-detail">
+                                <td colSpan={5}>
+                                  <aside
+                                    className="audit-detail-panel audit-document-detail is-inline"
+                                    id={panelId}
+                                    tabIndex={-1}
+                                    aria-label="Selected document details"
+                                  >
+                                    <div className="audit-detail-heading">
+                                      <span className="audit-detail-icon audit-detail-icon--info" aria-hidden="true"><FileText /></span>
+                                      <div>
+                                        <span className="audit-detail-kicker">Selected document</span>
+                                        <h3 id={titleId}>{document.title}</h3>
+                                      </div>
+                                      <div className="audit-detail-heading-actions">
+                                        <button
+                                          className="btn btn-primary btn-sm"
+                                          type="button"
+                                          disabled={document.processingState !== 'complete'}
+                                          onClick={() => openDocument(document)}
+                                        >
+                                          <FolderOpen aria-hidden="true" />
+                                          Open
+                                        </button>
+                                        <button
+                                          className="audit-detail-close"
+                                          type="button"
+                                          aria-label="Close document details"
+                                          onClick={() => closeDetails(document.id)}
+                                        >
+                                          <X aria-hidden="true" />
+                                        </button>
+                                      </div>
+                                    </div>
+                                    <dl className="audit-detail-facts">
+                                      <div>
+                                        <dt>File</dt>
+                                        <dd className="mono">{document.fileName}</dd>
+                                      </div>
+                                      <div>
+                                        <dt>Pages</dt>
+                                        <dd><PageCountBadge pages={document.pages} /></dd>
+                                      </div>
+                                      <div>
+                                        <dt>Uploaded by</dt>
+                                        <dd><ActorChip email={document.uploadedByEmail} /></dd>
+                                      </div>
+                                      <div>
+                                        <dt>Uploaded</dt>
+                                        <dd>
+                                          {document.uploadedAt
+                                            ? <TimeStack value={document.uploadedAt} />
+                                            : <span className="muted">—</span>}
+                                        </dd>
+                                      </div>
+                                      <div>
+                                        <dt>Status</dt>
+                                        <dd><StatusPill state={document.processingState} /></dd>
+                                      </div>
+                                      <div>
+                                        <dt>Approved</dt>
+                                        <dd><ApprovedBadge approvedAt={document.approvedAt} /></dd>
+                                      </div>
+                                    </dl>
+                                  </aside>
+                                </td>
+                              </tr>
+                            ) : null}
+                          </Fragment>
+                        )
+                      })}
                     </tbody>
                   </table>
                 </div>
               </div>
-              {selectedDocument ? (
-                <aside className="audit-detail-panel" aria-label="Selected document details">
-                  <div className="audit-detail-heading">
-                    <span className="audit-detail-icon audit-detail-icon--info" aria-hidden="true"><FileText /></span>
-                    <div>
-                      <span className="audit-detail-kicker">Selected document</span>
-                      <h3>{selectedDocument.title}</h3>
-                    </div>
-                    <button
-                      className="btn btn-primary btn-sm"
-                      type="button"
-                      disabled={selectedDocument.processingState !== 'complete'}
-                      onClick={() => openDocument(selectedDocument)}
-                    >
-                      <FolderOpen aria-hidden="true" />
-                      Open
-                    </button>
-                  </div>
-                  <dl className="audit-detail-facts">
-                    <div>
-                      <dt>File</dt>
-                      <dd className="mono">{selectedDocument.fileName}</dd>
-                    </div>
-                    <div>
-                      <dt>Pages</dt>
-                      <dd><PageCountBadge pages={selectedDocument.pages} /></dd>
-                    </div>
-                    <div>
-                      <dt>Uploaded by</dt>
-                      <dd><ActorChip email={selectedDocument.uploadedByEmail} /></dd>
-                    </div>
-                    <div>
-                      <dt>Uploaded</dt>
-                      <dd>
-                        {selectedDocument.uploadedAt
-                          ? <TimeStack value={selectedDocument.uploadedAt} />
-                          : <span className="muted">—</span>}
-                      </dd>
-                    </div>
-                    <div>
-                      <dt>Status</dt>
-                      <dd><StatusPill state={selectedDocument.processingState} /></dd>
-                    </div>
-                    <div>
-                      <dt>Approved</dt>
-                      <dd><ApprovedBadge approvedAt={selectedDocument.approvedAt} /></dd>
-                    </div>
-                  </dl>
-                </aside>
-              ) : null}
             </div>
           )}
         </>

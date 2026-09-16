@@ -37,10 +37,18 @@ export function AuditLogPage() {
     queryKey: ['audit-log', AUDIT_LOG_FETCH_LIMIT],
     queryFn: () => auditService.list({ limit: AUDIT_LOG_FETCH_LIMIT }),
   })
+  const { data: totalCount } = useQuery({
+    queryKey: ['audit-log', 'count'],
+    queryFn: () => auditService.count(),
+  })
   const { data: documents = [] } = useQuery({
     queryKey: ['documents', 'all'],
     queryFn: () => documentService.listAllDocuments(),
   })
+  // The true total, uncapped by AUDIT_LOG_FETCH_LIMIT — falls back to what's
+  // loaded so the badge never under-reports before the count query resolves.
+  const auditTotal = totalCount ?? entries.length
+  const isTruncated = auditTotal > entries.length
 
   const actorOptions = useMemo(() => {
     const emails = new Set<string>()
@@ -83,16 +91,14 @@ export function AuditLogPage() {
   )
 
   useEffect(() => {
-    if (selectedId && pagedEntries.some((entry) => entry.id === selectedId)) return
-    setSelectedId(pagedEntries[0]?.id ?? null)
+    if (!selectedId || pagedEntries.some((entry) => entry.id === selectedId)) return
+    setSelectedId(null)
   }, [selectedId, pagedEntries])
 
-  const selectedEntry = pagedEntries.find((entry) => entry.id === selectedId) ?? null
-  const selectedDocument = selectedEntry ? documents.find((document) => document.id === selectedEntry.document_id) : undefined
   const hasFilters = Boolean(search) || actionFilter !== 'all' || actorFilter !== 'all' || chainFilter !== 'all' || Boolean(dateFrom) || Boolean(dateTo)
 
   return (
-    <section className="screen active" aria-labelledby="audit-log-heading">
+    <section className="screen active audit-log-page" aria-labelledby="audit-log-heading">
       <div className="admin-page-header">
         <Link className="btn btn-ghost btn-sm" to={converterStagePath('upload')} aria-label="Back to converter">
           <ArrowLeft aria-hidden="true" />
@@ -104,7 +110,7 @@ export function AuditLogPage() {
         </div>
       </div>
 
-      <AdminModeSwitcher documentCount={documents.length} auditCount={entries.length} />
+      <AdminModeSwitcher documentCount={documents.length} auditCount={auditTotal} />
 
       {isLoading ? (
         <div className="panel panel-pad">
@@ -158,7 +164,7 @@ export function AuditLogPage() {
                 <option value="oldest">Oldest first</option>
               </select>
             </label>
-            <span className="admin-count">{visibleEntries.length} of {entries.length} events</span>
+            <span className="admin-count">{visibleEntries.length} of {auditTotal.toLocaleString('en-AU')} events</span>
           </div>
           <div className="admin-toolbar">
             <div className="tb-control">
@@ -185,6 +191,14 @@ export function AuditLogPage() {
             </div>
           </div>
 
+          {isTruncated ? (
+            <p className="hint">
+              Showing the {entries.length.toLocaleString('en-AU')} most recent of{' '}
+              {auditTotal.toLocaleString('en-AU')} total events. Search and filters above only
+              apply to these loaded events.
+            </p>
+          ) : null}
+
           {entries.length === 0 ? (
             <div className="panel panel-pad">
               <p className="hint">No audit events yet.</p>
@@ -204,16 +218,21 @@ export function AuditLogPage() {
                     showActor
                     getChainStatus={(entry) => auditChainStatus(entries, entries.indexOf(entry))}
                     caption="Audit log entries"
+                    renderInlineDetail={(entry, inlineId, onClose) => {
+                      const document = documents.find((item) => item.id === entry.document_id)
+                      return (
+                        <AuditActionDetailPanel
+                          entry={entry}
+                          documentTitle={document?.title ?? null}
+                          documentFileName={document?.fileName ?? null}
+                          showActor
+                          inlineId={inlineId}
+                          onClose={onClose}
+                        />
+                      )
+                    }}
                   />
                 </div>
-                {selectedEntry ? (
-                  <AuditActionDetailPanel
-                    entry={selectedEntry}
-                    documentTitle={selectedDocument?.title ?? null}
-                    documentFileName={selectedDocument?.fileName ?? null}
-                    showActor
-                  />
-                ) : null}
               </div>
               {pageCount > 1 ? (
                 <div className="admin-pager">

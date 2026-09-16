@@ -40,7 +40,7 @@ const emptyWorkflow = (): DocumentWorkflow => ({
 
 // Pictures, tables, and headings are too important to withhold from the
 // approved output while a reviewer works through unrelated flagged items, so
-// a pending/needs_attention item of one of these types no longer blocks
+// a pending item of one of these types no longer blocks
 // approval. It still surfaces in the review list with its confidence badge.
 // Footnotes are included for the same reason: they're low-stakes reference
 // text, and most of a legal document's review-queue volume is citation
@@ -95,6 +95,7 @@ interface KonverterContextValue {
     label: string,
   ) => Promise<void>;
   saveReviewItem: (id: string, changes: ReviewUpdate) => Promise<ReviewItem>;
+  uploadReviewItemImage: (id: string, file: File) => Promise<ReviewItem>;
   bulkUpdateReviewItems: (
     ids: string[],
     changes: ReviewUpdate,
@@ -106,7 +107,6 @@ interface KonverterContextValue {
   requiredManualChecks: ManualCheckKey[];
   toggleManualCheck: (key: ManualCheckKey) => void;
   setAllManualChecks: (value: boolean) => void;
-  approvalReady: boolean;
   toastState: ToastState;
   showToast: (message: string) => void;
   resetWorkflow: () => void;
@@ -304,7 +304,14 @@ export function KonverterProvider({ children }: PropsWithChildren) {
         setActiveDocumentId((activeId) =>
           activeId === id ? (next[0]?.id ?? null) : activeId,
         );
-        if (!next.length) setUploaded(false);
+        if (!next.length) {
+          setUploaded(false);
+          // No document left to back them, so later stages must re-lock —
+          // otherwise a prior document's progress leaves review/metadata/
+          // preview reachable with nothing behind them.
+          setUnlocked(initialUnlocked);
+          setDoneStages(new Set());
+        }
         return next;
       });
       setDocumentProcessing((current) => {
@@ -320,9 +327,20 @@ export function KonverterProvider({ children }: PropsWithChildren) {
       void queryClient.removeQueries({ queryKey: ["review-items", id] });
       void queryClient.removeQueries({ queryKey: ["metadata", id] });
       void queryClient.removeQueries({ queryKey: ["publication", id] });
-      void documentService.removeDocument(id).catch(() => undefined);
+      void documentService.removeDocument(id).catch(() => {
+        // The document was already removed from local state above for a
+        // responsive UI, but the backend delete itself failed — without
+        // this, the document silently reappears (or doesn't) only the
+        // next time something happens to call refreshDocuments(), with no
+        // indication anything went wrong in between. Re-sync from the
+        // server's own list (which still has it, since the delete
+        // failed) rather than trying to hand-reconstruct exactly which
+        // local state fields this removal touched.
+        showToast("This document could not be removed. Please try again.");
+        void refreshDocuments();
+      });
     },
-    [queryClient],
+    [queryClient, refreshDocuments, showToast],
   );
 
   const selectDocument = useCallback((id: string) => {
@@ -339,11 +357,21 @@ export function KonverterProvider({ children }: PropsWithChildren) {
   const reopenDocument = useCallback(
     (document: DocumentSummary): Stage => {
       addDocuments([document]);
+      // addDocuments only seeds a document's workflow state the first time
+      // its id is seen, so it never picks up a newer approvedAt/
+      // metadataConfirmed for a document already known from earlier in
+      // this session (e.g. approved elsewhere, then reopened here) — this
+      // is the one place we know `document` is the authoritative, just-
+      // fetched record for this specific id, so refresh it unconditionally.
+      patchWorkflow(document.id, {
+        approvedAt: document.approvedAt ?? null,
+        metadataResolved: Boolean(document.metadataConfirmed),
+      });
       setActiveDocumentId(document.id);
       setUnlocked(unlockedForDocument(document));
       return document.approvedAt ? "preview" : "review";
     },
-    [addDocuments],
+    [addDocuments, patchWorkflow],
   );
 
   const startDocumentProcessing = useCallback(
@@ -414,8 +442,25 @@ export function KonverterProvider({ children }: PropsWithChildren) {
   useEffect(() => {
     if (!runningDocumentIds) return;
     let cancelled = false;
+    // setInterval doesn't wait for the previous tick to resolve — under
+    // network jitter, an earlier-started poll can resolve *after* a later
+    // one and overwrite fresher state with stale data (a document already
+    // reported "complete" flipping back to "running"). Skipping a tick
+    // while the previous one is still in flight means there's never more
+    // than one outstanding request batch to race against itself.
+    let inFlight = false;
 
     const refreshProcessingJobs = async () => {
+      if (inFlight) return;
+      inFlight = true;
+      try {
+        await refreshOnce();
+      } finally {
+        inFlight = false;
+      }
+    };
+
+    const refreshOnce = async () => {
       const ids = runningDocumentIds.split("|");
       const results = await Promise.allSettled(
         ids.map(async (id) => {
@@ -536,6 +581,20 @@ export function KonverterProvider({ children }: PropsWithChildren) {
     [activeDocumentId, cacheReviewItem, setApprovedAt],
   );
 
+  const uploadReviewItemImage = useCallback(
+    async (id: string, file: File) => {
+      const updated = await reviewService.uploadImage(
+        id,
+        file,
+        activeDocumentId ?? undefined,
+      );
+      setApprovedAt(null);
+      cacheReviewItem(updated);
+      return updated;
+    },
+    [activeDocumentId, cacheReviewItem, setApprovedAt],
+  );
+
   const bulkUpdateReviewItems = useCallback(
     async (ids: string[], changes: ReviewUpdate) => {
       const updated = await reviewService.bulkUpdate(
@@ -565,12 +624,21 @@ export function KonverterProvider({ children }: PropsWithChildren) {
     () =>
       reviewItems.filter(
         (item) =>
-          (item.status === "pending" || item.status === "needs_attention") &&
+          item.status === "pending" &&
           isBlockingReviewItem(item),
       ).length,
     [reviewItems],
   );
-  const resolvedCount = reviewItems.length - pendingCount;
+  const resolvedCount = useMemo(
+    () =>
+      reviewItems.filter(
+        (item) =>
+          item.status === "accepted" ||
+          item.status === "edited" ||
+          item.status === "removed",
+      ).length,
+    [reviewItems],
+  );
 
   const requiredManualChecks = useMemo<ManualCheckKey[]>(() => {
     const keys: ManualCheckKey[] = ["content"];
@@ -615,11 +683,6 @@ export function KonverterProvider({ children }: PropsWithChildren) {
     [activeDocumentId, patchWorkflow],
   );
 
-  // Final approval is based only on automated workflow state. Reviewer
-  // checkboxes were removed from the approval gate; their work is already
-  // represented by resolved flags and confirmed metadata.
-  const approvalReady = pendingCount === 0 && metadataResolved;
-
   const activeDocument = useMemo(
     () =>
       documents.find((document) => document.id === activeDocumentId) ?? null,
@@ -659,10 +722,22 @@ export function KonverterProvider({ children }: PropsWithChildren) {
   }, [approvedAt, metadataResolved, unlock]);
 
   const resetWorkflow = useCallback(() => {
-    documents.forEach(
-      (document) =>
-        void documentService.removeDocument(document.id).catch(() => undefined),
-    );
+    Promise.allSettled(
+      documents.map((document) => documentService.removeDocument(document.id)),
+    ).then((results) => {
+      // Local state is cleared unconditionally below regardless of outcome
+      // — that's the intended "start over" behaviour — but a backend
+      // delete that failed leaves an orphaned document the server still
+      // has, invisible in this now-empty workspace until a future
+      // refreshDocuments() unexpectedly brings it back. Surfacing that now
+      // (rather than silently swallowing it, as every removeDocument call
+      // here used to) at least tells the user something needs attention.
+      if (results.some((result) => result.status === "rejected")) {
+        showToast(
+          "Some documents could not be removed from the server and may still appear later.",
+        );
+      }
+    });
     void queryClient.invalidateQueries({ queryKey: ["review-items"] });
     setDocuments([]);
     setActiveDocumentId(null);
@@ -672,7 +747,7 @@ export function KonverterProvider({ children }: PropsWithChildren) {
     setMetadataState(emptyMetadata);
     setUnlocked(initialUnlocked);
     setDoneStages(new Set());
-  }, [documents, queryClient]);
+  }, [documents, queryClient, showToast]);
 
   // Local state only — unlike resetWorkflow, does not delete documents from
   // the backend. Used when the session ends, so the next login starts clean
@@ -722,6 +797,7 @@ export function KonverterProvider({ children }: PropsWithChildren) {
       updateReviewTable,
       updateReviewLabel,
       saveReviewItem,
+      uploadReviewItemImage,
       bulkUpdateReviewItems,
       resolveAllReviews,
       pendingCount,
@@ -730,7 +806,6 @@ export function KonverterProvider({ children }: PropsWithChildren) {
       requiredManualChecks,
       toggleManualCheck,
       setAllManualChecks,
-      approvalReady,
       toastState,
       showToast,
       resetWorkflow,
@@ -768,6 +843,7 @@ export function KonverterProvider({ children }: PropsWithChildren) {
       updateReviewTable,
       updateReviewLabel,
       saveReviewItem,
+      uploadReviewItemImage,
       bulkUpdateReviewItems,
       resolveAllReviews,
       pendingCount,
@@ -776,7 +852,6 @@ export function KonverterProvider({ children }: PropsWithChildren) {
       requiredManualChecks,
       toggleManualCheck,
       setAllManualChecks,
-      approvalReady,
       toastState,
       showToast,
       resetWorkflow,

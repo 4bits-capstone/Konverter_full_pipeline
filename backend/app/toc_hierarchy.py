@@ -562,8 +562,6 @@ def _normalise_outline_levels(entries: list[TocEntry]) -> list[TocEntry]:
             entry.level = 1
             body_started = True
             current_top_indent = entry.indent
-        elif body_started and re.match(r"^recommendations?\b", entry.title, re.IGNORECASE):
-            entry.level = 2
         elif (
             body_started
             and entry.level == 1
@@ -571,6 +569,17 @@ def _normalise_outline_levels(entries: list[TocEntry]) -> list[TocEntry]:
             and entry.indent > current_top_indent + 7
             and not _ALWAYS_TOP_LEVEL.fullmatch(entry.title)
         ):
+            # "Recommendations" is deliberately *not* in _ALWAYS_TOP_LEVEL
+            # above (unlike glossary/bibliography/index, which are always
+            # standalone back matter): it commonly appears both as its own
+            # dedicated chapter — often the single most important one in a
+            # legal/government report — and as an indented sub-heading at
+            # the end of some other chapter. The same indentation test
+            # every other subsection title is judged by is what tells
+            # these two shapes apart; a title-only match here would demote
+            # a genuine top-level "Recommendations" chapter unconditionally,
+            # silently nesting its entire content under whatever chapter
+            # happened to precede it in the navigation.
             entry.level = 2
         if _APPENDIX_ENTRY.match(entry.title):
             if not has_appendices and not appendix_run:
@@ -1740,6 +1749,13 @@ class TocHierarchyResolver:
             return f"section_header_{min(5, max(3, level + 2))}"
         if raw == "title":
             return "text"
+        # "unspecified" is no longer a label the product surfaces: any raw
+        # Docling label this mapping doesn't recognise (a rare, oddly
+        # classified item — verified directly against real documents, e.g.
+        # a Table of Cases list Docling tagged "code") falls back to "text"
+        # instead, since that's exactly how it already renders (a plain
+        # paragraph) and is a real, reviewable structure label rather than
+        # a dead-end category with no assignable meaning.
         return {
             "box_section": "box_section",
             "caption": "caption",
@@ -1756,26 +1772,53 @@ class TocHierarchyResolver:
             "picture": "picture",
             "table": "table",
             "text": "text",
-            "unspecified": "unspecified",
-        }.get(raw, "unspecified")
+        }.get(raw, "text")
 
     def output_text(self, item: dict[str, Any]) -> str:
         reference = str(item.get("self_ref", ""))
         return self.text_by_ref.get(reference, _clean_text(str(item.get("text", ""))))
 
     def apply_outline(self, blocks: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        """Merge the printed-TOC outline's restored/promoted headings back
+        into the document's own content, in reading order.
+
+        `blocks` already arrives in the right order — Docling runs a real
+        reading-order model (docling_ibm_models' rule-based predictor,
+        an r-tree/adjacency-graph algorithm, not a naive top-to-bottom
+        scan) as part of its own pipeline, and it gets multi-column pages
+        right: verified directly against real front-matter and Bibliography
+        pages in this codebase's own output, left column read in full
+        before right column, with no reordering needed. An earlier version
+        of this method re-sorted every block by (page, top) regardless,
+        which discarded that already-correct order and interleaved
+        side-by-side columns by raw vertical position — the fix that
+        replaced that blanket re-sort with a geometric column-clustering
+        heuristic (thresholds, share checks) was itself still fragile
+        (failed on a page with a stray off-page bounding box, and could
+        never generalise past exactly two columns). The actual fix is
+        simpler: never re-sort the real content at all. Only a handful of
+        outline entries per document need position-based placement — a
+        heading Docling missed and this outline is restoring, or one
+        Docling saw but mislabeled and this outline is promoting — so only
+        those get spliced into their approximate position within each
+        page's own already-correct sequence, leaving everything else
+        completely untouched."""
         matched_ids = {entry.matched_ref for entry in self.outline.entries if entry.matched_ref}
         output = [block for block in blocks if str(block.get("id", "")) not in matched_ids]
         matched_blocks = {
             str(block.get("id", "")): block for block in blocks if str(block.get("id", ""))
         }
 
-        positioned: list[tuple[float, float, int, dict[str, Any]]] = []
-        for index, block in enumerate(output):
-            page = int(block.get("page", 1))
-            bounds = block.get("source_bounds") or {}
-            top = float(bounds.get("top", 10_000 + index))
-            positioned.append((float(page), top, 1, block))
+        page_order: dict[int, list[dict[str, Any]]] = defaultdict(list)
+        for block in output:
+            page_order[int(block.get("page", 1))].append(block)
+
+        def insertion_index(page_blocks: list[dict[str, Any]], top: float) -> int:
+            for index, existing in enumerate(page_blocks):
+                existing_top = (existing.get("source_bounds") or {}).get("top")
+                if existing_top is not None and existing_top > top:
+                    return index
+            return len(page_blocks)
 
         for entry in self.outline.entries:
             if entry.matched_ref and entry.matched_ref in matched_blocks:
@@ -1792,34 +1835,29 @@ class TocHierarchyResolver:
                 confidence = 1.0
                 block_id = f"#/toc-outline/{entry.sequence}"
                 source_bounds = None
-            positioned.append(
-                (
-                    float(page),
-                    top,
-                    0,
-                    {
-                        "id": block_id,
-                        "label": f"section_header_{entry.level}",
-                        "text": entry.title,
-                        "page": page,
-                        "confidence": confidence,
-                        "source_bounds": source_bounds,
-                        "toc_derived": True,
-                        "toc_sequence": entry.sequence,
-                    },
-                )
-            )
+            new_block = {
+                "id": block_id,
+                "label": f"section_header_{entry.level}",
+                "text": entry.title,
+                "page": page,
+                "confidence": confidence,
+                "source_bounds": source_bounds,
+                "toc_derived": True,
+                "toc_sequence": entry.sequence,
+            }
+            page_blocks = page_order[page]
+            page_blocks.insert(insertion_index(page_blocks, top), new_block)
 
-        positioned.sort(key=lambda value: (value[0], value[1], value[2]))
         final: list[dict[str, Any]] = []
         seen_headings: set[tuple[str, int]] = set()
-        for _, _, _, block in positioned:
-            if str(block.get("label", "")).startswith("section_header_"):
-                key = (_match_key(str(block.get("text", ""))), int(block.get("page", 1)))
-                if key[0] and key in seen_headings:
-                    continue
-                seen_headings.add(key)
-            final.append(block)
+        for page in sorted(page_order):
+            for block in page_order[page]:
+                if str(block.get("label", "")).startswith("section_header_"):
+                    key = (_match_key(str(block.get("text", ""))), int(block.get("page", 1)))
+                    if key[0] and key in seen_headings:
+                        continue
+                    seen_headings.add(key)
+                final.append(block)
 
         chapter_children_by_page: dict[int, list[str]] = defaultdict(list)
         active_chapter_page: int | None = None

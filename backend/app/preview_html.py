@@ -7,12 +7,32 @@ report card, recommendations, accordion contents, citation and reader.
 
 from __future__ import annotations
 
+import base64
 import html
 import json
+import mimetypes
 import re
 from datetime import datetime
 from pathlib import Path
 from typing import Any
+
+from .footnote_numbering import resolve_footnote_number
+
+# A footnote number that Docling split off from its own citation text, and
+# that the pipeline's own repair pass (pipeline.py's
+# _repair_split_footnote_markers) couldn't reattach -- verified directly
+# against a real VLRC report: footnote 17's own citation was run together
+# with footnote 16's into a single text item with no boundary between them,
+# so 17 has nothing separate left to reattach even though its content is,
+# technically, present (merged into 16's). A genuine inline citation
+# reference is always embedded inside a real sentence ("...ceremony.19");
+# a paragraph whose *entire* content is just the bare number never is one,
+# so it must never be run through the inline footnote-reference linkifier
+# below -- doing so has linked a stray, unrelated number to whatever
+# footnote happened to land on that position in the section's list purely
+# by coincidence, actively misleading a reader who clicks it expecting the
+# number's own citation.
+_ISOLATED_FOOTNOTE_MARKER_RE = re.compile(r"^\d{1,3}$")
 
 
 def _slug(value: str) -> str:
@@ -128,6 +148,14 @@ def _publication_year(value: Any) -> str:
     return match.group(0) if match else ""
 
 
+def _data_uri(path: Path) -> str:
+    if not path.is_file():
+        return ""
+    mime_type = mimetypes.guess_type(path.name)[0] or "application/octet-stream"
+    encoded = base64.b64encode(path.read_bytes()).decode("ascii")
+    return f"data:{mime_type};base64,{encoded}"
+
+
 def _recommendation_snippets(sections: list[dict[str, Any]]) -> list[str]:
     candidates: list[str] = []
     for section in sections:
@@ -205,6 +233,7 @@ _FOOTNOTE_CONTEXT_WORDS = {
     "clause",
     "figure",
     "item",
+    "list",
     "number",
     "option",
     "paragraph",
@@ -222,13 +251,102 @@ _FOOTNOTE_CONTEXT_WORDS = {
 }
 
 
+def _render_footnotes_list(notes: list[dict[str, Any]]) -> str:
+    """A footnote's own citation number (e.g. "7 A blended family...") is
+    part of its extracted text, but the <ol> around it also counts by
+    position — the two disagree the moment the source document's own
+    numbering has a gap (a repeated citation sharing an earlier footnote,
+    common in legal documents), showing both and reading as a doubled
+    number. Using the citation's real number as the <li value> — the same
+    pattern _render_list_items already uses for ordered lists — keeps the
+    displayed number single and correct, gaps included, instead of relying
+    on the browser to count list position.
+
+    But a footnote's text can just as easily open with a number that isn't
+    its citation index at all — a statute section ("42 U.S.C. ...") or a
+    statistic ("18 per cent of respondents...") — and stripping that would
+    corrupt the citation instead of fixing a doubled number. A genuine
+    citation index only ever increases down the list; requiring that
+    ordering across every match (not just per item) is what makes this
+    safe to trust — one out-of-order match falls the whole list back to
+    plain, position-counted rendering rather than guessing per item.
+
+    A note with no leading number at all (e.g. "See generally...") sitting
+    between two matched notes is the remaining trap: with no <li value> of
+    its own, it inherits the browser's auto-continued count — one past
+    whichever number came before it — which collides with the very next
+    explicit value and reproduces the doubled number this function exists
+    to prevent. Hiding its own marker rather than letting it display a
+    number nobody assigned it sidesteps that; the next matched <li>'s
+    explicit value always wins regardless of what the counter did in
+    between."""
+    resolved: list[tuple[str, str] | None] = []
+    expected: int | None = None
+    for note in notes:
+        result = resolve_footnote_number(str(note.get("text", "")), expected)
+        resolved.append(result)
+        if result:
+            expected = int(result[0]) + 1
+    numbers = [int(result[0]) for result in resolved if result]
+    trustworthy = len(numbers) >= 2 and all(
+        later > earlier for earlier, later in zip(numbers, numbers[1:])
+    )
+    parts = []
+    for note, result in zip(notes, resolved):
+        safe_id = html.escape(str(note["id"]), quote=True)
+        if trustworthy and result:
+            number, remainder = result
+            parts.append(
+                f'<li id="{safe_id}" value="{html.escape(number, quote=True)}">'
+                f"{html.escape(remainder)}</li>"
+            )
+        elif trustworthy:
+            parts.append(
+                f'<li id="{safe_id}" style="list-style: none">'
+                f'{html.escape(str(note.get("text", "")))}</li>'
+            )
+        else:
+            parts.append(f'<li id="{safe_id}">{html.escape(str(note.get("text", "")))}</li>')
+    return "".join(parts)
+
+
 def _footnote_targets(footnotes: list[dict[str, Any]]) -> dict[str, str]:
+    """Map an in-body citation marker's bare number (the flattened
+    superscript, e.g. "95" in "...(Vic).95") to the note it should link
+    to. This has to be the citation's own printed number, parsed the
+    same way _render_footnotes_list recovers it — not the footnote's
+    position in the section's list, which was the previous key here.
+    Docling doesn't create one footnote block per printed number: a
+    repeated citation ("Ibid") reuses an earlier number without a new
+    block, and several citations bundled into one table (see
+    _split_footnote_entries in exporter.py) can land a different count
+    of entries than the printed range covers either way. Position drifts
+    from the printed number the moment either happens, and once it does
+    every later in-body reference in the section resolves to the wrong
+    note — falling back to position only when a note has no parseable
+    leading number of its own keeps that case working as before."""
     targets: dict[str, str] = {}
+    unmatched_ids: list[str] = []
+    expected: int | None = None
     for note in footnotes:
         note_id = str(note.get("id", "")).strip()
-        match = re.match(r"footnote-(\d+)(?:-|$)", note_id, re.IGNORECASE)
-        if match and match.group(1) not in targets:
-            targets[match.group(1)] = note_id
+        result = resolve_footnote_number(str(note.get("text", "")), expected)
+        if result:
+            expected = int(result[0]) + 1
+        if result and result[0] not in targets:
+            targets[result[0]] = note_id
+        else:
+            unmatched_ids.append(note_id)
+    # A degenerate note with no real citation number (a stray fragment
+    # like just the digit "5" left over from a page-break split) would
+    # otherwise claim a position-based key first and block the very next
+    # note's own genuine citation number from ever registering, purely
+    # because of list order — filling every real number first, in one
+    # full pass, before any position fallback runs at all avoids that.
+    for note_id in unmatched_ids:
+        position_match = re.match(r"footnote-(\d+)(?:-|$)", note_id, re.IGNORECASE)
+        if position_match and position_match.group(1) not in targets:
+            targets[position_match.group(1)] = note_id
     return targets
 
 
@@ -360,6 +478,13 @@ def _render_list_items(
             if ordered and start not in (None, 1) and not output
             else ""
         )
+        # A group's own marker kind (decimal, alpha, roman) is inferred
+        # once per nesting depth in exporter.py — every sibling in one
+        # group shares it by construction, so the first item's kind speaks
+        # for the whole <ol>. Untracked kinds (plain decimal, or anything
+        # not run through that inference) fall back to the CSS default.
+        kind = group[0].get("kind") if ordered else None
+        kind_class = f" reader-source-list--{kind}" if kind in ("alpha", "roman") else ""
         items_html = ""
         for item in group:
             value_attribute = (
@@ -372,7 +497,7 @@ def _render_list_items(
                 f"{_render_list_items(item.get('children', []), footnote_targets)}</li>"
             )
         output.append(
-            f'<{tag} class="reader-source-list"{start_attribute}>'
+            f'<{tag} class="reader-source-list{kind_class}"{start_attribute}>'
             f"{items_html}</{tag}>"
         )
     return "".join(output)
@@ -396,6 +521,7 @@ def _render_block(
     block: dict[str, Any],
     figure_directory: Path | None,
     footnote_targets: dict[str, str],
+    asset_base_url: str = "",
 ) -> str:
     block_type = str(block.get("type", ""))
     if block_type == "heading":
@@ -410,7 +536,20 @@ def _render_block(
             return _render_numbered_paragraph(
                 block.get("number"), block.get("text"), footnote_targets
             )
-        return f'<p class="docling-paragraph">{_render_inline_text(block.get("text", ""), footnote_targets)}</p>'
+        text = str(block.get("text", ""))
+        if _ISOLATED_FOOTNOTE_MARKER_RE.match(text.strip()):
+            return f'<p class="docling-paragraph docling-orphan-marker">{html.escape(text)}</p>'
+        return f'<p class="docling-paragraph">{_render_inline_text(text, footnote_targets)}</p>'
+    if block_type == "quote":
+        paragraphs = re.split(r"\n\s*\n", str(block.get("text", "")))
+        content = "".join(
+            f'<p class="docling-paragraph">{_render_inline_text(paragraph.strip(), footnote_targets)}</p>'
+            for paragraph in paragraphs
+            if paragraph.strip()
+        )
+        attribution = html.escape(str(block.get("attribution") or ""))
+        caption = f'<figcaption><cite>{attribution}</cite></figcaption>' if attribution else ""
+        return f'<figure class="report-quote report-quote--inline"><blockquote class="docling-quote">{content}</blockquote>{caption}</figure>'
     if block_type == "list":
         if block.get("style") == "numbered-paragraphs":
             return '<div class="docling-numbered-group">' + "".join(
@@ -440,7 +579,7 @@ def _render_block(
             str(block.get("variant", "information")).casefold(),
         ) or "information"
         content = "".join(
-            _render_block(child, figure_directory, footnote_targets)
+            _render_block(child, figure_directory, footnote_targets, asset_base_url)
             for child in block.get("blocks", [])
         )
         return (
@@ -492,12 +631,15 @@ def _render_block(
             if figure_directory is not None and image_key
             else None
         )
-        # A relative filename, not a data URI: figure PNGs are written as
-        # siblings of accessible.html in the document's export directory, and
-        # a linked file keeps the export small enough for AI browsing tools
-        # and crawlers to actually fetch, unlike inlining every image (a
-        # handful of figures easily pushes a single-file export past 4MB).
-        image_uri = f"figure-{image_key}.png" if image_path is not None and image_path.is_file() else ""
+        # Link published assets to keep hosted HTML small. Without a configured
+        # public origin, embed them so a downloaded HTML file remains portable.
+        image_uri = ""
+        if image_path is not None and image_path.is_file():
+            image_uri = (
+                html.escape(f"{asset_base_url}/figures/{image_key}.png", quote=True)
+                if asset_base_url
+                else _data_uri(image_path)
+            )
         visual = (
             f'<img class="docling-figure-image" src="{image_uri}" alt="{caption}">'
             if image_uri
@@ -607,6 +749,7 @@ PREVIEW_STYLE = r"""
 .vlrc-publication-embed .vlrc-reader-breadcrumb{display:flex;align-items:center;gap:8px;flex-wrap:wrap;margin-bottom:26px;padding-bottom:18px;border-bottom:1px solid var(--line);color:var(--muted);font-size:12px}
 .vlrc-publication-embed .vlrc-reader-breadcrumb a,.vlrc-publication-embed .vlrc-reader-breadcrumb label{color:var(--blue);font-weight:700;text-decoration:underline;text-underline-offset:3px}
 .vlrc-publication-embed .vlrc-reader-layout{display:grid;grid-template-columns:190px minmax(0,1fr);gap:34px;align-items:start}
+.vlrc-publication-embed .vlrc-reader-layout.vlrc-reader-layout--no-nav{grid-template-columns:minmax(0,1fr)}
 .vlrc-publication-embed .vlrc-reader-nav{position:sticky;top:22px;max-height:calc(100vh - 44px);overflow-y:auto;padding:17px 16px;border-top:4px solid var(--blue);background:#f4f6f8}
 .vlrc-publication-embed .vlrc-reader-nav h2{margin:0 0 12px;font-size:14px}
 .vlrc-publication-embed .vlrc-reader-nav ul{margin:0;padding:0;list-style:none}
@@ -624,12 +767,16 @@ PREVIEW_STYLE = r"""
 .vlrc-publication-embed .docling-content-blocks>h4{scroll-margin-top:18px;margin:22px 0 9px;color:var(--ink-2);font-size:14px;line-height:1.4}
 .vlrc-publication-embed .docling-content-blocks>h5{scroll-margin-top:18px;margin:19px 0 8px;color:#4d5865;font-size:12.5px;line-height:1.45;letter-spacing:.012em}
 .vlrc-publication-embed .docling-paragraph{margin:0 0 15px;color:var(--ink-2);font-size:14px;line-height:1.72}
+.vlrc-publication-embed .docling-quote{margin:28px 0;padding:20px 24px;border-left:5px solid var(--blue);background:#eef4f8;color:var(--ink);font-size:17px;line-height:1.65}
+.vlrc-publication-embed .docling-quote p{margin:0 0 12px}.vlrc-publication-embed .docling-quote p:last-child{margin-bottom:0}
 .vlrc-publication-embed .reader-numbered-paragraph{display:grid;grid-template-columns:minmax(3.5rem,max-content) minmax(0,1fr);gap:10px;margin-bottom:15px;color:var(--ink-2);font-size:14px;line-height:1.72}
 .vlrc-publication-embed .reader-paragraph-number{color:var(--red);font:700 11.5px/1.9 monospace}
 .vlrc-publication-embed .reader-numbered-paragraph p{margin:0}
 .vlrc-publication-embed .reader-source-list{margin:8px 0 17px 52px;padding-left:20px;color:var(--ink-2);font-size:14px;line-height:1.65}
 .vlrc-publication-embed ul.reader-source-list{list-style:disc outside}
 .vlrc-publication-embed ol.reader-source-list{list-style:decimal outside}
+.vlrc-publication-embed ol.reader-source-list--alpha{list-style-type:lower-alpha}
+.vlrc-publication-embed ol.reader-source-list--roman{list-style-type:lower-roman}
 .vlrc-publication-embed .reader-source-list .reader-source-list{margin:6px 0 4px}
 .vlrc-publication-embed .docling-box-section{margin:28px 0;overflow:hidden;border:1px solid #b8bec6;border-left:5px solid var(--blue);border-radius:4px;background:#f3f5f7}
 .vlrc-publication-embed .docling-box-section>h3{margin:0;padding:12px 18px;border-bottom:1px solid #c9cdd2;background:#dfe4e9;color:#111;font-size:17px;line-height:1.3}
@@ -648,6 +795,7 @@ PREVIEW_STYLE = r"""
 .vlrc-publication-embed .docling-figure figcaption,.vlrc-publication-embed .docling-caption{margin:8px 0 18px;color:var(--muted);font-size:12px}
 .vlrc-publication-embed .docling-formula{margin:18px 0;padding:14px 16px;border:1px solid var(--line);background:var(--surface-2);font-family:monospace;font-size:13px;white-space:pre-wrap}
 .vlrc-publication-embed .docling-footnote{padding-left:12px;border-left:3px solid var(--line-2);color:var(--ink-2);font-size:.92em}
+.vlrc-publication-embed .docling-orphan-marker{color:var(--muted);font-size:.85em;font-style:italic}
 .vlrc-publication-embed .footnote-reference{position:relative;top:-.38em;font-size:.72em;line-height:0;vertical-align:baseline}
 .vlrc-publication-embed .footnote-reference a{color:var(--blue);font-weight:700;text-decoration:none}
 .vlrc-publication-embed .footnote-reference a:hover,.vlrc-publication-embed .footnote-reference a:focus{text-decoration:underline;text-underline-offset:2px}
@@ -667,6 +815,134 @@ PREVIEW_STYLE = r"""
 """
 
 
+SCRIPT_FREE_STYLE = r"""
+
+@media screen {
+.vlrc-publication-embed:not([data-enhanced]):has(.vlrc-reader:target,.vlrc-reader :target) #publication-landing,
+.vlrc-publication-embed:not([data-enhanced]):has(.vlrc-reader:target,.vlrc-reader :target) .vlrc-reader {display:none!important}
+.vlrc-publication-embed:not([data-enhanced]):has(.vlrc-reader:target,.vlrc-reader :target) .vlrc-reader:target,
+.vlrc-publication-embed:not([data-enhanced]):has(.vlrc-reader:target,.vlrc-reader :target) .vlrc-reader:has(:target) {display:block!important}
+.vlrc-publication-embed .reader-footnotes:has(:target) > * {display:block}
+}
+"""
+
+
+_REPORT_CARD_ICONS = {
+    "download": '<path d="M12 3v11m-5-4 5 5 5-5M4 20h16"/>',
+    "link": '<path d="M10 13a5 5 0 0 0 7 .5l3-3a5 5 0 0 0-7-7l-2 2M14 11a5 5 0 0 0-7-.5l-3 3a5 5 0 0 0 7 7l2-2"/>',
+    "list": '<path d="M8 6h13M8 12h13M8 18h13M3 6h.01M3 12h.01M3 18h.01"/>',
+    "quote": '<path d="M4 5h6v7c0 4-2 6-6 7v-3c2-1 3-2 3-4H4ZM14 5h6v7c0 4-2 6-6 7v-3c2-1 3-2 3-4h-3Z"/>',
+    "right": '<path d="m9 5 7 7-7 7"/>',
+    "down": '<path d="m5 9 7 7 7-7"/>',
+}
+
+
+def _icon(name: str) -> str:
+    return (
+        f'<svg aria-hidden="true" viewBox="0 0 24 24" fill="none" stroke="currentColor" '
+        f'stroke-width="2" stroke-linecap="round" stroke-linejoin="round">'
+        f"{_REPORT_CARD_ICONS[name]}</svg>"
+    )
+
+
+def _view_link(
+    sections: list[dict[str, Any]],
+    view_ids: list[str],
+    escape: Any,
+    index: int,
+    label: str,
+    heading: str = "",
+    classes: str = "",
+) -> str:
+    """A landing-page/pagination link into a section's reader view — a
+    radio-toggle id plus an in-page anchor, so it degrades to a plain
+    anchor link if WordPress strips the enhancement script."""
+    destination = heading or f"reader-{sections[index]['id']}"
+    return f'<a class="vlrc-view-label {classes}" href="#{escape(destination)}" data-view-id="{view_ids[index]}">{label}</a>'
+
+
+def _build_contents_accordion(
+    sections: list[dict[str, Any]],
+    view_ids: list[str],
+    escape: Any,
+) -> str:
+    """Groups sections into front matter / chapters / back matter (chapters
+    are whatever falls between the first and last section _is_chapter
+    recognises) and renders the landing page's collapsible contents list —
+    a flat link for sections with no sub-headings, an accordion with a
+    "read full section" entry plus each H2 for the rest."""
+
+    def link(index: int, label: str, heading: str = "", classes: str = "") -> str:
+        return _view_link(sections, view_ids, escape, index, label, heading, classes)
+
+    chapter_indexes = [i for i, s in enumerate(sections) if _is_chapter(s)]
+    first_chapter = min(chapter_indexes, default=len(sections))
+    last_chapter = max(chapter_indexes, default=-1)
+    groups: dict[str, list[str]] = {"front": [], "chapters": [], "back": []}
+    for index, section in enumerate(sections):
+        section_title = escape(section["displayTitle"])
+        headings = _major_headings(section)
+        group = "front" if index < first_chapter else "back" if index > last_chapter else "chapters"
+        number = re.match(r"^(\d+)\.\s*(.+)$", str(section["displayTitle"]))
+        label = (f'<span class="toc-chapter-label"><span class="toc-chapter-number">{number[1]}</span><span class="toc-chapter-title">{escape(number[2])}</span></span>' if number and group == "chapters" else f"<span>{section_title}</span>")
+        if not _is_chapter(section) or not headings:
+            groups[group].append('<div class="vlrc-direct-item">' + link(index, label + f'<span class="toc-chevron">{_icon("right")}</span>') + '</div>')
+        else:
+            links = '<li class="vlrc-read-full">' + link(index, 'Read full section') + '</li>'
+            links += ''.join('<li>' + link(index, escape(h['text']), str(h['id']), 'vlrc-subsection-link') + '</li>' for h in headings)
+            groups[group].append(f'<details class="vlrc-accordion-item"><summary aria-controls="{escape(section["id"])}-subsections">{label}<span class="accordion-chevron toc-chevron">{_icon("down")}</span></summary><div class="vlrc-accordion-panel" id="{escape(section["id"])}-subsections"><ul>{links}</ul></div></details>')
+    accordion = ''
+    for key, label in (("front", "Front matter" if chapter_indexes else "Sections"), ("chapters", "Chapters"), ("back", "Back matter")):
+        if not groups[key]:
+            continue
+        chapter_numbers = [re.match(r"^(\d+)[.)]", str(sections[i]['displayTitle'])) for i in chapter_indexes]
+        chapter_numbers = [m[1] for m in chapter_numbers if m]
+        range_html = f'<span class="toc-group-range">{chapter_numbers[0]}–{chapter_numbers[-1]}</span>' if key == 'chapters' and len(chapter_numbers)>1 else ''
+        accordion += f'<section class="toc-group toc-group--{key}" aria-labelledby="toc-group-{key}"><h3 class="toc-group-heading" id="toc-group-{key}"><span class="toc-group-title">{label}</span>{range_html}</h3><div class="toc-group-items">{"".join(groups[key])}</div></section>'
+    return accordion
+
+
+def _build_reader_sections(
+    sections: list[dict[str, Any]],
+    view_ids: list[str],
+    escape: Any,
+    title: str,
+    figure_directory: Path | None,
+    asset_base_url: str,
+) -> list[str]:
+    """Renders each section's full reader view: its own nav (when it has
+    sub-headings), content blocks, footnotes, and previous/next pagination
+    into its reading-order neighbours."""
+    readers = []
+    for index, section in enumerate(sections):
+        sid, section_title = escape(section['id']), escape(section['displayTitle'])
+        heading_links = ''.join(f'<li class="heading-level-{min(5,max(2,int(h.get("level",2))))}"><a href="#{escape(h["id"])}">{escape(h["text"])}</a></li>' for h in section.get('headings', []))
+        has_section_navigation = bool(heading_links)
+        reader_layout_class = 'vlrc-reader-layout' + ('' if has_section_navigation else ' vlrc-reader-layout--no-nav')
+        reader_navigation = (
+            f'<nav class="vlrc-reader-nav" aria-label="In this section"><h2>In this section</h2>'
+            f'<ul id="reader-{sid}-section-links">{heading_links}</ul>'
+            '<a class="reader-return breadcrumb-publication-link" href="#contents-heading">← Back to contents</a></nav>'
+            if has_section_navigation
+            else ''
+        )
+        notes = section.get('footnotes', [])
+        targets = _footnote_targets(list(notes))
+        blocks = list(section.get('blocks', []))
+        if blocks and blocks[0].get('type') == 'paragraph' and str(blocks[0].get('text', '')).strip() == str(section['displayTitle']).strip():
+            blocks = blocks[1:]
+        content = ''.join(_render_block(block, figure_directory, targets, asset_base_url) for block in blocks)
+        footnotes = ('<details class="reader-footnotes"><summary>References and footnotes (' + str(len(notes)) + ')</summary><ol>' + _render_footnotes_list(notes) + '</ol></details>') if notes else ''
+        previous = _view_link(sections, view_ids, escape, index-1, '<span>Previous</span>' + escape(sections[index-1]['displayTitle'])) if index else '<span class="pagination-disabled"><span>Previous</span>Beginning of document</span>'
+        following = _view_link(sections, view_ids, escape, index+1, '<span>Next</span>' + escape(sections[index+1]['displayTitle'])) if index+1<len(sections) else '<span class="pagination-disabled"><span>Next</span>End of document</span>'
+        readers.append(f'''<section class="vlrc-reader" id="reader-{sid}" tabindex="-1" aria-labelledby="reader-title-{sid}">
+          <div class="{reader_layout_class}">
+            {reader_navigation}
+            <div class="vlrc-reader-content"><a class="reader-return reader-return--top" href="#publication-title">← Back to report overview</a><div class="chapter-label">{title}</div><h1 id="reader-title-{sid}" tabindex="-1">{section_title}</h1><div class="docling-content-blocks">{content}</div>{footnotes}<nav class="reader-pagination" aria-label="Document section pagination">{previous}{following}</nav><a class="reader-return breadcrumb-publication-link" href="#contents-heading">← Back to contents</a></div>
+          </div></section>''')
+    return readers
+
+
 def build_accessible_html(
     document_id: str,
     publication: dict[str, Any],
@@ -677,297 +953,74 @@ def build_accessible_html(
     figure_directory: Path | None = None,
     chat_api_base: str = "",
 ) -> str:
-    del logo_path  # The host website supplies the global masthead.
+    """One canonical report layout for the frontend reader and HTML download."""
+    del logo_path  # WordPress supplies its own global masthead and footer.
     sections = list(publication.get("sections", []))
-    raw_title = str(
-        metadata.get("title")
-        or publication.get("sourceName")
-        or "Accessible document"
-    )
-    title = html.escape(raw_title)
-    publisher = html.escape(
-        str(metadata.get("publisher") or "Victorian Law Reform Commission")
-    )
+    escape = lambda value: html.escape(str(value), quote=True)
+    raw_title = str(metadata.get("title") or publication.get("sourceName") or "Accessible document")
+    title = escape(raw_title)
+    publisher = escape(metadata.get("publisher") or "Victorian Law Reform Commission")
     jurisdiction_value = str(metadata.get("jurisdiction") or "").strip()
-    jurisdiction = html.escape(jurisdiction_value or "Not specified")
-    published_date = html.escape(
-        _format_published_date(
-            metadata.get("published_date") or metadata.get("publishedDate")
-        )
-    )
+    jurisdiction = escape(jurisdiction_value or "Not specified")
+    date_value = metadata.get("published_date") or metadata.get("publishedDate")
+    published_date = escape(_format_published_date(date_value))
     pages = int((publication.get("stats") or {}).get("pages", 0) or 0)
-    summary_values = [
-        str(value).strip()
-        for value in publication.get("summary", [])
-        if str(value).strip()
-    ]
-    summary = html.escape(
-        summary_values[0]
-        if summary_values
-        else f"This publication presents the reviewed content of {raw_title}."
+    summaries = [str(v).strip() for v in publication.get("summary", []) if str(v).strip()]
+    summary = escape(summaries[0] if summaries else f"This publication presents the reviewed content of {raw_title}.")
+    year = _publication_year(date_value)
+    citation = f"{publisher}, {title}" + (f" (Report, {year})" if year else "")
+    configured_url = str(metadata.get("project_url") or metadata.get("projectUrl") or "").strip()
+    project_url = escape(configured_url if ((configured_url.startswith("/") and not configured_url.startswith("//")) or re.match(r"^https?://", configured_url, re.I)) else f"/project/{_project_slug(raw_title)}/")
+    source_url = f"{escape(chat_api_base.rstrip('/'))}/api/documents/{escape(document_id)}/source"
+    asset_base_url = (
+        f"{chat_api_base.rstrip('/')}/api/documents/{document_id}"
+        if chat_api_base
+        else ""
     )
-    # `metadata.citations` holds legal citations found in the document body
-    # (ISBNs, Acts, case names) — not a citation for the report itself — so
-    # "Cite this report" is synthesized from the report's own metadata.
-    raw_publisher = str(metadata.get("publisher") or "Victorian Law Reform Commission")
-    publication_year = _publication_year(
-        metadata.get("published_date") or metadata.get("publishedDate")
+    cover_uri = (
+        escape(f"{asset_base_url}/cover")
+        if asset_base_url and cover_path.is_file()
+        else _data_uri(cover_path)
     )
-    citation = html.escape(
-        f"{raw_publisher}, {raw_title} (Report, {publication_year})"
-        if publication_year
-        else f"{raw_publisher}, {raw_title}"
-    )
-    configured_project_url = str(
-        metadata.get("project_url") or metadata.get("projectUrl") or ""
-    ).strip()
-    if (
-        configured_project_url.startswith("/")
-        and not configured_project_url.startswith("//")
-    ) or re.match(r"^https?://", configured_project_url, re.I):
-        raw_project_url = configured_project_url
-    else:
-        raw_project_url = f"/project/{_project_slug(raw_title)}/"
-    project_url = html.escape(raw_project_url, quote=True)
-    source_url = f"/api/documents/{html.escape(document_id, quote=True)}/source"
-    # Relative filename rather than a data URI, same reasoning as figures
-    # above: cover.png is written as a sibling of accessible.html.
-    cover_uri = cover_path.name if cover_path.is_file() else ""
-    cover_html = (
-        f'<img src="{cover_uri}" alt="Cover of {title}">'
-        if cover_uri
-        else '<span class="sr-only">Publication cover unavailable</span>'
-    )
-    section_view_ids = [
-        f"vlrc-view-{index}-{_slug(str(section.get('id', index)))}"
-        for index, section in enumerate(sections)
-    ]
-    first_view_id = section_view_ids[0] if section_view_ids else "vlrc-view-landing"
+    cover_html = f'<img src="{cover_uri}" alt="Cover of {title}">' if cover_uri else '<span class="sr-only">Publication cover unavailable</span>'
+    view_ids = [f"vlrc-view-{index}-{_slug(str(section.get('id', index)))}" for index, section in enumerate(sections)]
 
-    recommendations = _recommendation_snippets(sections)
-    recommendations_html = ""
-    if recommendations:
-        cards = "".join(
-            f"<article><strong>{index:02d}</strong><p>{html.escape(value)}</p></article>"
-            for index, value in enumerate(recommendations, start=1)
-        )
-        recommendations_html = (
-            '<section class="key-recommendations" aria-labelledby="recommendations-heading">'
-            '<span class="eyebrow">At a glance</span>'
-            '<h2 id="recommendations-heading">Key recommendations</h2>'
-            f"<div>{cards}</div></section>"
-        )
-
-    accordion_items: list[str] = []
-    for section_index, section in enumerate(sections):
-        section_id = html.escape(str(section["id"]), quote=True)
-        section_title = html.escape(str(section["displayTitle"]))
-        view_id = section_view_ids[section_index]
-        if not _is_chapter(section):
-            accordion_items.append(
-                '<div class="vlrc-direct-item">'
-                f'<label class="vlrc-view-label" for="{view_id}" role="button" tabindex="0">'
-                f'<span>{section_title}</span><span aria-hidden="true">›</span>'
-                "</label></div>"
-            )
-            continue
-        panel_id = f"{section_id}-subsections"
-        child_links = [
-            f'<li class="vlrc-read-full"><label class="vlrc-view-label" '
-            f'for="{view_id}" role="button" tabindex="0">'
-            "Read full section</label></li>"
-        ]
-        child_links.extend(
-            f'<li><label class="vlrc-view-label" for="{view_id}" role="button" tabindex="0">'
-            f'{html.escape(str(heading["text"]))}</label></li>'
-            for heading in _major_headings(section)
-        )
-        accordion_items.append(
-            '<details class="vlrc-accordion-item">'
-            f'<summary aria-controls="{panel_id}">'
-            f"<span>{section_title}</span>"
-            '<span class="accordion-chevron" aria-hidden="true">⌄</span>'
-            "</summary>"
-            f'<div class="vlrc-accordion-panel" id="{panel_id}">'
-            f'<ul>{"".join(child_links)}</ul></div></details>'
-        )
-    accordion_html = "".join(accordion_items)
-
-    def render_footnotes(section: dict[str, Any]) -> str:
-        footnotes = section.get("footnotes", [])
-        if not footnotes:
-            return ""
-        notes = "".join(
-            f'<li id="{html.escape(str(note["id"]), quote=True)}">'
-            f'{html.escape(str(note["text"]))}</li>'
-            for note in footnotes
-        )
-        return (
-            '<details class="reader-footnotes">'
-            f"<summary>References and footnotes ({len(footnotes)})</summary>"
-            f"<ol>{notes}</ol></details>"
-        )
-
-    def render_reader(section: dict[str, Any], index: int) -> str:
-        section_id = html.escape(str(section["id"]), quote=True)
-        section_title = html.escape(str(section["displayTitle"]))
-        heading_links = "".join(
-            f'<li class="heading-level-{min(5, max(2, int(heading.get("level", 2))))}">'
-            f'<a href="#{html.escape(str(heading["id"]), quote=True)}">'
-            f'{html.escape(str(heading["text"]))}</a></li>'
-            for heading in section.get("headings", [])
-        )
-        previous = (
-            f'<label class="vlrc-view-label" for="{section_view_ids[index - 1]}" '
-            f'role="button" tabindex="0"><span>Previous</span>'
-            f'{html.escape(str(sections[index - 1]["displayTitle"]))}</label>'
-            if index > 0
-            else '<span class="pagination-disabled"><span>Previous</span>Beginning of document</span>'
-        )
-        following = (
-            f'<label class="vlrc-view-label" for="{section_view_ids[index + 1]}" '
-            f'role="button" tabindex="0"><span>Next</span>'
-            f'{html.escape(str(sections[index + 1]["displayTitle"]))}</label>'
-            if index + 1 < len(sections)
-            else '<span class="pagination-disabled"><span>Next</span>End of document</span>'
-        )
-        footnote_targets = _footnote_targets(list(section.get("footnotes", [])))
-        blocks_html = "".join(
-            _render_block(block, figure_directory, footnote_targets)
-            for block in section.get("blocks", [])
-        )
-        return (
-            f'<section class="vlrc-reader" id="reader-{section_id}" '
-            f'tabindex="-1" aria-labelledby="reader-title-{section_id}">'
-            '<nav class="vlrc-reader-breadcrumb" aria-label="Breadcrumb">'
-            '<label class="vlrc-view-label" for="vlrc-view-landing" role="button" '
-            'tabindex="0">← Back to table of contents</label>'
-            '<span aria-hidden="true">›</span>'
-            f'<span aria-current="page">{section_title}</span></nav>'
-            '<div class="vlrc-reader-layout">'
-            '<nav class="vlrc-reader-nav" aria-label="In this section">'
-            f"<h2>In this section</h2><ul>{heading_links}</ul></nav>"
-            '<div class="vlrc-reader-content">'
-            f'<div class="chapter-label">{title}</div>'
-            f'<h1 id="reader-title-{section_id}" tabindex="-1">{section_title}</h1>'
-            f'<div class="docling-content-blocks">{blocks_html}</div>'
-            f"{render_footnotes(section)}"
-            f'<nav class="reader-pagination" aria-label="Document section pagination">'
-            f"{previous}{following}</nav></div></div></section>"
-        )
-
-    readers_html = "".join(
-        render_reader(section, index) for index, section in enumerate(sections)
+    accordion = _build_contents_accordion(sections, view_ids, escape)
+    readers = _build_reader_sections(
+        sections, view_ids, escape, title, figure_directory, asset_base_url
     )
-    view_toggles = (
-        '<input class="vlrc-view-toggle" type="radio" name="vlrc-publication-view" '
-        'id="vlrc-view-landing" checked aria-label="Show publication overview">'
-        + "".join(
-            f'<input class="vlrc-view-toggle" type="radio" '
-            f'name="vlrc-publication-view" id="{view_id}" '
-            f'aria-label="Read {html.escape(str(section["displayTitle"]), quote=True)}">'
-            for view_id, section in zip(section_view_ids, sections, strict=False)
-        )
-    )
-    view_style = (
-        ".vlrc-publication-embed #vlrc-view-landing:checked~.vlrc-publication-views "
-        "#publication-landing{display:block}"
-        + "".join(
-            f'.vlrc-publication-embed #{view_id}:checked~.vlrc-publication-views '
-            f'#reader-{html.escape(str(section["id"]), quote=True)}{{display:block}}'
-            for view_id, section in zip(section_view_ids, sections, strict=False)
-        )
-    )
-    topics = [value for value in (jurisdiction_value, "Law reform") if value]
-    topics_html = "".join(f"<li>{html.escape(value)}</li>" for value in dict.fromkeys(topics))
-    safe_json_ld = (
-        json.dumps(json_ld, ensure_ascii=False)
-        .replace("&", "\\u0026")
-        .replace("<", "\\u003c")
-        .replace(">", "\\u003e")
-        .replace("\u2028", "\\u2028")
-        .replace("\u2029", "\\u2029")
-    )
-    # The embeddable chat widget (see src/widget/embed.ts, built by
-    # `npm run build:widget`) is only wired in when KONVERTER_PUBLIC_API_URL
-    # is set \u2014 without an absolute backend origin, a page pasted into a
-    # site like WordPress would have no reachable URL to point the widget
-    # at, so it's silently omitted rather than baked in broken.
-    chat_widget_html = ""
+    toggles = '<input class="vlrc-view-toggle" type="radio" name="vlrc-publication-view" id="vlrc-view-landing" checked aria-label="Show publication overview" tabindex="-1" aria-hidden="true">'
+    toggles += ''.join(f'<input class="vlrc-view-toggle" type="radio" name="vlrc-publication-view" id="{view_id}" data-reader="reader-{escape(section["id"])}" aria-label="Read {escape(section["displayTitle"])}" tabindex="-1" aria-hidden="true">' for view_id,section in zip(view_ids,sections))
+    view_style = '.vlrc-publication-embed #vlrc-view-landing:checked~.vlrc-publication-views #publication-landing{display:block}'
+    view_style += ''.join(f'.vlrc-publication-embed #{view_id}:checked~.vlrc-publication-views #reader-{escape(section["id"])}{{display:block}}' for view_id,section in zip(view_ids,sections))
+    # Anchors + :target remain usable on WordPress when it strips scripts. The
+    # radio state is only an enhancement for focus management/history in JS.
+
+    topics = ''.join(f'<li>{escape(v)}</li>' for v in dict.fromkeys(v for v in (jurisdiction_value,'Law reform') if v))
+    safe_json_ld = json.dumps(json_ld, ensure_ascii=False).replace('&','\\u0026').replace('<','\\u003c').replace('>','\\u003e').replace('\u2028','\\u2028').replace('\u2029','\\u2029')
+    static = Path(__file__).parent / 'static' / 'report'
+    report_style = (static / 'report.css').read_text(encoding='utf-8')
+    report_script = (static / 'report.js').read_text(encoding='utf-8')
+    chat_widget = ''
     if chat_api_base:
-        origin = chat_api_base.rstrip("/")
-        widget_config = (
-            json.dumps(
-                {"documentId": document_id, "apiBase": f"{origin}/api"},
-                ensure_ascii=False,
-            )
-            .replace("&", "\\u0026")
-            .replace("<", "\\u003c")
-            .replace(">", "\\u003e")
-        )
-        widget_src = html.escape(
-            f"{origin}/static/widget/konverter-chat-widget.js", quote=True
-        )
-        chat_widget_html = (
-            f"<script>window.__KONVERTER_CHAT__={widget_config};</script>"
-            f'<script src="{widget_src}" defer></script>'
-        )
-
-    return f"""<!doctype html>
-<html lang="en-AU">
-<head>
-<meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1">
-<title>{title}</title>
-<script type="application/ld+json">{safe_json_ld}</script>
-<style>{PREVIEW_STYLE}{view_style}</style>
-</head>
-<body>
-<div class="vlrc-publication-embed" data-konverter-publication>
-  {view_toggles}
-  <a class="skip-link" href="#publication-title">Skip to publication content</a>
-  <div class="vlrc-publication-views">
-  <section class="vlrc-preview-body" id="publication-landing" aria-labelledby="publication-title">
-    <div class="preview-report-card-shell">
-      <section class="report-card preview-report-card" aria-labelledby="publication-title" itemscope itemtype="https://schema.org/Report">
-        <div class="report-cover-link">{cover_html}</div>
-        <div class="report-card-content">
-          <div class="report-card-status-row"><span class="official-source-badge">✓ Reviewed source</span><span>Reviewed publication</span></div>
-          <h1 class="report-card-title" id="publication-title" itemprop="headline" tabindex="-1">{title}</h1>
-          <p class="report-publisher">{publisher}</p>
-          <p class="report-summary">{summary}</p>
-          <dl class="report-card-meta">
-            <div><dt>Published</dt><dd>{published_date}</dd></div>
-            <div><dt>Length</dt><dd>{pages} pages</dd></div>
-            <div><dt>Jurisdiction</dt><dd>{jurisdiction}</dd></div>
-          </dl>
-          <ul class="topic-list" aria-label="Report topics">{topics_html}</ul>
-          <div class="report-card-actions" aria-label="Ways to use {title}">
-            <label class="button button-primary vlrc-view-label" for="{first_view_id}" role="button" tabindex="0">Read online</label>
-            <a class="button button-secondary" href="{source_url}">Download PDF</a>
-            <a class="button button-secondary" href="{project_url}">Go to Project</a>
-            <a class="text-action" href="#report-contents">View report sections</a>
-            <a class="text-action" href="#preview-citation">View citation</a>
-          </div>
-        </div>
-      </section>
-    </div>
-    <div class="preview-publication-main">
-      {recommendations_html}
-      <section class="vlrc-contents" id="report-contents" aria-labelledby="contents-heading">
-        <div class="contents-heading-row">
-          <div><span class="eyebrow">Full report</span><h2 id="contents-heading">Table of contents</h2></div>
-        </div>
-        <div class="vlrc-accordion" aria-label="Complete report chapters">{accordion_html}</div>
-      </section>
-      <section class="preview-citation-card" id="preview-citation" aria-labelledby="preview-citation-heading">
-        <div><span class="eyebrow">Source and citation</span><h2 id="preview-citation-heading">Cite this report</h2><blockquote>{citation}</blockquote><p>Published by {publisher}.</p></div>
-      </section>
-    </div>
-  </section>
-  <div class="vlrc-publication-readers" aria-label="Full publication content">{readers_html}</div>
-  </div>
-</div>
-{chat_widget_html}
-</body>
-</html>"""
+        origin = chat_api_base.rstrip('/')
+        config = json.dumps({'documentId':document_id,'apiBase':f'{origin}/api'}, ensure_ascii=False).replace('&','\\u0026').replace('<','\\u003c').replace('>','\\u003e')
+        chat_widget = f'<script data-konverter-chat>window.__KONVERTER_CHAT__={config};</script><script data-konverter-chat src="{escape(origin)}/static/widget/konverter-chat-widget.js" defer></script>'
+    return f'''<!doctype html>
+<html lang="en-AU"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>{title}</title>
+<script type="application/ld+json">{safe_json_ld}</script><style>{PREVIEW_STYLE}{report_style}{view_style}{SCRIPT_FREE_STYLE}</style></head><body>
+<div class="vlrc-publication-embed" data-konverter-publication {"data-report-chat" if chat_api_base else ""}>
+{toggles}<a class="skip-link" href="#publication-title">Skip to publication content</a>
+<div class="vlrc-publication-views"><section class="vlrc-preview-body" id="publication-landing" aria-labelledby="publication-title">
+<div class="preview-report-card-shell"><section class="report-card preview-report-card" aria-labelledby="publication-title" itemscope itemtype="https://schema.org/Report">
+<div class="report-media-column"><div class="report-cover-link">{cover_html}</div><div class="report-cover-actions" role="group" aria-label="Publication downloads and links">
+<a class="report-cover-action report-cover-action--download" href="{source_url}" target="_blank" rel="noopener">{_icon('download')}<span>Download PDF</span></a>
+<a class="report-cover-action report-cover-action--project" href="{project_url}" target="_blank" rel="noopener">{_icon('link')}<span>Go to project page</span><span class="report-action-detail">{_icon('right')}</span></a></div></div>
+<div class="report-card-content"><div class="report-card-status-row"><span class="official-source-badge">✓ Reviewed source</span><span>Reviewed publication</span></div><h1 class="report-card-title" id="publication-title" itemprop="headline" tabindex="-1">{title}</h1><p class="report-publisher">{publisher}</p><p class="report-summary">{summary}</p>
+<dl class="report-card-meta"><div><dt>Published</dt><dd>{published_date}</dd></div><div><dt>Length</dt><dd>{pages} pages</dd></div><div><dt>Jurisdiction</dt><dd>{jurisdiction}</dd></div></dl><ul class="topic-list" aria-label="Report topics">{topics}</ul>
+<div class="report-card-actions" role="group" aria-label="Publication utilities"><a class="report-inline-action report-view-sections" href="#report-contents">{_icon('list')}<span>View sections</span></a><button class="report-inline-action report-copy-citation" type="button" data-citation="{citation}">{_icon('quote')}<span>Copy citation</span></button><span class="citation-copy-status" role="status" aria-live="polite"></span></div>
+<p class="report-citation-text"><span class="report-citation-label">Cite as:</span> {citation}</p></div></section></div>
+<div class="preview-publication-main"><section class="vlrc-contents vlrc-contents--grouped" id="report-contents" aria-labelledby="contents-heading"><div class="contents-heading-row"><div><h2 id="contents-heading">Contents</h2><p class="contents-section-count">{len(sections)} sections</p></div></div><div class="vlrc-accordion" aria-label="Complete report sections">{accordion}</div></section>
+</div></section>
+<div class="vlrc-publication-readers" aria-label="Full publication content">{''.join(readers)}</div></div></div>
+<script>{report_script}</script>{chat_widget}</body></html>'''
