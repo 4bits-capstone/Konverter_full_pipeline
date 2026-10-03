@@ -126,6 +126,7 @@ KONVERTER_DOCLING_ENDPOINT_URL=   # RunPod endpoint, e.g. https://api.runpod.ai/
 KONVERTER_RUNPOD_API_KEY=         # backend only, never exposed to the frontend
 KONVERTER_STORAGE_BUCKET=konverter-docs  # Supabase Storage bucket used to hand off PDFs to the worker
 KONVERTER_SIGNED_URL_TTL=3600     # seconds a signed upload/download URL stays valid
+KONVERTER_RUNPOD_JOB_TIMEOUT_SECONDS=1800  # cancel and fail a remote Docling job that runs longer than this
 ```
 
 ## Document chat assistant
