@@ -18,10 +18,27 @@ BACKEND_URL="${BACKEND_URL%/}"
 
 echo "Deploying $IMAGE to pod $RUNPOD_POD_ID"
 
-# The response body is the full pod object, including its env vars (secrets) -
-# never print it. Only show the body on an error status.
+# RunPod responses are the full pod object, including its env vars (secrets) -
+# never print them. Only read single fields, or show the body on an error status.
 response_file="$(mktemp)"
 trap 'rm -f "$response_file"' EXIT
+
+# Refuse to deploy to a stopped pod: we'd change its image but never see it
+# come up. Starting it is a deliberate (billable) choice left to a person.
+status="$(curl -sS -o "$response_file" -w '%{http_code}' \
+  "https://rest.runpod.io/v1/pods/$RUNPOD_POD_ID" \
+  -H "Authorization: Bearer $RUNPOD_API_KEY")"
+if [[ "$status" != 2* ]]; then
+  echo "::error::Could not read pod $RUNPOD_POD_ID from RunPod (HTTP $status)"
+  head -c 500 "$response_file"; echo
+  exit 1
+fi
+pod_state="$(jq -r '.desiredStatus // empty' "$response_file")"
+if [[ -n "$pod_state" && "$pod_state" != "RUNNING" ]]; then
+  echo "::error::Pod $RUNPOD_POD_ID is $pod_state, not RUNNING. Start it in RunPod, then re-run this job. Nothing was changed."
+  exit 1
+fi
+
 status="$(curl -sS -o "$response_file" -w '%{http_code}' -X PATCH \
   "https://rest.runpod.io/v1/pods/$RUNPOD_POD_ID" \
   -H "Authorization: Bearer $RUNPOD_API_KEY" \
