@@ -1,0 +1,50 @@
+name: Rollback backend
+
+# Manually redeploy an earlier image to the RunPod pod:
+# Actions -> Rollback backend -> Run workflow -> enter a tag like sha-abc1234.
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Image tag to deploy (e.g. sha-abc1234)"
+        required: true
+      verify_version:
+        description: "Check /api/health reports this version (untick for images built before the version check existed)"
+        type: boolean
+        default: true
+
+permissions:
+  contents: read
+
+jobs:
+  rollback:
+    name: Roll back backend on RunPod
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    environment: production
+    concurrency:
+      group: deploy-production
+      cancel-in-progress: false
+    steps:
+      - uses: actions/checkout@v4
+      - name: Validate tag
+        env:
+          TAG: ${{ inputs.tag }}
+        run: |
+          if [[ ! "$TAG" =~ ^[A-Za-z0-9._-]+$ ]]; then
+            echo "::error::Invalid tag: $TAG"
+            exit 1
+          fi
+      - name: Update pod and wait for health check
+        env:
+          TAG: ${{ inputs.tag }}
+          VERIFY: ${{ inputs.verify_version }}
+          RUNPOD_API_KEY: ${{ secrets.RUNPOD_API_KEY }}
+          RUNPOD_POD_ID: ${{ secrets.RUNPOD_POD_ID }}
+          BACKEND_URL: ${{ secrets.BACKEND_URL }}
+        run: |
+          expected=""
+          if [[ "$VERIFY" == "true" && "$TAG" == sha-* ]]; then
+            expected="${TAG#sha-}"
+          fi
+          bash .github/scripts/deploy-runpod.sh "linnhtinnyo/konverter-backend:$TAG" "$expected"
