@@ -1438,6 +1438,7 @@ class KonverterPipeline:
             self.settings.runpod_api_key,
             job_id,
             on_progress=lambda: stage(2, "Waiting for remote GPU worker"),
+            timeout_seconds=self.settings.runpod_job_timeout_seconds,
         )
         return storage_bucket.download_json(self.settings, result_key)
 

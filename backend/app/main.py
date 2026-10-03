@@ -259,7 +259,8 @@ async def security_headers(request: Request, call_next):
 
 @app.get("/api/health")
 def health() -> dict[str, str]:
-    return {"status": "ok"}
+    # GIT_SHA is baked into the image by CI; the deploy job checks it.
+    return {"status": "ok", "version": os.getenv("GIT_SHA", "dev")}
 
 
 @app.get("/api/documents", response_model=list[DocumentSummary])

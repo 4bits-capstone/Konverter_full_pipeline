@@ -126,6 +126,14 @@ def test_security_headers_are_present(tmp_path):
         assert response.headers["Referrer-Policy"] == "no-referrer"
 
 
+def test_health_reports_build_version(tmp_path, monkeypatch):
+    monkeypatch.setenv("GIT_SHA", "abc1234")
+    with load_client(tmp_path) as client:
+        response = client.get("/api/health")
+        assert response.status_code == 200
+        assert response.json() == {"status": "ok", "version": "abc1234"}
+
+
 def test_exports_require_approval(tmp_path):
     with load_client(tmp_path) as client:
         document_id = upload_and_process(client)

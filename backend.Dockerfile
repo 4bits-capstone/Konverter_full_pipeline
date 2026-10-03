@@ -32,6 +32,10 @@ ENV KONVERTER_DOCLING_MODE=remote \
     KONVERTER_DATA_DIR=/app/data \
     KONVERTER_CORS_ORIGINS=http://localhost:5173
 
+# Commit this image was built from; reported by /api/health. CI passes it in.
+ARG GIT_SHA=dev
+ENV GIT_SHA=$GIT_SHA
+
 # Documents persist under KONVERTER_DATA_DIR (/app/data). Mount a RunPod volume
 # here if you want uploads to survive pod restarts (see README).
 EXPOSE 8000
