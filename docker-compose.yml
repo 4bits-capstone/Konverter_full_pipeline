@@ -1,0 +1,43 @@
+# docker-compose.yml — build & test the frontend against the LIVE RunPod backend
+#
+#   docker compose up --build frontend
+#
+# Serves the frontend at http://localhost:5173, built to talk to the deployed
+# RunPod backend (not a local one), so you can verify the whole system live.
+#
+# Create a .env file next to this one with your Supabase values:
+#   VITE_SUPABASE_URL=https://<your-project>.supabase.co
+#   VITE_SUPABASE_ANON_KEY=<your-anon-key>
+#
+# (Optional) override the backend URL without editing this file — handy if the
+# RunPod pod is redeployed and the URL changes:
+#   VITE_API_BASE_URL=https://<new-pod-id>-8000.proxy.runpod.net/api
+#
+# The backend runs on RunPod, so no local backend service is needed. A commented
+# stub is left below in case you ever want to run one locally as well.
+
+services:
+  # backend:
+  #   build:
+  #     context: .
+  #     dockerfile: backend.gpu.Dockerfile
+  #   image: linnhtinnyo/konverter-backend:v4-gpu
+  #   ports:
+  #     - "8000:8000"
+  #   env_file:
+  #     - .env
+  #   volumes:
+  #     - ./data:/app/data
+
+  frontend:
+    build:
+      context: .
+      dockerfile: frontend.Dockerfile
+      args:
+        # Live RunPod backend (note the /api suffix). Uses VITE_API_BASE_URL from
+        # .env if set, otherwise falls back to the current live URL below.
+        VITE_API_BASE_URL: "${VITE_API_BASE_URL:-https://jxklmut6ta4ya8-8000.proxy.runpod.net/api}"
+        VITE_SUPABASE_URL: "${VITE_SUPABASE_URL}"
+        VITE_SUPABASE_ANON_KEY: "${VITE_SUPABASE_ANON_KEY}"
+    ports:
+      - "5173:80"   # host:container — open http://localhost:5173
