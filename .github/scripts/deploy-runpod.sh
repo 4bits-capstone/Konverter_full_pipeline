@@ -7,8 +7,14 @@
 # Updating the same pod keeps its ID, proxy URL, env vars and network volume.
 set -euo pipefail
 
-IMAGE="$1"
+IMAGE="${1:-}"
 EXPECTED="${2:-}"
+
+# An empty name is accepted by RunPod but leaves the pod unable to start.
+if [[ ! "$IMAGE" =~ ^[a-z0-9._/-]+:[A-Za-z0-9._-]+$ ]]; then
+  echo "::error::Invalid image name: '$IMAGE'. Nothing was changed."
+  exit 1
+fi
 WAIT_SECONDS="${DEPLOY_WAIT_SECONDS:-600}"
 
 : "${RUNPOD_API_KEY:?RUNPOD_API_KEY is not set}"
