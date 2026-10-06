@@ -5,11 +5,15 @@
 # Install:  sudo install -m 755 konverter-deploy.sh /usr/local/bin/konverter-deploy
 # GitHub connects with:  ssh <user>@<host> sha-abc1234
 # (sshd passes "sha-abc1234" in SSH_ORIGINAL_COMMAND.)
+#
+# The container listens on 127.0.0.1:8080 only; the web server in front of it
+# (ports 80/443) forwards visitors there, as with the original hand-built setup.
 set -euo pipefail
 
 IMAGE="ghcr.io/4bits-capstone/konverter-frontend"
 NAME="konverter-frontend"
-PORT="${KONVERTER_PORT:-80}"
+BIND="127.0.0.1"
+PORT="8080"
 
 TAG="${SSH_ORIGINAL_COMMAND:-${1:-}}"
 if [[ ! "$TAG" =~ ^sha-[0-9a-f]{7,40}$ ]]; then
@@ -22,25 +26,35 @@ previous="$(docker inspect --format '{{.Config.Image}}' "$NAME" 2>/dev/null || t
 
 docker pull "$IMAGE:$TAG"
 
-# Any other container holding the port (e.g. the old hand-built one) is
-# stopped, not removed, so it can be started again if this deploy fails.
-others="$(docker ps -q --filter "publish=$PORT" | while read -r id; do
-  [[ "$(docker inspect --format '{{.Name}}' "$id")" == "/$NAME" ]] || echo "$id"
-done)"
-if [[ -n "$others" ]]; then
-  echo "Stopping other container(s) on port $PORT: $others"
-  docker update --restart=no $others >/dev/null
-  docker stop $others >/dev/null
-fi
+# Other running containers bound to our host port (e.g. the old hand-built
+# one), with their restart policies so they can be put back exactly.
+others=()
+policies=()
+for id in $(docker ps -q); do
+  [[ "$(docker inspect --format '{{.Name}}' "$id")" == "/$NAME" ]] && continue
+  if docker port "$id" 2>/dev/null | grep -qE ":$PORT\$"; then
+    others+=("$id")
+    policies+=("$(docker inspect --format '{{.HostConfig.RestartPolicy.Name}}' "$id")")
+  fi
+done
+
+restore_others() {
+  local i
+  for i in "${!others[@]}"; do
+    docker update --restart="${policies[$i]:-no}" "${others[$i]}" >/dev/null || true
+    docker start "${others[$i]}" >/dev/null || true
+  done
+}
 
 start() {
   docker rm -f "$NAME" >/dev/null 2>&1 || true
-  docker run -d --name "$NAME" --restart unless-stopped -p "$PORT:80" "$1" >/dev/null
+  docker run -d --name "$NAME" --restart unless-stopped \
+    -p "$BIND:$PORT:80" "$1" >/dev/null
 }
 
 healthy() {
   for _ in $(seq 1 15); do
-    if curl -fsS -o /dev/null "http://localhost:$PORT/"; then
+    if curl -fsS -o /dev/null "http://$BIND:$PORT/"; then
       return 0
     fi
     sleep 2
@@ -48,21 +62,27 @@ healthy() {
   return 1
 }
 
-start "$IMAGE:$TAG"
-if healthy; then
+# Stopped, not removed, so they can be started again if this deploy fails.
+if (( ${#others[@]} )); then
+  echo "Stopping other container(s) on $BIND:$PORT: ${others[*]}"
+  docker update --restart=no "${others[@]}" >/dev/null
+  docker stop "${others[@]}" >/dev/null
+fi
+
+if start "$IMAGE:$TAG" && healthy; then
   echo "Deployed $IMAGE:$TAG"
   docker image prune -f >/dev/null || true
   exit 0
 fi
 
-echo "New version did not respond on port $PORT" >&2
+echo "New version did not come up on $BIND:$PORT" >&2
 docker rm -f "$NAME" >/dev/null 2>&1 || true
 if [[ -n "$previous" ]]; then
   echo "Restoring $previous" >&2
-  start "$previous"
-elif [[ -n "$others" ]]; then
-  echo "Restarting the previous container(s): $others" >&2
-  docker update --restart=unless-stopped $others >/dev/null
-  docker start $others >/dev/null
+  start "$previous" || true
+fi
+if (( ${#others[@]} )); then
+  echo "Restarting the previous container(s): ${others[*]}" >&2
+  restore_others
 fi
 exit 1
