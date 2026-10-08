@@ -117,6 +117,7 @@ class Settings:
     wordpress_publish_url: str = ""
     wordpress_bearer_token: str = field(default="", repr=False)
     wordpress_timeout_seconds: float = 30.0
+    runpod_job_timeout_seconds: float = 1800.0
 
 
 def load_settings() -> Settings:
@@ -180,5 +181,8 @@ def load_settings() -> Settings:
                 120.0,
                 float(os.getenv("KONVERTER_WORDPRESS_TIMEOUT_SECONDS", "30")),
             ),
+        ),
+        runpod_job_timeout_seconds=max(
+            60.0, float(os.getenv("KONVERTER_RUNPOD_JOB_TIMEOUT_SECONDS", "1800"))
         ),
     )
