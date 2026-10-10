@@ -510,7 +510,10 @@ through the rollback workflows (they accept any `sha-` tag, newer or older).
 
 - The RunPod pod is **running** (otherwise the backend deploy fails safely).
 - Nobody is in the middle of processing a long document. The backend restarts
-  during deploy, and a job that's running at that moment can be left stuck.
+  during deploy, which kills any job running at that moment. When the backend
+  starts again it marks that document **Needs retry** ("Processing was
+  interrupted because the server restarted"), and the user has to start
+  processing again. The work done so far is lost.
 
 ---
 
