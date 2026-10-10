@@ -81,6 +81,7 @@ WORDPRESS_PUBLICATION_ARTIFACT = "wordpress-publication.json"
 
 @asynccontextmanager
 async def lifespan(_: FastAPI):
+    processing.recover_interrupted_jobs()
     yield
     processing.executor.shutdown(wait=False, cancel_futures=True)
 

@@ -714,3 +714,50 @@ def test_uploading_an_image_to_an_ordinary_review_item_is_rejected(tmp_path):
         )
 
         assert response.status_code == 400
+
+
+def test_job_left_running_by_a_restart_is_marked_failed_and_can_rerun(
+    tmp_path, monkeypatch
+):
+    """A deploy or crash restarts the server mid-job: record.json still says
+    "running" but nothing is processing it. Without startup recovery the
+    document shows as processing forever and can't be reprocessed or deleted."""
+    import app.audit
+
+    audit_events = []
+    monkeypatch.setattr(
+        app.audit,
+        "record_audit_sync",
+        lambda action, **kwargs: audit_events.append((action, kwargs)),
+    )
+
+    with load_client(tmp_path) as client:
+        response = client.post(
+            "/api/documents",
+            files={"files": ("report.pdf", make_pdf(), "application/pdf")},
+        )
+        document_id = response.json()[0]["id"]
+        done_id = upload_and_process(client, "done.pdf")
+        import app.main
+
+        record = app.main.store.get_record(document_id)
+        app.main.store.update_record(
+            document_id,
+            job={**record["job"], "state": "running", "started_at": 1, "current_step": 2},
+        )
+
+    # load_client reloads app.main on the same data dir: a fresh server process.
+    with load_client(tmp_path) as client:
+        job = client.post(f"/api/documents/{document_id}/processing-state").json()
+        assert job["state"] == "failed"
+        assert "server restarted" in job["message"]
+        assert [(a, k["document_id"]) for a, k in audit_events] == [
+            ("process_failed", document_id)
+        ]
+
+        # Finished documents are left alone.
+        done = client.post(f"/api/documents/{done_id}/processing-state").json()
+        assert done["state"] == "complete"
+
+        assert client.post(f"/api/documents/{document_id}/process").status_code == 200
+        assert wait_until_complete(client, document_id)["state"] == "complete"

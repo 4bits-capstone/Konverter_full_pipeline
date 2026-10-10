@@ -472,6 +472,44 @@ class ProcessingManager:
         self.executor.submit(self._run, document_id, actor_id, actor_email)
         return self.status(document_id)
 
+    def recover_interrupted_jobs(self) -> list[str]:
+        """Mark jobs a previous server process left "running" as failed.
+
+        Jobs only run in this process's thread pool, so at startup none can
+        really be running: the record survived a restart (deploy, crash) but
+        the work didn't. Left alone it shows as processing forever, and
+        start() and delete both refuse a running document. Assumes one server
+        process per data directory, as in the Docker image.
+        """
+        message = (
+            "Processing was interrupted because the server restarted. "
+            "Please start processing again."
+        )
+        recovered: list[str] = []
+        for record in self.store.list_records():
+            if record.get("job", {}).get("state") != "running":
+                continue
+            document_id = record["id"]
+            document_logger(__name__, document_id).warning(
+                "processing interrupted by a server restart; marking failed"
+            )
+            self.store.update_record(
+                document_id,
+                job={
+                    **record["job"],
+                    "state": "failed",
+                    "remaining_seconds": 0,
+                    "message": message,
+                },
+            )
+            audit.record_audit_sync(
+                "process_failed",
+                document_id=document_id,
+                detail={"error": message, "file_name": record.get("file_name")},
+            )
+            recovered.append(document_id)
+        return recovered
+
     def stop(self, document_id: str) -> dict[str, Any]:
         with self._lock:
             self._cancelled.add(document_id)
