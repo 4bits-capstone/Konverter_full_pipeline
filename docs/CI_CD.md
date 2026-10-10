@@ -282,7 +282,7 @@ pushes, see below), and can be started by hand (**Actions → CI → Run workflo
 
 ### Docs-only changes
 
-| Event | Changes only `docs/**` or `*.md` files | Changes anything else too |
+| Event | Changes only files in `docs/` or Markdown files in the repo root (e.g. `README.md`) | Changes anything else too |
 |---|---|---|
 | Pull request | Checks **run** | Checks run |
 | Push / merge to `main` | **Nothing runs**: no images, no deploy prompt | Everything runs as usual |
@@ -292,12 +292,16 @@ pushes, see below), and can be started by hand (**Actions → CI → Run workflo
   merged. They take a few minutes and change nothing.
 - **Why `main` skips:** a docs merge doesn't change either image, so rebuilding
   and offering a deploy (which restarts the backend) is pointless.
-- **Mixed changes always run.** If a merge touches even one non-Markdown file,
-  the whole pipeline runs. Nothing real can slip through as "docs".
+- **Mixed changes always run.** If a merge touches even one file outside
+  `docs/` and the root Markdown files, the whole pipeline runs.
+- **Markdown inside app folders always runs.** A `.md` file under `backend/`,
+  `src/` or anywhere else besides the root and `docs/` triggers a build, because
+  the app might read it (for example an LLM prompt). Keep it that way.
 - **Need a build anyway?** **Actions → CI → Run workflow** on `main` runs the
   full pipeline, including publish and the deploy prompt.
-- The filter lives in `ci.yml` under `on.push.paths-ignore`. If a build or test
-  ever starts reading a Markdown file, take that pattern out.
+- The filter lives in `ci.yml` under `on.push.paths-ignore` (`docs/**` and
+  `*.md`; in GitHub's filters `*` doesn't cross folders, so `*.md` means root
+  only). Never widen it to `**/*.md`.
 
 The three check jobs run **in parallel**:
 
