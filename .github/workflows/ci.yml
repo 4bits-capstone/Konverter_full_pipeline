@@ -3,6 +3,15 @@ name: CI
 on:
   push:
     branches: [main]
+    # Docs-only merges don't rebuild or offer a deploy. A push that also
+    # touches any other file runs everything as usual.
+    # "*.md" is root-level only, so Markdown inside backend/ or src/ (which
+    # the app might read, e.g. prompts) still triggers a build.
+    paths-ignore:
+      - "docs/**"
+      - "*.md"
+  # No path filter here: the 3 checks are required, so a PR that skipped
+  # them could never be merged.
   pull_request:
   workflow_dispatch:
 
