@@ -142,7 +142,8 @@ jobs:
     needs: publish-backend
     if: github.event_name == 'push' && github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
-    timeout-minutes: 20
+    # Up to ~21 min if a failed deploy also has to roll back.
+    timeout-minutes: 30
     # Waits for a required reviewer to approve; secrets below only exist there.
     environment: production
     concurrency:

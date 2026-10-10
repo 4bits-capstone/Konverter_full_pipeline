@@ -65,7 +65,7 @@ flowchart TB
     gate -->|"approved"| db["Deploy backend<br/>RunPod pod"]
     gate -->|"approved"| df["Deploy frontend<br/>Lightsail via SSH"]
 
-    db --> hb["Wait for /api/health<br/>to report the new sha"]
+    db --> hb["Wait for /api/health to report the new sha,<br/>restores previous image if not"]
     df --> hf["Server checks the site responds,<br/>restores old container if not"]
 ```
 
@@ -393,11 +393,12 @@ sequenceDiagram
     participant H as BACKEND_URL/api/health
 
     GH->>GH: Validate image name (refuse empty or malformed)
-    GH->>API: GET pod status
+    GH->>API: GET pod status and current image
     alt pod is not RUNNING
         API-->>GH: e.g. EXITED
         GH-->>GH: Fail - "Start it in RunPod, then re-run". Nothing changed.
     end
+    GH->>GH: Remember the current image (the previous version)
     GH->>API: PATCH pod imageName = konverter-backend:sha-xxxxxxx
     API->>Pod: Restart on the new image (same pod, URL, env vars, volume)
     GH->>GH: Wait 30 s for the old container to stop
@@ -408,7 +409,12 @@ sequenceDiagram
     alt status ok and version matches the commit
         GH-->>GH: Success
     else timeout
-        GH-->>GH: Fail. No automatic rollback - use "Rollback backend"
+        GH->>API: PATCH pod imageName = previous image
+        API->>Pod: Restart on the previous image
+        loop every 15 s, up to 10 min
+            GH->>H: GET /api/health
+        end
+        GH-->>GH: Fail (red) either way. Log says whether the previous version is serving again
     end
 ```
 
@@ -422,8 +428,25 @@ Key points:
   **Re-run failed jobs**.
 - The job only succeeds when `/api/health` reports the **new** commit, so a
   green job means the new code is really serving.
-- There is **no automatic rollback** for the backend. If it fails, see
-  [section 8](#8-rolling-back).
+- **Automatic rollback:** if the new version isn't healthy within 10 minutes,
+  the job switches the pod back to the image it was running before and waits
+  for that to be healthy. The job is **red either way**, because the new
+  version failed. Read the last error line in the log:
+  - `rolled back to ..., which is serving again`: the backend is fine on the
+    old version. Fix the bug in a new PR.
+  - `rolling back ... also failed`: the backend may be down. Check the pod in
+    RunPod and run **Rollback backend** with a known good tag
+    ([section 8](#8-rolling-back)).
+  - `No usable previous image`: nothing to go back to, e.g. the pod was
+    already on the same image, or on `:latest`. It never rolls back to
+    `:latest`, because CI has already pointed `:latest` at the failed image.
+    Run **Rollback backend** with a known good tag.
+- If RunPod **rejects** the update, nothing changed, so there's nothing to roll back.
+- A failed deploy plus rollback can take about 21 minutes, so the job's time
+  limit is 30 minutes. The pod restarts twice, so any document being processed
+  is marked **Needs retry**.
+- **Rollback backend** uses the same script, so it also returns to the
+  previous image if the tag you picked doesn't come up.
 
 ### 6.5 Deploy frontend to Lightsail
 
@@ -618,7 +641,6 @@ between jobs. Keep it that way.
 |---|---|
 | Docling worker (`docling_worker/`) | Build and push its image by hand, then update the RunPod serverless endpoint |
 | Database migrations (`backend/sql/`) | Run the SQL by hand in Supabase **before** deploying code that needs it |
-| Backend auto-rollback | Run **Rollback backend** manually |
 | Starting a stopped RunPod pod | Start it in the RunPod console, then re-run the failed job |
 | Backups of `/app/data` | None today. Treat the volume as the only copy |
 | Linting | `npm run lint` exists but isn't a required check |
@@ -638,7 +660,9 @@ between jobs. Keep it that way.
 | Frontend check fails on types | `tsc` error | Run `npm run build` locally and fix the error shown |
 | **Publish frontend image**: `Repository variables not set` | A `VITE_*` variable is missing | Add it in Settings → Variables, then re-run |
 | **Deploy backend**: `Pod ... is EXITED, not RUNNING` | Pod is stopped | Start the pod in RunPod → **Re-run failed jobs** |
-| **Deploy backend**: `did not report a healthy ... version within 600s` | New image crashed or is slow to start | Check pod logs in RunPod; run **Rollback backend** with the last good tag |
+| **Deploy backend**: `did not report a healthy ... version within 600s`, then `rolled back to ..., which is serving again` | New image crashed or is slow to start; the old version was put back automatically | Nothing urgent. Check pod logs in RunPod to find the bug, fix it in a new PR |
+| **Deploy backend**: `... rolling back to ... also failed` | Neither the new nor the previous image came up healthy | Backend may be down. Check the pod in RunPod, then run **Rollback backend** with a known good tag |
+| **Deploy backend**: `No usable previous image` | Pod was already on that image or on `:latest`, so there was nothing safe to go back to | Run **Rollback backend** with a known good `sha-` tag |
 | **Deploy backend**: `Invalid image name` | Image name came through empty or malformed | Check the workflow still builds names from `env.IMAGE` (see the gotcha above) |
 | **Deploy frontend**: `Host key verification failed` | Server host key changed or `LIGHTSAIL_KNOWN_HOSTS` is wrong | Confirm with the server admin, then update the variable |
 | **Deploy frontend**: `Permission denied (publickey)` | Key removed or changed on the server | Ask the server admin to check `authorized_keys` for the `deploy` user |
@@ -714,7 +738,7 @@ git fetch --prune
 | `.github/workflows/ci.yml` | Checks, publishing and deploying (the whole pipeline). `on.push.paths-ignore` skips docs-only pushes to `main` |
 | `.github/workflows/rollback.yml` | Manual backend rollback |
 | `.github/workflows/rollback-frontend.yml` | Manual frontend rollback |
-| `.github/scripts/deploy-runpod.sh` | Updates the RunPod pod and waits for `/api/health` |
+| `.github/scripts/deploy-runpod.sh` | Updates the RunPod pod, waits for `/api/health`, and puts the previous image back if the new one fails |
 | `.github/scripts/deploy-lightsail.sh` | SSHes to Lightsail with the restricted key and sends the tag |
 | `deploy/lightsail/konverter-deploy.sh` | Server-side swap with self-rollback (**installed copy** on the server is what runs) |
 | `backend.Dockerfile` | Backend image (Python 3.12 slim, CPU only, remote Docling) |
