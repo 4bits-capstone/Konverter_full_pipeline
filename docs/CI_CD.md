@@ -242,14 +242,17 @@ The reviewer opens **Files changed** → **Review changes** → **Approve** (or
 
 **Step 9: merge**
 
-Click **Merge pull request** → **Confirm**, then **Delete branch**.
+Click **Merge pull request** → **Confirm**. GitHub deletes the branch on
+GitHub automatically (repo setting *Automatically delete head branches*). If you
+need it back, the PR page has a **Restore branch** button.
 
 **Step 10: tidy up locally**
 
 ```bash
 git switch main
 git pull
-git branch -d fix-footnote-numbering
+git branch -d fix-footnote-numbering   # delete your local copy
+git fetch --prune                      # drop the reference to the deleted GitHub branch
 ```
 
 Then go back to step 2 for the next task.
@@ -656,8 +659,12 @@ between jobs. Keep it that way.
 **Keep things tidy:**
 
 - One branch = one task. Small PRs are faster to review and easier to roll back.
-- Delete branches after merging (GitHub: **Delete branch**; laptop: `git branch -d <name>`).
-- Run `git fetch --prune` now and then to drop references to deleted branches.
+- Branches are deleted on GitHub automatically when their PR is merged
+  (Settings → General → Pull Requests → *Automatically delete head branches*).
+  Your local copy isn't: delete it with `git branch -d <name>`.
+- Run `git fetch --prune` after merging to drop references to deleted branches.
+- Branches that were never merged through a PR (closed PRs, abandoned work) are
+  **not** deleted automatically. Delete them yourself when you're sure.
 - `git branch -r --merged origin/main` lists remote branches that are safe to delete.
 - Don't delete someone else's unmerged branch without asking.
 - If a file should never be committed by anyone, add it to `.gitignore` in a PR.
@@ -680,7 +687,7 @@ git push -u origin <branch-name>     # then open the link and create the PR
 
 # after the PR is merged
 git switch main && git pull
-git branch -d <branch-name>
+git branch -d <branch-name>          # GitHub already deleted its copy
 git fetch --prune
 ```
 
