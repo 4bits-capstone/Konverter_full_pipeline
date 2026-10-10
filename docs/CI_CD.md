@@ -277,8 +277,27 @@ One short line in the imperative mood that says what changed:
 ## 5. What CI checks on every PR
 
 Workflow file: [`.github/workflows/ci.yml`](../.github/workflows/ci.yml).
-It runs on **every pull request**, **every push to `main`**, and can be started
-by hand (**Actions → CI → Run workflow**).
+It runs on **every pull request**, **every push to `main`** (except docs-only
+pushes, see below), and can be started by hand (**Actions → CI → Run workflow**).
+
+### Docs-only changes
+
+| Event | Changes only `docs/**` or `*.md` files | Changes anything else too |
+|---|---|---|
+| Pull request | Checks **run** | Checks run |
+| Push / merge to `main` | **Nothing runs**: no images, no deploy prompt | Everything runs as usual |
+
+- **Why PRs still run:** the 3 checks are required by the `main` ruleset. If a
+  PR skipped them, GitHub would wait for them forever and the PR could never be
+  merged. They take a few minutes and change nothing.
+- **Why `main` skips:** a docs merge doesn't change either image, so rebuilding
+  and offering a deploy (which restarts the backend) is pointless.
+- **Mixed changes always run.** If a merge touches even one non-Markdown file,
+  the whole pipeline runs. Nothing real can slip through as "docs".
+- **Need a build anyway?** **Actions → CI → Run workflow** on `main` runs the
+  full pipeline, including publish and the deploy prompt.
+- The filter lives in `ci.yml` under `on.push.paths-ignore`. If a build or test
+  ever starts reading a Markdown file, take that pattern out.
 
 The three check jobs run **in parallel**:
 
@@ -298,7 +317,8 @@ never cancelled, because they publish images.
 
 ## 6. What happens after a merge (CD)
 
-Merging into `main` is a push to `main`, so the same CI workflow runs again.
+Merging into `main` is a push to `main`, so the same CI workflow runs again
+(unless the merge only changed docs, see [Docs-only changes](#docs-only-changes)).
 When all 3 checks pass, four more jobs run. **They only run for pushes to
 `main`, never for PRs.**
 
@@ -474,8 +494,9 @@ After a merge, the run on `main` stops at both deploy jobs with
    other, approve it the same way.
 5. Watch for green. The run summary shows the deployed image and how to roll back.
 
-**To skip deploying a merge** (for example a docs-only change), click
-**Reject** instead. The images are still published and can be deployed later
+**To skip deploying a merge**, click **Reject** instead. (Docs-only merges
+never get this far, see [Docs-only changes](#docs-only-changes).) Rejecting marks
+that run on `main` as failed (red ✗). That's expected and harmless. The images are still published and can be deployed later
 through the rollback workflows (they accept any `sha-` tag, newer or older).
 
 **Before approving, check:**
@@ -613,6 +634,7 @@ between jobs. Keep it that way.
 | **Deploy frontend**: `Permission denied (publickey)` | Key removed or changed on the server | Ask the server admin to check `authorized_keys` for the `deploy` user |
 | **Deploy frontend**: `New version did not come up` | New container didn't answer on 8080 | The old version is already restored. Check the build or nginx config |
 | **Deploy frontend**: pull fails / `unauthorized` | Server's ghcr.io token expired | Server admin re-runs `docker login ghcr.io` as the `deploy` user |
+| Merged a docs change and no CI run appeared on `main` | Expected: docs-only pushes to `main` are skipped | Nothing to do. To build anyway: **Actions → CI → Run workflow** |
 | New merge's CI run stuck on "Waiting" | An earlier `main` run is waiting for deploy approval | Approve or reject the earlier run |
 | Committed on local `main` by accident | — | `git switch -c my-change && git push -u origin my-change && git switch main && git reset --hard origin/main` (your commits are safe on the new branch) |
 
@@ -675,7 +697,7 @@ git fetch --prune
 
 | File | Role |
 |---|---|
-| `.github/workflows/ci.yml` | Checks, publishing and deploying (the whole pipeline) |
+| `.github/workflows/ci.yml` | Checks, publishing and deploying (the whole pipeline). `on.push.paths-ignore` skips docs-only pushes to `main` |
 | `.github/workflows/rollback.yml` | Manual backend rollback |
 | `.github/workflows/rollback-frontend.yml` | Manual frontend rollback |
 | `.github/scripts/deploy-runpod.sh` | Updates the RunPod pod and waits for `/api/health` |
