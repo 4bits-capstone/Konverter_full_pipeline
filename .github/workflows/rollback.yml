@@ -20,7 +20,8 @@ jobs:
   rollback:
     name: Roll back backend on RunPod
     runs-on: ubuntu-latest
-    timeout-minutes: 20
+    # Up to ~21 min if a failed deploy also has to roll back.
+    timeout-minutes: 30
     environment: production
     concurrency:
       group: deploy-production
