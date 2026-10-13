@@ -92,6 +92,17 @@ def test_two_published_by_lines_naming_different_bodies_conflict():
     assert _codes(field) == ["rule_conflict"]
 
 
+def test_parliamentary_tabling_line_is_not_a_competing_publisher():
+    field = extract_publisher(
+        _pages(
+            "Published by the Victorian Law Reform Commission.",
+            "Published by order, or under the authority, of the Parliament of Victoria, May 2024",
+        )
+    )
+    assert field["value"] == "Victorian Law Reform Commission"
+    assert field["flags"] == []
+
+
 def test_publisher_inferred_from_a_single_organisation_mention_needs_review():
     field = extract_publisher(_pages("Victorian Law Reform Commission"))
     assert field["flags"][0]["code"] == "inferred"

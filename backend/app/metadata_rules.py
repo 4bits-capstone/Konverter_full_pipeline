@@ -380,7 +380,9 @@ def extract_publisher(
     published_by: list[tuple[str, int]] = []
     for page_number, line in page_lines(pages):
         match = re.search(
-            r"\bpublished by\s+(?:the\s+)?(.+)$",
+            # "Published by order, or under the authority, of the Parliament"
+            # is tabling wording, not the publisher.
+            r"\bpublished by\s+(?:the\s+)?(?!order\b|authority\b)(.+)$",
             line,
             re.IGNORECASE,
         )
