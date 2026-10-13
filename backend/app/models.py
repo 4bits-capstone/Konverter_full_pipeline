@@ -152,9 +152,15 @@ class DocumentMetadata(ApiModel):
     citations: str = Field(default="", max_length=20_000)
 
 
+class MetadataFlag(ApiModel):
+    code: str
+    severity: Literal["review", "info"]
+    message: str
+
+
 class MetadataFieldInfo(ApiModel):
-    band: ConfidenceBand
-    score: float
+    flags: list[MetadataFlag] = Field(default_factory=list)
+    review_needed: bool = True
     page: int = 1
     evidence: str = ""
     source: str = "Docling text, pages 1–8"

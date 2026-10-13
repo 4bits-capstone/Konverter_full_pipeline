@@ -133,11 +133,29 @@ export const testMetadata: DocumentMetadata = {
 export const testMetadataPayload: MetadataPayload = {
   metadata: testMetadata,
   fields: {
-    title: { band: 'high', score: 0.97, page: 1, evidence: 'Found on page 1.', source: 'Page 1' },
-    publisher: { band: 'high', score: 0.94, page: 1, evidence: 'Found on page 1.', source: 'Page 1' },
-    publishedDate: { band: 'low', score: 0.41, page: 1, evidence: 'Date needs confirmation.', source: 'Docling text · pages 1–8' },
-    jurisdiction: { band: 'med', score: 0.72, page: 1, evidence: 'Jurisdiction needs confirmation.', source: 'Docling text · pages 1–8' },
-    citations: { band: 'med', score: 0.68, page: 2, evidence: 'Citation needs confirmation.', source: 'Docling text · pages 1–8' },
+    title: { flags: [], reviewNeeded: false, page: 1, evidence: 'Found on page 1.', source: 'Page 1' },
+    publisher: { flags: [], reviewNeeded: false, page: 1, evidence: 'Found on page 1.', source: 'Page 1' },
+    publishedDate: {
+      flags: [{ code: 'rule_conflict', severity: 'review', message: 'The report line (page 1) gives 2026-06, but the copyright line (page 2) gives 2025-11.' }],
+      reviewNeeded: true,
+      page: 1,
+      evidence: 'Date needs confirmation.',
+      source: 'Docling text · pages 1–8',
+    },
+    jurisdiction: {
+      flags: [{ code: 'single_match', severity: 'review', message: 'The jurisdiction keyword appears only once (page 1).' }],
+      reviewNeeded: true,
+      page: 1,
+      evidence: 'Jurisdiction needs confirmation.',
+      source: 'Docling text · pages 1–8',
+    },
+    citations: {
+      flags: [{ code: 'uncorroborated', severity: 'review', message: 'No ISBN or series line was found.' }],
+      reviewNeeded: true,
+      page: 2,
+      evidence: 'Citation needs confirmation.',
+      source: 'Docling text · pages 1–8',
+    },
   },
 }
 

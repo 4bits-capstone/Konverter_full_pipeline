@@ -5,10 +5,11 @@ from pathlib import Path
 from collections.abc import Callable, Iterable
 from typing import Any
 
-from .config import Settings
-
 FIRST_PAGE = 1
 LAST_PAGE = 8
+# A runner-up title within this many rule points of the winner is close
+# enough that a reviewer should pick between them.
+TITLE_CONFLICT_MARGIN = 1.0
 MONTHS = (
     r"(?:january|february|march|april|may|june|july|august|"
     r"september|october|november|december)"
@@ -82,18 +83,60 @@ def page_lines(pages: Iterable[dict[str, Any]]) -> Iterable[tuple[int, str]]:
                 yield int(page["number"]), line
 
 
+FILENAME_METHODS = {"filename_fallback", "filename_year_fallback"}
+
+
+def flag(code: str, message: str, *, review: bool = True) -> dict[str, Any]:
+    """A human-readable note about how a rule reached (or failed to reach) a value.
+
+    ``review`` flags mean a person has to check the field before approval;
+    the rest are informational context shown next to the value.
+    """
+    return {
+        "code": code,
+        "severity": "review" if review else "info",
+        "message": message,
+    }
+
+
 def metadata_field(
     value: Any,
     source_page: int | None,
     method: str,
-    confidence: float,
+    flags: list[dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
+    field_flags = list(flags or [])
+    if value in (None, "", []):
+        field_flags.insert(
+            0,
+            flag(
+                "missing",
+                f"No value matched the metadata rules in pages {FIRST_PAGE}–{LAST_PAGE}.",
+            ),
+        )
+    elif method in FILENAME_METHODS:
+        field_flags.insert(
+            0,
+            flag(
+                "fallback_source",
+                "Taken from the file name because nothing matched in the document text.",
+            ),
+        )
     return {
         "value": value,
         "source_page": source_page,
         "method": method,
-        "confidence": confidence,
+        "flags": field_flags,
     }
+
+
+def _page_label(page: int | None) -> str:
+    return f"page {page}" if page else "an unknown page"
+
+
+def _distinct_titles(first: str, second: str) -> bool:
+    a, b = first.casefold(), second.casefold()
+    return a != b and a not in b and b not in a
 
 
 def normalise_title(title: Any) -> str:
@@ -297,41 +340,44 @@ def extract_title(
                 candidate["score"] += 0.5
             candidate["score"] -= min(candidate["position"], 60) * 0.005
 
-        best = max(candidates, key=lambda candidate: candidate["score"])
-        base_confidence = {
-            "cataloguing_title_rule": 0.98,
-            "labelled_title_rule": 0.97,
-            "cataloguing_report_title_rule": 0.97,
-            "pdf_metadata_title": 0.96,
-            "cover_title_after_contact_rule": 0.94,
-            "cover_report_title_rule": 0.91,
-            "cover_uppercase_title_rule": 0.88,
-        }.get(best["method"], 0.86)
-        confidence = min(0.99, base_confidence + 0.01 * max(0, best["matches"] - 1))
-        field = metadata_field(
-            best["title"],
-            best["page"],
-            best["method"],
-            confidence,
+        ranked = sorted(candidates, key=lambda candidate: candidate["score"], reverse=True)
+        best = ranked[0]
+        flags: list[dict[str, Any]] = []
+        rival = next(
+            (
+                candidate
+                for candidate in ranked[1:]
+                if _distinct_titles(candidate["title"], best["title"])
+                and best["score"] - candidate["score"] <= TITLE_CONFLICT_MARGIN
+            ),
+            None,
         )
-        field["corroboration"] = (
-            f"title matched {best['matches']} time(s) in the first {LAST_PAGE} pages"
-        )
-        return field
+        if rival is not None:
+            flags.append(
+                flag(
+                    "rule_conflict",
+                    f"Another rule found a different title on {_page_label(rival['page'])}: "
+                    f"“{rival['title']}”.",
+                )
+            )
+        if best["method"] == "pdf_metadata_title" and best["matches"] == 0:
+            flags.append(
+                flag(
+                    "unconfirmed_source",
+                    "Taken from the PDF file properties and not found in the document text.",
+                )
+            )
+        return metadata_field(best["title"], best["page"], best["method"], flags)
 
     fallback = _filename_title(pdf_path)
-    return metadata_field(
-        fallback or None,
-        None,
-        "filename_fallback",
-        0.45 if fallback else 0.0,
-    )
+    return metadata_field(fallback or None, None, "filename_fallback")
 
 
 def extract_publisher(
     pages: list[dict[str, Any]],
     pdf_path: Path | None = None,
 ) -> dict[str, Any]:
+    published_by: list[tuple[str, int]] = []
     for page_number, line in page_lines(pages):
         match = re.search(
             r"\bpublished by\s+(?:the\s+)?(.+)$",
@@ -353,12 +399,28 @@ def extract_publisher(
                 flags=re.IGNORECASE,
             )[0].strip()
             if publisher:
-                return metadata_field(
-                    publisher,
-                    page_number,
-                    "published_by_rule",
-                    0.98,
+                published_by.append((publisher, page_number))
+
+    if published_by:
+        publisher, page_number = published_by[0]
+        flags: list[dict[str, Any]] = []
+        rival = next(
+            (
+                (other, other_page)
+                for other, other_page in published_by[1:]
+                if _distinct_titles(other, publisher)
+            ),
+            None,
+        )
+        if rival is not None:
+            flags.append(
+                flag(
+                    "rule_conflict",
+                    f"A second “published by” line on {_page_label(rival[1])} "
+                    f"names “{rival[0]}”.",
                 )
+            )
+        return metadata_field(publisher, page_number, "published_by_rule", flags)
 
     organisation_pages = [
         page_number
@@ -367,22 +429,36 @@ def extract_publisher(
     ]
     if organisation_pages:
         occurrences = len(organisation_pages)
-        score = 0.78 if occurrences == 1 else 0.84 if occurrences == 2 else 0.90
-        field = metadata_field(
+        return metadata_field(
             "Victorian Law Reform Commission",
             organisation_pages[0],
             "organisation_name_rule",
-            score,
+            [
+                flag(
+                    "inferred",
+                    "No “published by” line was found; inferred from the "
+                    f"organisation name ({occurrences} mention(s)).",
+                    review=occurrences == 1,
+                )
+            ],
         )
-        field["corroboration"] = f"organisation name found {occurrences} time(s)"
-        return field
 
     if pdf_path is not None:
         author = _pdf_metadata(pdf_path).get("author", "")
         if re.search(r"\b(?:commission|department|ministry|government)\b", author, re.IGNORECASE):
-            return metadata_field(author, 1, "pdf_metadata_author_rule", 0.76)
+            return metadata_field(
+                author,
+                1,
+                "pdf_metadata_author_rule",
+                [
+                    flag(
+                        "unconfirmed_source",
+                        "Taken from the PDF author property, not the document text.",
+                    )
+                ],
+            )
 
-    return metadata_field(None, None, "not_found", 0.0)
+    return metadata_field(None, None, "not_found")
 
 
 def _normalise_date(value: str) -> str:
@@ -410,6 +486,30 @@ def _normalise_date(value: str) -> str:
     return value
 
 
+DATE_RULE_LABELS = {
+    "cover_report_date_rule": "the report line",
+    "cover_date_rule": "a cover date line",
+    "copyright_date_rule": "the copyright line",
+    "publication_date_rule": "a “published” line",
+    "copyright_year_rule": "the copyright year",
+    "pdf_metadata_subject_date_rule": "the PDF subject property",
+}
+
+
+def _date_parts(value: str) -> tuple[str, str | None]:
+    """Split a normalised YYYY[-MM[-DD]] date into its year and optional month."""
+    parts = value.split("-")
+    return parts[0], parts[1] if len(parts) > 1 else None
+
+
+def _dates_disagree(first: str, second: str) -> bool:
+    first_year, first_month = _date_parts(first)
+    second_year, second_month = _date_parts(second)
+    if first_year != second_year:
+        return True
+    return bool(first_month and second_month and first_month != second_month)
+
+
 def extract_date(
     pages: list[dict[str, Any]],
     pdf_path: Path,
@@ -420,35 +520,33 @@ def extract_date(
             rf"\b(?:final\s+)?report\s*[|\-–—:]?\s*"
             rf"((?:\d{{1,2}}\s+)?{MONTHS}\s+\d{{4}})\b",
             "cover_report_date_rule",
-            0.98,
         ),
         (
             rf"^((?:\d{{1,2}}\s+)?{MONTHS}\s+\d{{4}})$",
             "cover_date_rule",
-            0.96,
         ),
         (
             rf"©\s*((?:\d{{1,2}}\s+)?{MONTHS}\s+\d{{4}})\b",
             "copyright_date_rule",
-            0.94,
         ),
         (
             rf"\bpublished[^\n]*?\b((?:\d{{1,2}}\s+)?{MONTHS}\s+\d{{4}})\b",
             "publication_date_rule",
-            0.90,
         ),
+        (r"©[^\n]*?\b((?:19|20)\d{2})\b", "copyright_year_rule"),
     ]
-    for pattern, method, confidence in patterns:
+    # Run every rule (first hit each, in precedence order) rather than
+    # stopping at the first match, so disagreeing rules can be surfaced.
+    matches: list[tuple[str, int, str]] = []
+    for pattern, method in patterns:
         for page_number, line in lines:
             match = re.search(pattern, line, re.IGNORECASE)
             if match:
-                return metadata_field(
-                    _normalise_date(match.group(1)),
-                    page_number,
-                    method,
-                    confidence,
-                )
+                matches.append((_normalise_date(match.group(1)), page_number, method))
+                break
 
+    # PDF properties rank below the dated text rules but above a bare
+    # copyright year, matching the original precedence.
     subject = _pdf_metadata(pdf_path).get("subject", "")
     subject_match = re.search(
         rf"\b((?:\d{{1,2}}\s+)?{MONTHS}\s+\d{{4}})\b",
@@ -456,32 +554,60 @@ def extract_date(
         re.IGNORECASE,
     )
     if subject_match:
-        return metadata_field(
-            _normalise_date(subject_match.group(1)),
-            1,
-            "pdf_metadata_subject_date_rule",
-            0.88,
+        position = next(
+            (
+                index
+                for index, candidate in enumerate(matches)
+                if candidate[2] == "copyright_year_rule"
+            ),
+            len(matches),
+        )
+        matches.insert(
+            position,
+            (_normalise_date(subject_match.group(1)), 1, "pdf_metadata_subject_date_rule"),
         )
 
-    for page_number, line in lines:
-        match = re.search(r"©[^\n]*?\b((?:19|20)\d{2})\b", line)
-        if match:
-            return metadata_field(
-                match.group(1),
-                page_number,
-                "copyright_year_rule",
-                0.82,
+    if matches:
+        value, page_number, method = matches[0]
+        flags: list[dict[str, Any]] = []
+        rival = next(
+            (
+                candidate
+                for candidate in matches[1:]
+                if _dates_disagree(value, candidate[0])
+            ),
+            None,
+        )
+        if rival is not None:
+            flags.append(
+                flag(
+                    "rule_conflict",
+                    f"{DATE_RULE_LABELS[method][0].upper()}{DATE_RULE_LABELS[method][1:]} "
+                    f"({_page_label(page_number)}) gives {value}, but "
+                    f"{DATE_RULE_LABELS[rival[2]]} ({_page_label(rival[1])}) "
+                    f"gives {rival[0]}.",
+                )
             )
+        if method == "pdf_metadata_subject_date_rule":
+            flags.append(
+                flag(
+                    "unconfirmed_source",
+                    "Taken from the PDF subject property, not the document text.",
+                )
+            )
+        if method == "copyright_year_rule":
+            flags.append(
+                flag(
+                    "partial_value",
+                    "Only a year was found; add the month or day if the document gives one.",
+                )
+            )
+        return metadata_field(value, page_number, method, flags)
 
     match = re.search(r"(?<!\d)((?:19|20)\d{2})(?!\d)", pdf_path.stem)
     if match:
-        return metadata_field(
-            match.group(1),
-            None,
-            "filename_year_fallback",
-            0.45,
-        )
-    return metadata_field(None, None, "not_found", 0.0)
+        return metadata_field(match.group(1), None, "filename_year_fallback")
+    return metadata_field(None, None, "not_found")
 
 
 def extract_jurisdiction(pages: list[dict[str, Any]]) -> dict[str, Any]:
@@ -504,18 +630,37 @@ def extract_jurisdiction(pages: list[dict[str, Any]]) -> dict[str, Any]:
             if re.search(pattern, line, re.IGNORECASE):
                 hits.setdefault(value, []).append(page_number)
     if hits:
-        value, page_numbers = max(hits.items(), key=lambda item: len(item[1]))
+        ranked = sorted(hits.items(), key=lambda item: len(item[1]), reverse=True)
+        value, page_numbers = ranked[0]
         occurrences = len(page_numbers)
-        score = 0.72 if occurrences == 1 else 0.84 if occurrences == 2 else 0.93
-        field = metadata_field(
+        flags: list[dict[str, Any]] = []
+        if occurrences == 1:
+            flags.append(
+                flag(
+                    "single_match",
+                    f"The jurisdiction keyword appears only once ({_page_label(page_numbers[0])}).",
+                )
+            )
+        if len(ranked) > 1:
+            rival, rival_pages = ranked[1]
+            # A report routinely mentions other states in passing; only a
+            # rival with at least half as many mentions is a real conflict.
+            close = len(rival_pages) * 2 >= occurrences
+            flags.append(
+                flag(
+                    "rule_conflict" if close else "other_values",
+                    f"{rival} is also mentioned {len(rival_pages)} time(s), "
+                    f"against {occurrences} for {value}.",
+                    review=close,
+                )
+            )
+        return metadata_field(
             value,
             page_numbers[0],
             "jurisdiction_keyword_rule",
-            score,
+            flags,
         )
-        field["corroboration"] = f"jurisdiction keyword matched {occurrences} time(s)"
-        return field
-    return metadata_field(None, None, "not_found", 0.0)
+    return metadata_field(None, None, "not_found")
 
 
 def extract_citations(pages: list[dict[str, Any]]) -> dict[str, Any]:
@@ -571,36 +716,21 @@ def extract_citations(pages: list[dict[str, Any]]) -> dict[str, Any]:
             add(match.group(0), page_number, "case")
 
     kinds = {citation["type"] for citation in citations}
-    if citations:
-        score = min(
-            0.95,
-            0.55
-            + 0.06 * min(len(citations), 4)
-            + (0.08 if kinds & {"isbn", "series"} else 0.0)
-            + 0.04 * max(0, len(kinds) - 1),
+    flags: list[dict[str, Any]] = []
+    if citations and not kinds & {"isbn", "series"}:
+        flags.append(
+            flag(
+                "uncorroborated",
+                "No ISBN or series line was found; confirm these are the "
+                "document's own citations, not passing references.",
+            )
         )
-    else:
-        score = 0.0
-    field = {
-        "value": citations[:50],
-        "source_page": citations[0]["source_page"] if citations else None,
-        "method": "line_bounded_citation_rules",
-        "confidence": round(score, 2),
-    }
-    if citations:
-        field["corroboration"] = (
-            f"{len(citations)} citation(s) across {len(kinds)} type(s): "
-            + ", ".join(sorted(kinds))
-        )
-    return field
-
-
-def _band(score: float, settings: Settings) -> str:
-    if score >= settings.high_confidence_threshold:
-        return "high"
-    if score >= settings.medium_confidence_threshold:
-        return "med"
-    return "low"
+    return metadata_field(
+        citations[:50],
+        citations[0]["source_page"] if citations else None,
+        "line_bounded_citation_rules",
+        flags,
+    )
 
 
 def _display_value(field: dict[str, Any]) -> str:
@@ -614,20 +744,17 @@ def _display_value(field: dict[str, Any]) -> str:
     return str(value or "").strip()
 
 
-def _payload(
-    fields: dict[str, dict[str, Any]],
-    settings: Settings,
-) -> dict[str, Any]:
+def _payload(fields: dict[str, dict[str, Any]]) -> dict[str, Any]:
     metadata = {name: _display_value(field) for name, field in fields.items()}
     field_info: dict[str, Any] = {}
     for name, field in fields.items():
         value = metadata[name]
-        score = float(field.get("confidence", 0.0))
         page = int(field.get("source_page") or FIRST_PAGE)
         method = str(field.get("method") or "not_found")
+        flags = list(field.get("flags") or [])
         field_info[name] = {
-            "band": _band(score, settings),
-            "score": score,
+            "flags": flags,
+            "review_needed": any(item["severity"] == "review" for item in flags),
             "page": page,
             "evidence": (
                 f"Rule-based extraction matched “{value}”."
@@ -643,8 +770,8 @@ def _payload(
     return {"metadata": metadata, "fields": field_info}
 
 
-def empty_metadata_payload(settings: Settings) -> dict[str, Any]:
-    missing = metadata_field(None, None, "not_found", 0.0)
+def empty_metadata_payload() -> dict[str, Any]:
+    missing = metadata_field(None, None, "not_found")
     return _payload(
         {
             "title": missing,
@@ -652,19 +779,17 @@ def empty_metadata_payload(settings: Settings) -> dict[str, Any]:
             "published_date": missing,
             "jurisdiction": missing,
             "citations": missing,
-        },
-        settings,
+        }
     )
 
 
 def extract_metadata_from_docling(
     document: dict[str, Any],
     pdf_path: Path,
-    settings: Settings,
 ) -> dict[str, Any]:
     pages = pages_from_docling(document)
     if not pages:
-        return empty_metadata_payload(settings)
+        return empty_metadata_payload()
     return _payload(
         {
             "title": extract_title(pages, pdf_path),
@@ -672,6 +797,5 @@ def extract_metadata_from_docling(
             "published_date": extract_date(pages, pdf_path),
             "jurisdiction": extract_jurisdiction(pages),
             "citations": extract_citations(pages),
-        },
-        settings,
+        }
     )

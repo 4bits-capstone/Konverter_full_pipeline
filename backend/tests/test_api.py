@@ -127,8 +127,18 @@ def load_client(tmp_path):
         }
         fields = {
             name: {
-                "band": "high" if name in {"title", "publisher"} else "med",
-                "score": 0.9 if name in {"title", "publisher"} else 0.75,
+                "flags": (
+                    []
+                    if name in {"title", "publisher"}
+                    else [
+                        {
+                            "code": "single_match",
+                            "severity": "review",
+                            "message": "Found only once.",
+                        }
+                    ]
+                ),
+                "review_needed": name not in {"title", "publisher"},
                 "page": 1,
                 "evidence": "Extracted from Docling text.",
                 "source": "Docling text · pages 1–8",

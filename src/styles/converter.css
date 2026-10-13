@@ -5159,6 +5159,39 @@
   font-weight: 700;
 }
 
+/* rule notes explaining why a field is flagged */
+.converter-app .field-flags {
+  list-style: none;
+  margin: 0 0 10px;
+  padding: 0;
+  display: grid;
+  gap: 4px;
+}
+
+.converter-app .field-flag {
+  display: flex;
+  align-items: flex-start;
+  gap: 7px;
+  font-size: 13px;
+  line-height: 1.45;
+  color: var(--ink-2);
+}
+
+.converter-app .field-flag svg {
+  width: 14px;
+  height: 14px;
+  flex: none;
+  margin-top: 2px;
+}
+
+.converter-app .field-flag--review svg {
+  color: var(--md);
+}
+
+.converter-app .field-flag--info {
+  color: var(--muted);
+}
+
 /* read-only value: plain text, no input chrome */
 .converter-app .field-value {
   font-size: 15px;

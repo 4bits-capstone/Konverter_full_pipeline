@@ -17,7 +17,11 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { useForm } from "react-hook-form";
 import { useNavigate } from "react-router-dom";
 import { z } from "zod";
-import { ConfidenceBadge } from "../components/ConfidenceBadge";
+import {
+  FieldFlagList,
+  FieldFlagStatus,
+  flagStatus,
+} from "../components/FieldFlags";
 import { emptyMetadata } from "../config/workflow";
 import { converterStagePath } from "../lib/converterRoutes";
 import {
@@ -84,42 +88,18 @@ const multipleFields: MetadataField[] = [
 const isMultiple = (field: MetadataField): field is MultipleField =>
   multipleFields.includes(field);
 
-const fallbackFieldInfo: Record<MetadataField, MetadataFieldInfo> = {
-  title: {
-    band: "low",
-    score: 0,
-    page: 1,
-    evidence: "Confidence data is unavailable.",
-    source: "Source unavailable",
-  },
-  publisher: {
-    band: "low",
-    score: 0,
-    page: 1,
-    evidence: "Confidence data is unavailable.",
-    source: "Source unavailable",
-  },
-  publishedDate: {
-    band: "low",
-    score: 0,
-    page: 1,
-    evidence: "Confidence data is unavailable.",
-    source: "Source unavailable",
-  },
-  jurisdiction: {
-    band: "low",
-    score: 0,
-    page: 1,
-    evidence: "Confidence data is unavailable.",
-    source: "Source unavailable",
-  },
-  citations: {
-    band: "low",
-    score: 0,
-    page: 1,
-    evidence: "Confidence data is unavailable.",
-    source: "Source unavailable",
-  },
+const unavailableFieldInfo: MetadataFieldInfo = {
+  flags: [
+    {
+      code: "unavailable",
+      severity: "review",
+      message: "Rule checks are unavailable for this field.",
+    },
+  ],
+  reviewNeeded: true,
+  page: 1,
+  evidence: "Rule checks are unavailable.",
+  source: "Source unavailable",
 };
 
 export function normaliseMetadataFields(
@@ -128,8 +108,8 @@ export function normaliseMetadataFields(
   return fieldOrder.reduce<Record<MetadataField, MetadataFieldInfo>>(
     (result, field) => {
       const legacyKey = field === "publishedDate" ? "published_date" : field;
-      result[field] =
-        incoming?.[field] ?? incoming?.[legacyKey] ?? fallbackFieldInfo[field];
+      const info = incoming?.[field] ?? incoming?.[legacyKey];
+      result[field] = Array.isArray(info?.flags) ? info : unavailableFieldInfo;
       return result;
     },
     {} as Record<MetadataField, MetadataFieldInfo>,
@@ -404,7 +384,7 @@ export function MetadataPage() {
   const fieldsNeedingReview = fieldOrder.filter(
     (field) =>
       hasError(field) ||
-      (fieldInfo[field].band !== "high" && !approvedFields.has(field)),
+      (fieldInfo[field].reviewNeeded && !approvedFields.has(field)),
   );
   const reviewCount = fieldsNeedingReview.length;
   const evidence = fieldInfo[activeEvidence];
@@ -435,13 +415,14 @@ export function MetadataPage() {
     const extraLabel = addLabel ?? label.toLowerCase();
     const editing = editingFields.has(name);
     const approved = approvedFields.has(name);
-    const { band, score } = fieldInfo[name];
+    const info = fieldInfo[name];
+    const status = flagStatus(info);
     const error = hasError(name);
     const tone = error
       ? "alert"
-      : approved || band === "high"
+      : approved || status === "clear"
         ? "ok"
-        : band === "low"
+        : status === "conflict"
           ? "alert"
           : "warn";
 
@@ -460,11 +441,7 @@ export function MetadataPage() {
                 *
               </span>
             )}
-            <ConfidenceBadge
-              band={error ? "low" : band}
-              score={score}
-              size="lg"
-            />
+            <FieldFlagStatus info={info} error={error} />
           </label>
           <div className="metadata-field-actions">
             {!editing && !error && fieldsNeedingReview.includes(name) && (
@@ -490,10 +467,15 @@ export function MetadataPage() {
           </div>
         </div>
 
+        <FieldFlagList info={info} id={`metadata-${name}-flags`} />
+
         {editing ? (
           <>
             <input
               id={`metadata-${name}`}
+              aria-describedby={
+                info.flags.length ? `metadata-${name}-flags` : undefined
+              }
               className={`input ${mono ? "mono" : ""} ${errors[name] ? "err" : ""}`}
               placeholder={placeholder}
               {...register(name)}
@@ -728,8 +710,9 @@ export function MetadataPage() {
             <div className="banner banner-info">
               <Info />
               <div>
-                Metadata rules inspect Docling text from pages 1–8. Low or
-                medium confidence fields require a close check.
+                Metadata rules inspect Docling text from pages 1–8. Fields
+                flagged for a rule conflict or review need a close check
+                against the source page.
               </div>
             </div>
           </aside>
