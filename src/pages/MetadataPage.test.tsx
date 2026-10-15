@@ -75,7 +75,7 @@ describe('MetadataPage', () => {
 
     expect(await screen.findByText('Rule conflict')).toBeInTheDocument()
     expect(screen.getAllByText('Needs review')).toHaveLength(2)
-    expect(screen.getAllByText('No issues')).toHaveLength(2)
+    expect(screen.queryByText('No issues')).not.toBeInTheDocument()
     expect(screen.getByText(/the copyright line \(page 2\) gives 2025-11/)).toBeInTheDocument()
     expect(screen.queryByText(/\d+%/)).not.toBeInTheDocument()
   })

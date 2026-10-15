@@ -1,4 +1,4 @@
-import { Check, Circle, Info, TriangleAlert } from 'lucide-react'
+import { Circle, Info, TriangleAlert } from 'lucide-react'
 import type { MetadataFieldInfo } from '../types/konverter'
 
 type FlagStatus = 'conflict' | 'review' | 'clear'
@@ -11,20 +11,21 @@ export function flagStatus(info: MetadataFieldInfo): FlagStatus {
   return info.reviewNeeded ? 'review' : 'clear'
 }
 
-const statusLabel: Record<FlagStatus, string> = { conflict: 'Rule conflict', review: 'Needs review', clear: 'No issues' }
-const statusClass: Record<FlagStatus, string> = { conflict: 'conf--low', review: 'conf--med', clear: 'conf--high' }
+const statusLabel: Record<Exclude<FlagStatus, 'clear'>, string> = { conflict: 'Rule conflict', review: 'Needs review' }
+const statusClass: Record<Exclude<FlagStatus, 'clear'>, string> = { conflict: 'conf--low', review: 'conf--med' }
 
-/** Status chip shown beside a metadata field label. Colour + icon + text (WCAG: never colour alone). */
+/** Status chip shown beside a metadata field label, only when something needs a check. Colour + icon + text (WCAG: never colour alone). */
 export function FieldFlagStatus({ info, error = false }: { info: MetadataFieldInfo; error?: boolean }) {
   const status = error ? 'conflict' : flagStatus(info)
+  if (status === 'clear') return null
   const label = error ? 'Value required' : statusLabel[status]
-  const Icon = status === 'clear' ? Check : status === 'conflict' ? TriangleAlert : Circle
+  const Icon = status === 'conflict' ? TriangleAlert : Circle
   return <span className={`conf conf--lg ${statusClass[status]}`}><Icon className="ic" aria-hidden="true" />{label}</span>
 }
 
-/** The rule notes behind the status, in plain language. */
+/** The rule notes behind the status, in plain language. Hidden when the field needs no review. */
 export function FieldFlagList({ info, id }: { info: MetadataFieldInfo; id?: string }) {
-  if (!info.flags.length) return null
+  if (!info.reviewNeeded || !info.flags.length) return null
   return (
     <ul className="field-flags" id={id}>
       {info.flags.map((flag) => {

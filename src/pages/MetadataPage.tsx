@@ -474,7 +474,9 @@ export function MetadataPage() {
             <input
               id={`metadata-${name}`}
               aria-describedby={
-                info.flags.length ? `metadata-${name}-flags` : undefined
+                info.reviewNeeded && info.flags.length
+                  ? `metadata-${name}-flags`
+                  : undefined
               }
               className={`input ${mono ? "mono" : ""} ${errors[name] ? "err" : ""}`}
               placeholder={placeholder}
