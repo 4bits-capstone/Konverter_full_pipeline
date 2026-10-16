@@ -375,6 +375,46 @@ def _is_blocking_review_item(item_type: str) -> bool:
     )
 
 
+def _legacy_field_flags(field: dict[str, Any]) -> dict[str, Any]:
+    """Give metadata saved before rule flags existed a review flag.
+
+    Older ``metadata.json`` artifacts carry a confidence ``band``/``score``
+    instead of ``flags``; anything short of high still needs a human check.
+    """
+    if "flags" in field:
+        return field
+    upgraded = {
+        key: value for key, value in field.items() if key not in {"band", "score"}
+    }
+    needs_review = field.get("band") != "high"
+    upgraded["flags"] = (
+        [
+            {
+                "code": "review_needed",
+                "severity": "review",
+                "message": "Extracted before rule checks were recorded; confirm against the source page.",
+            }
+        ]
+        if needs_review
+        else []
+    )
+    upgraded["review_needed"] = needs_review
+    return upgraded
+
+
+def _legacy_field_location(field: dict[str, Any]) -> dict[str, Any]:
+    """Give metadata saved before locations existed a page-only location.
+
+    Older artifacts only record the page inside ``source``
+    (``"Docling text · page 3 · cover_date_rule"``); a source spanning
+    pages 1–8 means the page was never known, so no location is shown.
+    """
+    if "location" in field:
+        return field
+    match = re.search(r"\bpage (\d+)\b", str(field.get("source") or ""))
+    return {**field, "location": f"Page {match.group(1)}" if match else ""}
+
+
 def _public_processing_error(error: Exception) -> str:
     """Map technical failures to stable, non-technical user guidance."""
     value = str(error).casefold()
@@ -1114,7 +1154,10 @@ class WorkflowService:
         fields = dict(normalised.get("fields") or {})
         if "publishedDate" not in fields and "published_date" in fields:
             fields["publishedDate"] = fields.pop("published_date")
-        normalised["fields"] = fields
+        normalised["fields"] = {
+            name: _legacy_field_location(_legacy_field_flags(field))
+            for name, field in fields.items()
+        }
         return normalised
 
     def save_metadata(

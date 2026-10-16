@@ -88,10 +88,21 @@ export interface DocumentMetadata {
   citations: string
 }
 
+export type MetadataFlagSeverity = 'review' | 'info'
+
+/** A human-readable note from the metadata rules, e.g. two rules disagreeing. */
+export interface MetadataFlag {
+  code: string
+  severity: MetadataFlagSeverity
+  message: string
+}
+
 export interface MetadataFieldInfo {
-  band: ConfidenceBand
-  score: number
+  flags: MetadataFlag[]
+  reviewNeeded: boolean
   page: number
+  /** Where the value was found, e.g. "Page 2 · copyright line". Empty when unknown. */
+  location?: string
   evidence: string
   source: string
 }

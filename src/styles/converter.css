@@ -5159,6 +5159,91 @@
   font-weight: 700;
 }
 
+/* rule notes explaining why a field is flagged */
+.converter-app .field-flags {
+  list-style: none;
+  margin: 0 0 10px;
+  padding: 0;
+  display: grid;
+  gap: 4px;
+}
+
+.converter-app .field-flag {
+  display: flex;
+  align-items: flex-start;
+  gap: 7px;
+  font-size: 13px;
+  line-height: 1.45;
+  color: var(--ink-2);
+}
+
+.converter-app .field-flag svg {
+  width: 14px;
+  height: 14px;
+  flex: none;
+  margin-top: 2px;
+}
+
+.converter-app .field-flag--review svg {
+  color: var(--md);
+}
+
+.converter-app .field-flag--info {
+  color: var(--muted);
+}
+
+/* where the rule found the value: "SOURCE  Page 2 · copyright line" under the read-only value */
+.converter-app .field-location {
+  display: flex;
+  align-items: baseline;
+  flex-wrap: wrap;
+  gap: 8px;
+  width: fit-content;
+  max-width: 100%;
+  margin: 6px 0 0;
+  padding: 0;
+  border: none;
+  background: none;
+  font-family: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
+.converter-app .field-location-label {
+  font-size: 10.5px;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--muted);
+}
+
+.converter-app .field-location-value {
+  font-size: 12.5px;
+  color: var(--accent);
+  text-underline-offset: 2px;
+}
+
+.converter-app .field-location-primary {
+  font-weight: 600;
+}
+
+.converter-app .field-location-detail::before {
+  content: "·";
+  margin: 0 6px;
+  color: var(--muted);
+}
+
+.converter-app .field-location:hover .field-location-value {
+  color: var(--accent-ink);
+  text-decoration: underline;
+}
+
+.converter-app .field-location:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 3px;
+  border-radius: 2px;
+}
+
 /* read-only value: plain text, no input chrome */
 .converter-app .field-value {
   font-size: 15px;

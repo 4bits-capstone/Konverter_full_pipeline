@@ -1331,14 +1331,10 @@ class KonverterPipeline:
 
         stage(4, "Extracting metadata")
         try:
-            metadata_payload = extract_metadata_from_docling(
-                raw_document,
-                pdf_path,
-                self.settings,
-            )
+            metadata_payload = extract_metadata_from_docling(raw_document, pdf_path)
         except Exception as exc:
             warnings.append(f"Rule-based metadata extraction failed: {exc}")
-            metadata_payload = empty_metadata_payload(self.settings)
+            metadata_payload = empty_metadata_payload()
 
         stage(5, "Scoring confidence")
         review_items = self._build_review_items(blocks, pdf_path)

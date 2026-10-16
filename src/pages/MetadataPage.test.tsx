@@ -55,10 +55,10 @@ afterEach(cleanup)
 beforeEach(resetTestServices)
 
 describe('MetadataPage', () => {
-  it('normalises legacy and incomplete backend confidence fields', () => {
+  it('normalises legacy and incomplete backend metadata fields', () => {
     const publishedDate = {
-      band: 'med' as const,
-      score: 0.74,
+      flags: [{ code: 'partial_value', severity: 'review' as const, message: 'Only a year was found.' }],
+      reviewNeeded: true,
       page: 2,
       evidence: 'Found on page 2.',
       source: 'Docling text · pages 1–8',
@@ -66,8 +66,25 @@ describe('MetadataPage', () => {
     const normalised = normaliseMetadataFields({ published_date: publishedDate })
 
     expect(normalised.publishedDate).toEqual(publishedDate)
-    expect(normalised.title.band).toBe('low')
-    expect(normalised.citations.band).toBe('low')
+    expect(normalised.title.reviewNeeded).toBe(true)
+    expect(normalised.citations.flags[0].code).toBe('unavailable')
+  })
+
+  it('shows rule-conflict and review flags in place of confidence scores', async () => {
+    renderMetadata()
+
+    expect(await screen.findByText('Rule conflict')).toBeInTheDocument()
+    expect(screen.getAllByText('Needs review')).toHaveLength(2)
+    expect(screen.queryByText('No issues')).not.toBeInTheDocument()
+    expect(screen.getByText(/the copyright line \(page 2\) gives 2025-11/)).toBeInTheDocument()
+    expect(screen.queryByText(/\d+%/)).not.toBeInTheDocument()
+  })
+
+  it('shows where each value was found', async () => {
+    renderMetadata()
+
+    expect(await screen.findByRole('button', { name: /^Source: Page 1 · cataloguing details\./ })).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: /^Source: Page 1 · report line\./ })).toBeInTheDocument()
   })
 
   it('shows values as plain text until the field is opened for editing', async () => {
