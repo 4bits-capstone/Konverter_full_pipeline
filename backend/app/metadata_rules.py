@@ -746,28 +746,72 @@ def _display_value(field: dict[str, Any]) -> str:
     return str(value or "").strip()
 
 
+# Where in the document each rule reads its value, in reviewer terms.
+METHOD_LOCATIONS = {
+    "cataloguing_title_rule": "cataloguing details",
+    "labelled_title_rule": "“Title:” line",
+    "cataloguing_report_title_rule": "cataloguing details",
+    "cover_report_title_rule": "report title line",
+    "cover_title_after_contact_rule": "cover page",
+    "cover_uppercase_title_rule": "heading in capitals",
+    "published_by_rule": "“Published by” line",
+    "organisation_name_rule": "first mention of the organisation",
+    "jurisdiction_keyword_rule": "first mention of the jurisdiction",
+    **{method: label.removeprefix("the ").removeprefix("a ") for method, label in DATE_RULE_LABELS.items()},
+}
+PDF_PROPERTY_METHODS = {
+    "pdf_metadata_title",
+    "pdf_metadata_author_rule",
+    "pdf_metadata_subject_date_rule",
+}
+
+
+def _pages_text(pages: list[int]) -> str:
+    unique = sorted(set(pages))
+    if len(unique) == 1:
+        return f"Page {unique[0]}"
+    return "Pages " + ", ".join(str(page) for page in unique)
+
+
+def _location(field: dict[str, Any]) -> str:
+    """A short, plain description of where a field's value came from."""
+    method = str(field.get("method") or "not_found")
+    value = field.get("value")
+    if value in (None, "", []):
+        return f"None found in pages {FIRST_PAGE}–{LAST_PAGE}"
+    if method in FILENAME_METHODS:
+        return "File name"
+    if method in PDF_PROPERTY_METHODS:
+        return "PDF file properties"
+    if isinstance(value, list):
+        pages = [int(item["source_page"]) for item in value if item.get("source_page")]
+        return _pages_text(pages) if pages else ""
+    page = field.get("source_page")
+    label = METHOD_LOCATIONS.get(method)
+    if not page:
+        return label.capitalize() if label else ""
+    return f"Page {page} · {label}" if label else f"Page {page}"
+
+
 def _payload(fields: dict[str, dict[str, Any]]) -> dict[str, Any]:
     metadata = {name: _display_value(field) for name, field in fields.items()}
     field_info: dict[str, Any] = {}
     for name, field in fields.items():
         value = metadata[name]
         page = int(field.get("source_page") or FIRST_PAGE)
-        method = str(field.get("method") or "not_found")
         flags = list(field.get("flags") or [])
+        location = _location(field)
         field_info[name] = {
             "flags": flags,
             "review_needed": any(item["severity"] == "review" for item in flags),
             "page": page,
+            "location": location,
             "evidence": (
                 f"Rule-based extraction matched “{value}”."
                 if value
                 else "No value matched the configured metadata rules."
             ),
-            "source": (
-                f"Docling text · page {page} · {method}"
-                if field.get("source_page")
-                else f"Docling text · pages {FIRST_PAGE}–{LAST_PAGE} · {method}"
-            ),
+            "source": location or f"Pages {FIRST_PAGE}–{LAST_PAGE}",
         }
     return {"metadata": metadata, "fields": field_info}
 

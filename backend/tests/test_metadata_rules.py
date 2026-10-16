@@ -1,6 +1,7 @@
 from pathlib import Path
 
 from app.metadata_rules import (
+    _payload,
     empty_metadata_payload,
     extract_citations,
     extract_date,
@@ -8,7 +9,7 @@ from app.metadata_rules import (
     extract_publisher,
     extract_title,
 )
-from app.service import _legacy_field_flags
+from app.service import _legacy_field_flags, _legacy_field_location
 
 # No such file exists, so PDF-property lookups quietly return nothing.
 PDF = Path("missing_report_2016.pdf")
@@ -152,3 +153,47 @@ def test_legacy_confidence_fields_are_converted_to_flags():
 
     high = _legacy_field_flags({"band": "high", "score": 0.95, "page": 1})
     assert high == {"page": 1, "flags": [], "review_needed": False}
+
+
+def _location(**fields: dict) -> dict[str, str]:
+    return {name: info["location"] for name, info in _payload(fields)["fields"].items()}
+
+
+def test_each_field_says_which_page_and_line_it_came_from():
+    pages = _pages(
+        "Final Report June 2016",
+        "Sentencing Reform : final report / Victorian Law Reform Commission\n"
+        "Published by the Victorian Law Reform Commission\n"
+        "ISBN 978-0-9876543-2-1",
+        "Sentencing Act 1991 (Vic)",
+    )
+    locations = _location(
+        title=extract_title(pages, PDF),
+        publisher=extract_publisher(pages, PDF),
+        published_date=extract_date(pages, PDF),
+        citations=extract_citations(pages),
+    )
+    assert locations == {
+        "title": "Page 2 · cataloguing details",
+        "publisher": "Page 2 · “Published by” line",
+        "published_date": "Page 1 · report line",
+        "citations": "Pages 2, 3",
+    }
+
+
+def test_fallback_and_missing_values_say_where_they_did_not_come_from():
+    locations = _location(
+        title=extract_title(_pages("nothing useful here"), Path("Bail_Review.pdf")),
+        publisher=extract_publisher(_pages("nothing useful here"), PDF),
+    )
+    assert locations == {
+        "title": "File name",
+        "publisher": "None found in pages 1–8",
+    }
+
+
+def test_legacy_fields_get_a_page_only_location():
+    known = _legacy_field_location({"source": "Docling text · page 3 · cover_date_rule"})
+    assert known["location"] == "Page 3"
+    unknown = _legacy_field_location({"source": "Docling text · pages 1–8 · not_found"})
+    assert unknown["location"] == ""

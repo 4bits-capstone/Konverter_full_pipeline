@@ -80,6 +80,13 @@ describe('MetadataPage', () => {
     expect(screen.queryByText(/\d+%/)).not.toBeInTheDocument()
   })
 
+  it('shows where each value was found', async () => {
+    renderMetadata()
+
+    expect(await screen.findByRole('button', { name: /^Source: Page 1 · cataloguing details\./ })).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: /^Source: Page 1 · report line\./ })).toBeInTheDocument()
+  })
+
   it('shows values as plain text until the field is opened for editing', async () => {
     renderMetadata()
 

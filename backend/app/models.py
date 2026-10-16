@@ -162,6 +162,8 @@ class MetadataFieldInfo(ApiModel):
     flags: list[MetadataFlag] = Field(default_factory=list)
     review_needed: bool = True
     page: int = 1
+    # Plain description of where the value was found, e.g. "Page 2 · copyright line".
+    location: str = ""
     evidence: str = ""
     source: str = "Docling text, pages 1–8"
 

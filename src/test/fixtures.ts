@@ -133,12 +133,13 @@ export const testMetadata: DocumentMetadata = {
 export const testMetadataPayload: MetadataPayload = {
   metadata: testMetadata,
   fields: {
-    title: { flags: [], reviewNeeded: false, page: 1, evidence: 'Found on page 1.', source: 'Page 1' },
+    title: { flags: [], reviewNeeded: false, page: 1, location: 'Page 1 · cataloguing details', evidence: 'Found on page 1.', source: 'Page 1' },
     publisher: { flags: [], reviewNeeded: false, page: 1, evidence: 'Found on page 1.', source: 'Page 1' },
     publishedDate: {
       flags: [{ code: 'rule_conflict', severity: 'review', message: 'The report line (page 1) gives 2026-06, but the copyright line (page 2) gives 2025-11.' }],
       reviewNeeded: true,
       page: 1,
+      location: 'Page 1 · report line',
       evidence: 'Date needs confirmation.',
       source: 'Docling text · pages 1–8',
     },

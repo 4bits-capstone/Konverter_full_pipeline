@@ -101,6 +101,8 @@ export interface MetadataFieldInfo {
   flags: MetadataFlag[]
   reviewNeeded: boolean
   page: number
+  /** Where the value was found, e.g. "Page 2 · copyright line". Empty when unknown. */
+  location?: string
   evidence: string
   source: string
 }

@@ -402,6 +402,19 @@ def _legacy_field_flags(field: dict[str, Any]) -> dict[str, Any]:
     return upgraded
 
 
+def _legacy_field_location(field: dict[str, Any]) -> dict[str, Any]:
+    """Give metadata saved before locations existed a page-only location.
+
+    Older artifacts only record the page inside ``source``
+    (``"Docling text · page 3 · cover_date_rule"``); a source spanning
+    pages 1–8 means the page was never known, so no location is shown.
+    """
+    if "location" in field:
+        return field
+    match = re.search(r"\bpage (\d+)\b", str(field.get("source") or ""))
+    return {**field, "location": f"Page {match.group(1)}" if match else ""}
+
+
 def _public_processing_error(error: Exception) -> str:
     """Map technical failures to stable, non-technical user guidance."""
     value = str(error).casefold()
@@ -1142,7 +1155,8 @@ class WorkflowService:
         if "publishedDate" not in fields and "published_date" in fields:
             fields["publishedDate"] = fields.pop("published_date")
         normalised["fields"] = {
-            name: _legacy_field_flags(field) for name, field in fields.items()
+            name: _legacy_field_location(_legacy_field_flags(field))
+            for name, field in fields.items()
         }
         return normalised
 

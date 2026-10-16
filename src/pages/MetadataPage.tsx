@@ -567,6 +567,30 @@ export function MetadataPage() {
                 <span className="field-value-empty">Not set</span>
               )}
             </div>
+            {info.location && (
+              <button
+                type="button"
+                className="field-location"
+                onClick={() => setActiveEvidence(name)}
+                aria-label={`Source: ${info.location}. Show evidence for ${label.toLowerCase()}`}
+              >
+                <span className="field-location-label">Source</span>
+                <span className="field-location-value">
+                  {info.location.split(" · ").map((part, index) => (
+                    <span
+                      key={part}
+                      className={
+                        index === 0
+                          ? "field-location-primary"
+                          : "field-location-detail"
+                      }
+                    >
+                      {part}
+                    </span>
+                  ))}
+                </span>
+              </button>
+            )}
             {error && (
               <div className="err-msg show">
                 <TriangleAlert />
