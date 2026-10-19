@@ -118,6 +118,8 @@ class Settings:
     wordpress_bearer_token: str = field(default="", repr=False)
     wordpress_timeout_seconds: float = 30.0
     runpod_job_timeout_seconds: float = 1800.0
+    public_chat_per_ip_per_minute: int = 10
+    public_chat_global_per_hour: int = 300
 
 
 def load_settings() -> Settings:
@@ -184,5 +186,11 @@ def load_settings() -> Settings:
         ),
         runpod_job_timeout_seconds=max(
             60.0, float(os.getenv("KONVERTER_RUNPOD_JOB_TIMEOUT_SECONDS", "1800"))
+        ),
+        public_chat_per_ip_per_minute=max(
+            0, int(os.getenv("KONVERTER_PUBLIC_CHAT_PER_IP_PER_MINUTE", "10"))
+        ),
+        public_chat_global_per_hour=max(
+            0, int(os.getenv("KONVERTER_PUBLIC_CHAT_GLOBAL_PER_HOUR", "300"))
         ),
     )
