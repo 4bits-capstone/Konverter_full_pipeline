@@ -1,4 +1,8 @@
+# check=skip=SecretsUsedInArgOrEnv
 # frontend.Dockerfile — build the React app, serve it with nginx
+#
+# The anon key is public by design (it ships in the browser bundle), so the
+# SecretsUsedInArgOrEnv lint rule is skipped via the directive on line 1.
 #
 # Vite inlines these env vars at BUILD time (passed as build args):
 #   VITE_API_BASE_URL      — where the browser calls the backend
