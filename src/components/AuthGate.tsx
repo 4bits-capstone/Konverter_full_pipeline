@@ -1,4 +1,6 @@
 import {
+  lazy,
+  Suspense,
   useEffect,
   useRef,
   useState,
@@ -6,12 +8,14 @@ import {
   type ReactNode,
 } from "react";
 import type { Session } from "@supabase/supabase-js";
-import { useNavigate } from "react-router-dom";
+import { useLocation, useNavigate } from "react-router-dom";
 import { supabase } from "../lib/supabaseClient";
 import { useKonverter } from "../state/KonverterContext";
 import "../styles/converter.css";
 import "../styles/converter-library-theme.css";
 import "../styles/interface-theme.css";
+
+const LandingPage = lazy(() => import("../pages/LandingPage"));
 
 function LoginForm() {
   const [email, setEmail] = useState("");
@@ -96,6 +100,7 @@ export default function AuthGate({ children }: { children: ReactNode }) {
   const [session, setSession] = useState<Session | null>(null);
   const [loading, setLoading] = useState(true);
   const navigate = useNavigate();
+  const { pathname } = useLocation();
   const { resetSession, refreshDocuments } = useKonverter();
   const hadSessionRef = useRef(false);
 
@@ -138,6 +143,16 @@ export default function AuthGate({ children }: { children: ReactNode }) {
   }
 
   if (!session) {
+    // Signed-out visitors at the site root get the public landing page; its
+    // "Client login" links go to /login. Every other path (including deep
+    // links) still goes straight to the sign-in form.
+    if (pathname === "/") {
+      return (
+        <Suspense fallback={null}>
+          <LandingPage />
+        </Suspense>
+      );
+    }
     return <LoginForm />;
   }
 
