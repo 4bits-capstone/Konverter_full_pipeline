@@ -50,6 +50,7 @@ from .models import (
     WordPressPublishRequest,
 )
 from .service import ProcessingManager, WorkflowService
+from .rate_limit import SlidingWindowLimiter, client_ip
 from .storage import DocumentNotFoundError, LocalDocumentStore
 from .wordpress import (
     WordPressAuthenticationError,
@@ -75,6 +76,10 @@ processing = ProcessingManager(settings, store)
 workflow = WorkflowService(settings, store)
 wordpress = WordPressPublisher(settings)
 wordpress_publish_lock = asyncio.Lock()
+# The public widget chat needs no login and every call costs OpenAI usage,
+# so cap it per visitor IP and across all visitors combined.
+public_chat_ip_limiter = SlidingWindowLimiter(settings.public_chat_per_ip_per_minute, 60)
+public_chat_global_limiter = SlidingWindowLimiter(settings.public_chat_global_per_hour, 3600)
 
 WORDPRESS_PUBLICATION_ARTIFACT = "wordpress-publication.json"
 
@@ -1153,7 +1158,7 @@ async def chat_with_document(
 
 @app.post("/api/public/documents/{document_id}/chat")
 async def public_chat_with_document(
-    document_id: str, payload: ChatRequest
+    document_id: str, payload: ChatRequest, request: Request
 ) -> StreamingResponse:
     """Unauthenticated counterpart to /chat, for the embeddable widget baked
     into every exported HTML file (see exporter.py). There's no reviewer
@@ -1165,6 +1170,15 @@ async def public_chat_with_document(
         raise HTTPException(status_code=409, detail="Document is not published")
     if not settings.openai_api_key:
         raise HTTPException(status_code=503, detail="Chat is not configured")
+    retry_after = public_chat_ip_limiter.hit(client_ip(request))
+    if retry_after is None:
+        retry_after = public_chat_global_limiter.hit("all")
+    if retry_after is not None:
+        raise HTTPException(
+            status_code=429,
+            detail="Too many questions right now. Please wait a moment and try again.",
+            headers={"Retry-After": str(int(retry_after) + 1)},
+        )
 
     structured = store.read_artifact(document_id, "structured.json", {})
     json_ld = store.read_artifact(document_id, "schema.jsonld", {})

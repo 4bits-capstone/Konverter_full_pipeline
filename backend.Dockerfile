@@ -36,6 +36,12 @@ ENV KONVERTER_DOCLING_MODE=remote \
 ARG GIT_SHA=dev
 ENV GIT_SHA=$GIT_SHA
 
+# Run as an unprivileged user. The entrypoint starts as root only to hand
+# the data volume to "app", then drops privileges (see the script).
+RUN useradd --system --uid 10001 --create-home --home-dir /home/app app
+COPY --chmod=755 deploy/backend/docker-entrypoint.sh /usr/local/bin/docker-entrypoint.sh
+ENTRYPOINT ["/usr/local/bin/docker-entrypoint.sh"]
+
 # Documents persist under KONVERTER_DATA_DIR (/app/data). Mount a RunPod volume
 # here if you want uploads to survive pod restarts (see README).
 EXPOSE 8000

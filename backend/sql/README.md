@@ -10,6 +10,7 @@ by `SUPABASE_URL` / `SUPABASE_SERVICE_ROLE_KEY` in `.env`. Each is idempotent
 | `002_audit_log_hash_chain.sql` | Trigger that chains each `audit_log` row's hash to the previous row's, so a row edited or deleted after the fact is detectable. |
 | `003_audit_log_lockdown.sql` | Revokes `update`/`delete` on `audit_log` from client roles — it's insert-only. |
 | `004_wordpress_publications.sql` | `wordpress_publications` table: durable record of every WordPress publish, used to warn before creating a duplicate page. |
+| `005_enable_rls.sql` | Enables row level security on every table and revokes client-role access, so only the backend's service role can read or write them. |
 
 `verify_audit_log_chain.sql` is a read-only diagnostic, not part of the setup
 sequence — run it any time to check the `audit_log` hash chain is intact.

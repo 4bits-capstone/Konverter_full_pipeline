@@ -432,3 +432,66 @@ def test_tts_converts_a_connect_timeout_to_openai_request_error(monkeypatch):
             await _drain(synthesize_speech(settings, "hello"))
 
     asyncio.run(run())
+
+
+def _approved_document_with_fake_chat(client, monkeypatch) -> str:
+    document_id = upload_and_process(client)
+    confirm_metadata(client, document_id)
+    client.post(f"/api/documents/{document_id}/review-items/resolve-all")
+    assert client.post(f"/api/documents/{document_id}/approval").status_code == 200
+
+    import app.main as app_main
+
+    async def fake_stream_chat_completion(settings, context, message, history):
+        yield "ok"
+
+    monkeypatch.setattr(app_main, "stream_chat_completion", fake_stream_chat_completion)
+    return document_id
+
+
+def test_public_chat_is_rate_limited_per_ip(tmp_path, monkeypatch):
+    monkeypatch.setenv("OPENAI_API_KEY", "test-key")
+    monkeypatch.setenv("KONVERTER_PUBLIC_CHAT_PER_IP_PER_MINUTE", "2")
+    with load_client(tmp_path) as client:
+        document_id = _approved_document_with_fake_chat(client, monkeypatch)
+        url = f"/api/public/documents/{document_id}/chat"
+        body = {"message": "What is this about?"}
+        visitor = {"CF-Connecting-IP": "203.0.113.7"}
+
+        assert client.post(url, json=body, headers=visitor).status_code == 200
+        assert client.post(url, json=body, headers=visitor).status_code == 200
+        limited = client.post(url, json=body, headers=visitor)
+        assert limited.status_code == 429
+        assert int(limited.headers["Retry-After"]) >= 1
+
+        # A different visitor still gets an answer.
+        other = {"CF-Connecting-IP": "198.51.100.9"}
+        assert client.post(url, json=body, headers=other).status_code == 200
+
+
+def test_public_chat_has_a_global_cap_across_visitors(tmp_path, monkeypatch):
+    monkeypatch.setenv("OPENAI_API_KEY", "test-key")
+    monkeypatch.setenv("KONVERTER_PUBLIC_CHAT_GLOBAL_PER_HOUR", "2")
+    with load_client(tmp_path) as client:
+        document_id = _approved_document_with_fake_chat(client, monkeypatch)
+        url = f"/api/public/documents/{document_id}/chat"
+        body = {"message": "What is this about?"}
+
+        for ip in ("203.0.113.1", "203.0.113.2"):
+            assert client.post(url, json=body, headers={"CF-Connecting-IP": ip}).status_code == 200
+        blocked = client.post(url, json=body, headers={"CF-Connecting-IP": "203.0.113.3"})
+        assert blocked.status_code == 429
+
+
+def test_rate_limiter_allows_again_after_the_window(monkeypatch):
+    from app import rate_limit
+
+    clock = [1000.0]
+    monkeypatch.setattr(rate_limit.time, "monotonic", lambda: clock[0])
+    limiter = rate_limit.SlidingWindowLimiter(limit=1, window_seconds=60)
+
+    assert limiter.hit("a") is None
+    assert limiter.hit("a") is not None
+    clock[0] += 61
+    assert limiter.hit("a") is None
+    assert rate_limit.SlidingWindowLimiter(limit=0, window_seconds=60).hit("a") is None
