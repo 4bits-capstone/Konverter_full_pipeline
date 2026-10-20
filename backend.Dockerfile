@@ -20,15 +20,18 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 
 WORKDIR /app
 
-# Install the backend WITHOUT the docling extra. Copy manifest + app first so
-# this layer is cached and not rebuilt on every code change.
+# Install the exact, hash-checked dependency versions from the lockfile first
+# (cached until the lockfile changes), then the backend itself on top,
+# WITHOUT the docling extra and without re-resolving dependencies.
+COPY backend/requirements.lock /app/backend/requirements.lock
+RUN python -m pip install --no-cache-dir --require-hashes -r /app/backend/requirements.lock
 COPY backend/pyproject.toml /app/backend/pyproject.toml
 COPY backend/app /app/backend/app
-RUN python -m pip install --no-cache-dir -e "./backend"
+RUN python -m pip install --no-cache-dir --no-deps -e "./backend"
 
 # Runtime config defaults. Secrets/URLs are provided at run time, NOT baked in.
 ENV KONVERTER_DOCLING_MODE=remote \
-    KONVERTER_LOG_LEVEL=INFO \
+    KONVERTER_LOG_LEVEL=INFO     KONVERTER_API_DOCS=false \
     KONVERTER_DATA_DIR=/app/data \
     KONVERTER_CORS_ORIGINS=http://localhost:5173
 

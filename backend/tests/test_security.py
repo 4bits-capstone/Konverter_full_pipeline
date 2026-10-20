@@ -343,3 +343,17 @@ def test_source_pdf_requires_auth_before_approval_but_is_public_once_approved(tm
         client.app.dependency_overrides.pop(app_main.get_current_user, None)
         response = client.get(f"/api/documents/{document_id}/source")
         assert response.status_code == 200
+
+
+def test_api_docs_can_be_turned_off(tmp_path, monkeypatch):
+    monkeypatch.setenv("KONVERTER_API_DOCS", "false")
+    with load_client(tmp_path) as client:
+        for path in ("/docs", "/redoc", "/openapi.json"):
+            assert client.get(path).status_code == 404
+        assert client.get("/api/health").status_code == 200
+
+
+def test_api_docs_are_on_by_default_for_local_dev(tmp_path, monkeypatch):
+    monkeypatch.delenv("KONVERTER_API_DOCS", raising=False)
+    with load_client(tmp_path) as client:
+        assert client.get("/openapi.json").status_code == 200
