@@ -163,12 +163,24 @@ def _is_admin(user: dict) -> bool:
 
 
 def _require_owner(record: dict, user: dict) -> None:
-    """Documents uploaded before per-user scoping have no owner and stay
-    visible/actionable by everyone. 404 (not 403) so a non-owner can't tell
-    the document exists at all."""
+    """Only the uploader or an admin may act on a document. Documents
+    uploaded before per-user scoping have no owner, so they're admin-only.
+    404 (not 403) so a non-owner can't tell the document exists at all."""
     owner = record.get("uploaded_by")
-    if owner and owner != user.get("id") and not _is_admin(user):
+    if (not owner or owner != user.get("id")) and not _is_admin(user):
         raise HTTPException(status_code=404, detail="Document not found")
+
+
+def _require_published_or_owner(record: dict, user: dict | None) -> None:
+    """For files the approved, published export links to publicly (source
+    PDF, cover, figures): once approved anyone may fetch them, since the
+    visitor has no Supabase session. Before approval the document is still
+    in review, so only its owner (or an admin) may."""
+    if record.get("approved_at"):
+        return
+    if user is None:
+        raise HTTPException(status_code=401, detail="Not authenticated")
+    _require_owner(record, user)
 
 
 _LARGE_REVIEW_FIELDS = {"corrected_text", "corrected_table"}
@@ -276,14 +288,15 @@ def health() -> dict[str, str]:
 
 @app.get("/api/documents", response_model=list[DocumentSummary])
 def list_documents(user: CurrentUser) -> list[DocumentSummary]:
-    """List the caller's own documents (plus legacy documents uploaded before
-    per-user scoping, which have no recorded owner). This backs the normal
+    """List the caller's own documents. Legacy documents uploaded before
+    per-user scoping have no recorded owner and appear only in the admin
+    /api/documents/all view. This backs the normal
     upload/review/metadata/preview workflow — even for admins, whose personal
     workflow should behave the same as everyone else's. Admin oversight of
     every document lives only in the dedicated /api/documents/all endpoint."""
     records = [
         record for record in store.list_records()
-        if record.get("uploaded_by") in (None, user.get("id"))
+        if record.get("uploaded_by") == user.get("id")
     ]
     return [_summary(record) for record in records]
 
@@ -926,14 +939,9 @@ async def publish_to_wordpress(
 @app.get("/api/documents/{document_id}/source")
 def source_pdf(document_id: str, user: OptionalUser) -> FileResponse:
     record = _record(document_id)
-    # The published, approved export embeds this as a public "view original
-    # source" citation link — no Supabase session exists for that visitor.
-    # Before approval, the source is still in review and only its owner (or
-    # an admin) may fetch it.
-    if not record.get("approved_at"):
-        if user is None:
-            raise HTTPException(status_code=401, detail="Not authenticated")
-        _require_owner(record, user)
+    # The published export embeds this as a public "view original source"
+    # citation link.
+    _require_published_or_owner(record, user)
     return FileResponse(
         store.source_path(document_id),
         media_type="application/pdf",
@@ -1049,13 +1057,13 @@ def metadata_evidence(document_id: str, field_name: str, user: CurrentUser) -> F
 
 
 @app.get("/api/documents/{document_id}/figures/{image_key}.png")
-def figure_image(document_id: str, image_key: str) -> FileResponse:
-    _record(document_id)
+def figure_image(document_id: str, image_key: str, user: OptionalUser) -> FileResponse:
     if not image_key or any(
         character not in "abcdefghijklmnopqrstuvwxyz0123456789-"
         for character in image_key
     ):
         raise HTTPException(status_code=404, detail="Figure image not found")
+    _require_published_or_owner(_record(document_id), user)
     path = store.artifact_path(document_id, f"figure-{image_key}.png")
     if not path.is_file():
         raise HTTPException(status_code=404, detail="Figure image not found")
@@ -1068,8 +1076,8 @@ def figure_image(document_id: str, image_key: str) -> FileResponse:
 
 
 @app.get("/api/documents/{document_id}/cover")
-def cover(document_id: str) -> FileResponse:
-    _record(document_id)
+def cover(document_id: str, user: OptionalUser) -> FileResponse:
+    _require_published_or_owner(_record(document_id), user)
     path = store.cover_path(document_id)
     if not path.exists():
         _render_cover(store.source_path(document_id), path)
