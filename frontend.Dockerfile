@@ -31,14 +31,20 @@ RUN npm run build
 
 # ---- stage 2: serve ----
 FROM nginx:1.27-alpine
-# SPA routing: serve index.html for client-side routes
-RUN printf 'server {\n\
-  listen 80;\n\
-  location / {\n\
-    root /usr/share/nginx/html;\n\
-    try_files $uri $uri/ /index.html;\n\
-  }\n\
-}\n' > /etc/nginx/conf.d/default.conf
+# nginx config with security headers; the CSP names the API and Supabase
+# origins, taken from the same build args the app was built with.
+ARG VITE_API_BASE_URL=http://localhost:8000/api
+ARG VITE_SUPABASE_URL=https://placeholder.supabase.co
+COPY deploy/frontend/nginx.conf.template /tmp/nginx.conf.template
+RUN api_origin="$(echo "$VITE_API_BASE_URL" | sed -E 's#^(https?://[^/]+).*#\1#')" \
+ && supabase_origin="$(echo "$VITE_SUPABASE_URL" | sed -E 's#^(https?://[^/]+).*#\1#')" \
+ && supabase_ws_origin="$(echo "$supabase_origin" | sed -E 's#^http#ws#')" \
+ && sed -e "s#__API_ORIGIN__#$api_origin#g" \
+        -e "s#__SUPABASE_ORIGIN__#$supabase_origin#g" \
+        -e "s#__SUPABASE_WS_ORIGIN__#$supabase_ws_origin#g" \
+        /tmp/nginx.conf.template > /etc/nginx/conf.d/default.conf \
+ && rm /tmp/nginx.conf.template \
+ && nginx -t
 COPY --from=build /app/dist /usr/share/nginx/html
 EXPOSE 80
 CMD ["nginx", "-g", "daemon off;"]
