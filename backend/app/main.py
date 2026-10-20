@@ -96,6 +96,11 @@ app = FastAPI(
     version="0.2.0",
     description="Accessible document review and publishing pipeline",
     lifespan=lifespan,
+    # The interactive docs and schema are handy locally but hand anyone a map
+    # of the API, so the production image turns them off (KONVERTER_API_DOCS).
+    docs_url="/docs" if settings.api_docs_enabled else None,
+    redoc_url="/redoc" if settings.api_docs_enabled else None,
+    openapi_url="/openapi.json" if settings.api_docs_enabled else None,
 )
 app.add_middleware(
     CORSMiddleware,

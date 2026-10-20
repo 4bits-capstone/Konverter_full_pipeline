@@ -310,7 +310,7 @@ The three check jobs run **in parallel**:
 
 | Check name (as shown on the PR) | What it does | Fails when |
 |---|---|---|
-| **Backend tests** | Python 3.12, `pip install -e "./backend[dev]"`, then `python -m pytest` in `backend/` | Any pytest test fails, or the backend can't be installed |
+| **Backend tests** | Python 3.12, installs `backend/requirements-dev.lock`, runs `python -m pytest` in `backend/`, then `pip-audit` on `backend/requirements.lock` | Any pytest test fails, the backend can't be installed, or a production dependency has a known vulnerability |
 | **Frontend tests & build** | Node 20, `npm ci`, `npm test` (vitest), `npm run build` (TypeScript type-check + Vite build), then `npm run build:widget` and compares the result with the committed file | Any vitest test fails, a type error, a build error, or `backend/app/static/widget/` is out of date |
 | **Docker images build** | Builds `backend.Dockerfile` and `frontend.Dockerfile` (no push) | Either Dockerfile no longer builds |
 
