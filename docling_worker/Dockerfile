@@ -14,6 +14,12 @@ FROM nvidia/cuda:12.1.1-cudnn8-runtime-ubuntu22.04
 
 ENV DEBIAN_FRONTEND=noninteractive PYTHONUNBUFFERED=1
 
+# Runs as an unprivileged user. HOME is set before anything downloads, so
+# every model cache (Hugging Face, Docling, torch) lands under the worker's
+# home at build time and is found at the same path at run time.
+RUN useradd --create-home --uid 10001 --home-dir /home/worker worker
+ENV HOME=/home/worker
+
 RUN apt-get update && apt-get install -y --no-install-recommends \
         python3.11 python3.11-venv python3-pip \
         libgl1 libglib2.0-0 \
@@ -41,5 +47,10 @@ COPY docling_worker/handler.py /app/handler.py
 # Pre-download Docling models so there's no cold-start HF fetch.
 RUN python -m docling.cli.models download layout tableformer \
     || echo "WARN: model pre-download failed; will fetch at runtime"
+
+# Hand the pre-downloaded models (and room for any runtime fetch) to the
+# worker, then drop root for good. The handler only writes to a temp dir.
+RUN chown -R worker:worker /home/worker
+USER worker
 
 CMD ["python", "-u", "handler.py"]
