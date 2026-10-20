@@ -1,0 +1,24 @@
+# Frontend nginx config. frontend.Dockerfile fills in __API_ORIGIN__,
+# __SUPABASE_ORIGIN__ and __SUPABASE_WS_ORIGIN__ from the build args.
+server {
+  listen 80;
+  root /usr/share/nginx/html;
+
+  add_header X-Content-Type-Options "nosniff" always;
+  add_header Referrer-Policy "strict-origin-when-cross-origin" always;
+
+  # Enforced: safe for every page, including the preview iframe (an
+  # <iframe srcdoc> inherits this page's policy).
+  add_header Content-Security-Policy "frame-ancestors 'self'; object-src 'none'; base-uri 'self'" always;
+
+  # Report-only: the full policy. Browsers log violations to the console
+  # instead of blocking. Once a check of every screen shows none, move it
+  # into the enforced header above. 'unsafe-inline' scripts are needed by the
+  # accessible-HTML preview, which inherits this policy through srcdoc.
+  add_header Content-Security-Policy-Report-Only "default-src 'self'; script-src 'self' 'unsafe-inline' __API_ORIGIN__; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; font-src 'self' data: https://fonts.gstatic.com; img-src 'self' data: blob: __API_ORIGIN__; media-src 'self' blob:; connect-src 'self' __API_ORIGIN__ __SUPABASE_ORIGIN__ __SUPABASE_WS_ORIGIN__; frame-src 'self' blob:; object-src 'none'; base-uri 'self'; form-action 'self'; frame-ancestors 'self'" always;
+
+  # SPA routing: serve index.html for client-side routes
+  location / {
+    try_files $uri $uri/ /index.html;
+  }
+}
