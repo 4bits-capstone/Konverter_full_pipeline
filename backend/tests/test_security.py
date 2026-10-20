@@ -25,6 +25,10 @@ def test_path_traversal_in_document_id_is_rejected(tmp_path):
 def test_path_traversal_in_figure_and_evidence_names_is_rejected(tmp_path):
     with load_client(tmp_path) as client:
         document_id = upload_and_process(client)
+        # As the owner, so these exercise the name checks, not the auth gate.
+        client.app.dependency_overrides[app_main.get_current_user_optional] = (
+            lambda: {"id": "test-user"}
+        )
         # Figure keys only allow [a-z0-9-]; anything else must 404.
         for key in ("..%2frecord", "source", "..%5csource", "A%2e%2e"):
             response = client.get(f"/api/documents/{document_id}/figures/{key}.png")
@@ -357,3 +361,50 @@ def test_api_docs_are_on_by_default_for_local_dev(tmp_path, monkeypatch):
     monkeypatch.delenv("KONVERTER_API_DOCS", raising=False)
     with load_client(tmp_path) as client:
         assert client.get("/openapi.json").status_code == 200
+
+
+def test_ownerless_legacy_documents_are_admin_only(tmp_path):
+    with load_client(tmp_path) as client:
+        document_id = upload_and_process(client)
+        # Simulate a document uploaded before per-user scoping.
+        app_main.store.update_record(document_id, uploaded_by=None)
+
+        _override_user(client, "any-user", "any@example.test")
+        assert document_id not in [d["id"] for d in client.get("/api/documents").json()]
+        assert client.get(f"/api/documents/{document_id}").status_code == 404
+        assert client.get(f"/api/documents/{document_id}/review-items").status_code == 404
+        assert client.delete(f"/api/documents/{document_id}").status_code == 404
+
+        admin = {"id": "admin-user", "email": "admin@example.test", "app_metadata": {"role": "admin"}}
+        client.app.dependency_overrides[app_main.get_current_user] = lambda: admin
+        assert client.get(f"/api/documents/{document_id}").status_code == 200
+        assert document_id in [d["id"] for d in client.get("/api/documents/all").json()]
+
+
+def test_cover_and_figures_are_owner_only_until_approved(tmp_path):
+    """Like /source: the approved export links to these publicly, but a
+    document still in review must not leak its pages to anyone with the id."""
+    with load_client(tmp_path) as client:
+        document_id = upload_and_process(client)
+        app_main.store.artifact_path(document_id, "figure-one.png").write_bytes(b"png")
+        urls = (
+            f"/api/documents/{document_id}/cover",
+            f"/api/documents/{document_id}/figures/one.png",
+        )
+        optional = app_main.get_current_user_optional
+
+        for url in urls:
+            assert client.get(url).status_code == 401  # no session at all
+
+        client.app.dependency_overrides[optional] = lambda: {"id": "other-user"}
+        for url in urls:
+            assert client.get(url).status_code == 404  # not the owner
+
+        client.app.dependency_overrides[optional] = lambda: {"id": "test-user"}
+        assert client.get(urls[1]).status_code == 200  # the owner
+
+        client.app.dependency_overrides.pop(optional)
+        client.post(f"/api/documents/{document_id}/review-items/resolve-all")
+        confirm_metadata(client, document_id)
+        assert client.post(f"/api/documents/{document_id}/approval").status_code == 200
+        assert client.get(urls[1]).status_code == 200  # public once approved
