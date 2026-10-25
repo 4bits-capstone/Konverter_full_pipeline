@@ -78,6 +78,7 @@ describe('Konverter frontend', () => {
     expect(screen.getByText(/to be more efficient and effective\.$/)).toBeInTheDocument()
     expect(screen.queryByText(/remember me/i)).not.toBeInTheDocument()
     expect(screen.queryByText(/forgot password/i)).not.toBeInTheDocument()
+    expect(screen.getByRole('link', { name: 'Back to home' })).toHaveAttribute('href', '/')
   })
 
   it('keeps History in settings without an extra header button', async () => {

@@ -276,6 +276,18 @@ html:root {
   font-size: clamp(18px, 2.2vw, 24px);
 }
 
+.converter-app .login-home-link {
+  gap: 8px;
+  margin-top: 16px;
+  border-radius: 0;
+  text-decoration: none;
+}
+
+.converter-app .login-home-link svg {
+  width: 18px;
+  height: 18px;
+}
+
 @media (max-width: 840px) {
   .converter-app .converter-brand-inner {
     width: min(100% - 28px, 1160px);
