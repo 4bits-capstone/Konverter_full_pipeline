@@ -95,7 +95,10 @@ describe('MetadataPage', () => {
     expect(within(panel).getByText('18 June 2026')).toBeInTheDocument()
     expect(screen.queryByRole('textbox', { name: /Title/ })).not.toBeInTheDocument()
     expect(screen.getByRole('button', { name: /Open original page/ })).toBeInTheDocument()
-    expect(await screen.findByRole('img', { name: /Original PDF page .* evidence/ })).toBeInTheDocument()
+    // Published date is the default active field, so the page sheet highlights it.
+    const sheet = screen.getByRole('img', { name: /Source page \d+ with published date highlighted/ })
+    expect(within(sheet).getByText('18 June 2026')).toHaveClass('hl')
+    expect(within(sheet).getByText('Accessibility Standards Report')).not.toHaveClass('hl')
 
     fireEvent.click(screen.getAllByRole('button', { name: 'Edit' })[0])
 

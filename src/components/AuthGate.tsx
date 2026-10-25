@@ -8,7 +8,8 @@ import {
   type ReactNode,
 } from "react";
 import type { Session } from "@supabase/supabase-js";
-import { useLocation, useNavigate } from "react-router-dom";
+import { ArrowLeft } from "lucide-react";
+import { Link, useLocation, useNavigate } from "react-router-dom";
 import { supabase } from "../lib/supabaseClient";
 import { useKonverter } from "../state/KonverterContext";
 import "../styles/converter.css";
@@ -89,6 +90,10 @@ function LoginForm() {
                 {submitting ? "Signing in…" : "Sign in"}
               </button>
             </form>
+            <Link to="/" className="btn btn-ghost btn-block login-home-link">
+              <ArrowLeft aria-hidden="true" />
+              <span>Back to home</span>
+            </Link>
           </div>
         </div>
       </div>

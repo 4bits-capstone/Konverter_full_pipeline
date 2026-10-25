@@ -24,10 +24,7 @@ import {
 } from "../components/FieldFlags";
 import { emptyMetadata } from "../config/workflow";
 import { converterStagePath } from "../lib/converterRoutes";
-import {
-  openAuthenticatedDocument,
-  useAuthenticatedObjectUrl,
-} from "../lib/useAuthenticatedObjectUrl";
+import { openAuthenticatedDocument } from "../lib/useAuthenticatedObjectUrl";
 import {
   approvalService,
   metadataService,
@@ -187,7 +184,8 @@ export function MetadataPage() {
     setExtraValues({ publisher: [], jurisdiction: [], citations: [] });
   }, [metadataQuery.data, reset, setMetadata]);
 
-  const publishedDate = watch("publishedDate");
+  const watchedValues = watch();
+  const publishedDate = watchedValues.publishedDate;
 
   const onSubmit = async (values: MetadataForm) => {
     const withMultipleValues: DocumentMetadata = {
@@ -395,11 +393,17 @@ export function MetadataPage() {
     activeDocumentId ?? "",
     evidence.page,
   );
-  const evidenceImageUrl = publicationService.metadataEvidenceUrl(
-    activeDocumentId ?? "",
-    activeEvidence,
-  );
-  const evidenceCrop = useAuthenticatedObjectUrl(evidenceImageUrl);
+  // Live form values for the page sheet, so an edit shows up in the
+  // highlighted preview as the reviewer types.
+  const sheetValue = (field: MetadataField) =>
+    [
+      watchedValues[field] ?? "",
+      ...(isMultiple(field) ? extraValues[field] : []),
+    ]
+      .filter((value) => value.trim())
+      .join(" · ") || "Not set";
+  const sheetHighlight = (field: MetadataField) =>
+    activeEvidence === field ? "hl" : undefined;
 
   const renderField = (config: FieldConfig) => {
     const {
@@ -436,7 +440,7 @@ export function MetadataPage() {
         <div className="metadata-field-head">
           <label htmlFor={`metadata-${name}`}>
             {label}
-            {required && (
+            {required && editing && (
               <span className="req" aria-label="required">
                 *
               </span>
@@ -710,27 +714,39 @@ export function MetadataPage() {
                 {evidence.evidence}
                 <span className="src">↳ {evidence.source}</span>
               </div>
-              <div className="page-doc metadata-page-preview source-evidence-preview">
-                {evidenceCrop.src ? (
-                  <img
-                    src={evidenceCrop.src}
-                    alt={`Original PDF page ${evidence.page} containing ${evidenceLabel.toLowerCase()} evidence`}
-                    loading="lazy"
-                  />
-                ) : evidenceCrop.loading ? (
-                  <div className="source-evidence-loading" role="status">
-                    <LoaderCircle className="spinner-icon" aria-hidden="true" />
-                    Loading the matching source crop…
-                  </div>
-                ) : (
-                  <div className="source-evidence-fallback">
-                    <TriangleAlert aria-hidden="true" />
-                    <span>
-                      The original-page screenshot is unavailable. Open the PDF
-                      page to verify this field.
+              <div
+                className="page-doc metadata-page-preview"
+                role="img"
+                aria-label={`Source page ${evidence.page} with ${evidenceLabel.toLowerCase()} highlighted`}
+              >
+                <div className="page-sheet">
+                  <h4 className={sheetHighlight("publisher")}>
+                    {sheetValue("publisher")}
+                  </h4>
+                  <p style={{ fontSize: 13, color: "var(--ink)" }}>
+                    <b className={sheetHighlight("title")}>
+                      {sheetValue("title")}
+                    </b>
+                  </p>
+                  <p>
+                    Published{" "}
+                    <span className={sheetHighlight("publishedDate")}>
+                      {sheetValue("publishedDate")}
                     </span>
-                  </div>
-                )}
+                  </p>
+                  <p
+                    className={sheetHighlight("jurisdiction")}
+                    style={{ marginTop: 30, color: "#667080" }}
+                  >
+                    {sheetValue("jurisdiction")}
+                  </p>
+                  {activeEvidence === "citations" && (
+                    <p className="hl" style={{ marginTop: 20, fontSize: 9 }}>
+                      Suggested citation: {sheetValue("citations")}
+                    </p>
+                  )}
+                  <span className="page-num">Page {evidence.page}</span>
+                </div>
               </div>
             </div>
             <div className="banner banner-info">
