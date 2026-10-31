@@ -8,6 +8,7 @@ every piece repeats the heading path. Section IDs follow the benchmark's convent
 """
 from __future__ import annotations
 
+import itertools
 import re
 from dataclasses import dataclass, field
 from typing import Any, Iterator, Sequence
@@ -26,9 +27,13 @@ _CLAUSE = re.compile(r"^\((?:\d{1,3}[A-Z]{0,2}|[a-z]{1,4}|[A-Z]{1,2})\)\s")
 _STRUCTURE = re.compile(r"^(Part|Division|Subdivision|Schedule)\s+(\d+[A-Z]{0,2})\s*[—–-]", re.IGNORECASE)
 _RUNNING_HEADER = re.compile(r"\bAct \d{4} No\. \d+ of \d{4}\s*$")
 _HISTORY_NOTE = re.compile(r"^Ss?\.?\s*\d+[A-Z]{0,2}\b")
+# Margin notes ("S. 6A inserted by No. 61/2009 s. 9.") are laid out beside the text, so the text layer
+# interleaves them with the body, split over several lines. \s therefore also matches line breaks.
 _INLINE_NOTE = re.compile(
-    r"\bSs?\. ?\d+[A-Z]{0,2}(?:\([^)]*\))*(?: (?:def\.|pt\.|heading|[a-z]+) [^()]{0,60}?)? ?"
-    r"(?:inserted|substituted|amended|repealed|omitted|renumbered)\s?by\s+(?:No\.|Act)\s?\d+/\d{4}(?: ss?\. ?\d+[A-Z]{0,2}(?:\([^)]*\))*)?",
+    r"\b(?:Ss?|Sch)\.\s?\d+[A-Z]{0,2}(?:\s*(?:cl\.|item)\s*\d+[A-Z]{0,2})?(?:\s?\([^)]*\))*"
+    r"(?:\s*(?:def\.|pt\.|heading|[a-z]+)\s*[^()]{0,60}?)?\s*"
+    r"(?:inserted|substituted|amended|repealed|omitted|renumbered)\s*by\s+(?:Nos?\.?|Act)\s*\d+/\d{4}"
+    r"(?:\s*(?:,|and)?\s*(?:ss?\.\s?\d+[A-Z]{0,2}(?:\([^)]*\))*|\d+/\d{4}))*\.?",
     re.IGNORECASE,
 )
 _TERMINAL = (".", ";", ":", "—", "?", "!", ")")
@@ -493,11 +498,12 @@ def _rebuild_from_pdf(
             title += " " + block[k][1]
             k += 1
         unit = Unit(f"s-{label}", list(path), [Line("heading", _collapse(title), block[0][0])], text_source="pdf-text-layer")
-        for page, text, _ in block[k:]:
-            if _HISTORY_NOTE.match(text) and _INLINE_NOTE.search(text):
-                unit.notes.append(text)
-                continue
-            text = re.sub(r"\s{2,}", " ", _INLINE_NOTE.sub("", text)).strip()
+        body: list[tuple[int, str]] = []
+        for page, group in itertools.groupby(block[k:], key=lambda item: item[0]):
+            joined = "\n".join(text for _, text, _ in group)
+            unit.notes += [re.sub(r"\s+", " ", m.group(0)).strip() for m in _INLINE_NOTE.finditer(joined)]
+            body += [(page, line.strip()) for line in _INLINE_NOTE.sub("", joined).splitlines() if line.strip()]
+        for page, text in body:
             prev = unit.atoms[-1] if len(unit.atoms) > 1 else None
             if prev and not _CLAUSE.match(text) and not (prev.text.endswith(_TERMINAL) and text[:1].isupper()):
                 unit.atoms[-1] = Line(prev.kind, f"{prev.text} {text}", prev.page)

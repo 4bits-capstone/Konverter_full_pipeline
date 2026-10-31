@@ -151,6 +151,12 @@ chunks; all 20 gold sections present; second run embeds 0 and writes 0. Links: 4
 
 None blocking.
 
+### Known limit: margin notes in converter-sourced Act chunks
+
+The 16 PDF-rebuilt sections have their margin history notes stripped (they wrap over several lines in the text layer; the removed notes are kept in
+`metadata.history_notes`). About 8 converter-sourced Act chunks (s-3, s-5, s-18B, s-43, s-84A, sch1-2) still contain fragments of such notes, mostly in
+odd shapes inside tables. They are noise, not enacted text. Not fixed.
+
 ## Next: Phase 4
 
 Python `ask` (retrieve with filters and the optional one-hop `--links`, build prompt, DeepSeek call, JSON validation, force-abstain rules),
@@ -160,6 +166,12 @@ shared prompt file, n8n Ask workflow adapted from `konverter-rag-ask.json`, test
 
 - Add a "parent section" retrieval option as an eval setting: retrieve a paragraph, send its whole section to the LLM (median chunk is ~330 characters).
 - Curated links must never be derived from `questions.csv`; any future links need an independent source.
+- **Experiment: links from report footnotes.** The report body has 0 Act links, but its footnotes cite sections (fn 9 "Cemeteries and Crematoria Act 2003 (Vic)
+  s 77(1)(a)-(b)" -> `act:s-77`). Extract them from the footnote text in `structured.json` (`sections[].footnotes`), resolve them with the existing rule (the
+  Act must be named; the target must exist) and attach each link to the paragraph or section the footnote belongs to. The source is the document's own text,
+  not `questions.csv`, so it is allowed under the curated-links rule. This is the only way `--links` can help cross-document questions such as Q12. Open
+  detail: the converter does not record which paragraph a footnote is attached to; the marker numbers in the text are the only clue (footnote ids look like
+  `footnote-9-7`: number 9, page/chapter 7). Evaluate with and without. Q12 is marked `footnote-dependent` in the `notes` column so the report can group it.
 
 ## Test fixtures
 

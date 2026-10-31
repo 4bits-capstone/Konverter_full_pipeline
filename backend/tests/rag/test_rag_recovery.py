@@ -122,3 +122,13 @@ def test_repealed_sections_have_no_heading_in_the_pdf_and_are_not_invented():
     assert not any(i in ids for i in (f"act:s-{n}" for n in range(181, 186)))
     assert all("contains" not in c.metadata for c in report.chunks)
     assert any("repealed or omitted" in w and "181, 182, 183, 184, 185" in w for w in report.warnings)
+
+
+def test_margin_notes_split_over_several_lines_are_removed_from_rebuilt_text():
+    # In the PDF text layer "S. 6A inserted by No. 61/2009 s. 9." is interleaved with the body and
+    # wraps over four lines; one even lands in the middle of a sentence.
+    sections = by_section(chunk_document(ACT, structured("act_gap_s7"), pdf_pages=pdf_pages()).chunks)
+    six_b = sections["act:s-6B"][0]
+    assert "No. 61/2009" not in six_b.text and "S. 6" not in six_b.text
+    assert "taken to be a Class B cemetery trust unless this Act or any subsequent order" in six_b.text
+    assert "S. 6A insertedby No. 61/2009 s. 9." in " ".join(six_b.metadata["history_notes"])
