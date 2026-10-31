@@ -88,6 +88,8 @@ def _options(args: argparse.Namespace, settings) -> RetrievalOptions:
 def main(argv: list[str] | None = None) -> int:
     args = _parser().parse_args(argv)
     logging.basicConfig(level=logging.INFO, format="%(message)s")
+    for noisy in ("httpx", "httpcore"):      # one INFO line per request would drown the ingest summary
+        logging.getLogger(noisy).setLevel(logging.WARNING)
     try:
         settings = load_rag_settings()
         if args.command == "sql":
