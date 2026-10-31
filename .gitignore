@@ -13,3 +13,5 @@ __pycache__/
 coverage/
 .DS_Store
 CLAUDE.md
+docs/rag-inputs/samples/
+docs/rag-inputs/clme-rag-template.sanitized.json
