@@ -14,12 +14,12 @@ from pathlib import Path
 from typing import Any, Iterable, Sequence
 
 from .chunking import ChunkReport, chunk_document
-from .embeddings import Embedder
+from .embeddings import Embedder, EmbeddingError
 from .links import extract_links
 from .models import Chunk, DocumentInfo, Link, load_manifest
 from .pdftext import pdf_page_texts
 from .settings import RagSettings
-from .store import ExistingChunk, Store, chunk_row, link_rows, vector_literal
+from .store import ExistingChunk, Store, StoreError, chunk_row, link_rows, vector_literal
 
 log = logging.getLogger("konverter.rag.ingest")
 
@@ -97,19 +97,35 @@ def sync_document(
         return result
 
     by_id = {c.chunk_id: c for c in chunks}
-    if plan.embed:
-        vectors = embedder.embed([by_id[cid].embed_text for cid in plan.embed], "document")
-        store.upsert_chunks([
-            {**rows[cid], "embedding": vector_literal(vec), "embedding_model": f"{embedder.provider}:{embedder.model}",
-             "embedding_dim": embedder.dimension}
-            for cid, vec in zip(plan.embed, vectors)
-        ])
-    if plan.update_meta:
-        store.upsert_chunks([rows[cid] for cid in plan.update_meta])     # no embedding keys: stored vector is kept
+    stored = 0
+    try:
+        if plan.embed:
+            # Embed a batch, write it, then the next. A failure later (rate limit, timeout) loses at most one batch:
+            # everything already written is "unchanged" on the next run, so it is not embedded or paid for again.
+            texts = [by_id[cid].embed_text for cid in plan.embed]
+            groups = embedder.plan_batches(texts)
+            for number, group in enumerate(groups, 1):
+                ids = [plan.embed[index] for index in group]
+                vectors = embedder.embed([texts[index] for index in group], "document")
+                store.upsert_chunks([
+                    {**rows[cid], "embedding": vector_literal(vec), "embedding_model": f"{embedder.provider}:{embedder.model}",
+                     "embedding_dim": embedder.dimension}
+                    for cid, vec in zip(ids, vectors)
+                ])
+                stored += len(ids)
+                log.info("%s: embedded and stored batch %d/%d (%d/%d chunks)", result.key, number, len(groups), stored, len(plan.embed))
+        if plan.update_meta:
+            store.upsert_chunks([rows[cid] for cid in plan.update_meta])     # no embedding keys: stored vector is kept
+        if result.links_written:
+            store.replace_links(info.doc_id, version, wanted_links)
+    except (EmbeddingError, StoreError) as exc:
+        raise type(exc)(
+            f"{exc} — {stored} of {len(plan.embed)} new chunks of {result.key} were stored before this; "
+            f"run the same command again to continue (stored chunks are not embedded twice)"
+        ) from exc
+    # Only now, with every write done, remove chunks of sections that disappeared.
     if plan.delete:
-        store.delete_chunks(plan.delete)                                  # last, so a crash never loses searchable text
-    if result.links_written:
-        store.replace_links(info.doc_id, version, wanted_links)
+        store.delete_chunks(plan.delete)
 
     document_row = {
         "doc_id": info.doc_id, "version": version, "doc_type": info.doc_type, "title": info.title or None,

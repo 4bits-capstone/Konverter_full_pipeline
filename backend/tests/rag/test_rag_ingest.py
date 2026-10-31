@@ -253,3 +253,135 @@ def test_conversion_is_cached_by_pdf_hash(tmp_path, monkeypatch):
     assert load_or_convert(pdf, settings, reconvert=True)[1] == "converted" and len(calls) == 2
     pdf.write_bytes(b"%PDF-changed")                   # a changed file is a different cache key
     assert load_or_convert(pdf, settings)[1] == "converted" and len(calls) == 3
+
+
+# --- resilience: write each batch as soon as it is embedded; delete only at the very end ---------------
+
+import logging
+
+from app.rag.embeddings import EmbeddingError
+from app.rag.store import StoreError
+
+
+class FlakyEmbedder(HashEmbedder):
+    """Fails (like a Voyage 429 that outlasted its retries) on the n-th embed call."""
+
+    def __init__(self, fail_on=None, batch_size=2):
+        super().__init__(16, batch_size=batch_size)
+        self.fail_on, self.attempts = fail_on, 0
+
+    def embed(self, texts, input_type="document"):
+        self.attempts += 1
+        if self.attempts == self.fail_on:
+            raise EmbeddingError("voyage: HTTP 429: Rate limit reached (gave up after 8 attempts)")
+        return super().embed(texts, input_type)
+
+
+class FlakyStore(MemoryStore):
+    def __init__(self, fail_upsert_on=None, fail_links=False):
+        super().__init__()
+        self.fail_upsert_on, self.fail_links, self.upserts = fail_upsert_on, fail_links, 0
+
+    def upsert_chunks(self, rows):
+        self.upserts += 1
+        if self.upserts == self.fail_upsert_on:
+            raise StoreError("POST rag_chunks: request failed (WriteTimeout) after 5 attempts")
+        super().upsert_chunks(rows)
+
+    def replace_links(self, doc_id, version, rows):
+        if self.fail_links:
+            raise StoreError("POST rag_links: request failed (WriteTimeout) after 5 attempts")
+        super().replace_links(doc_id, version, rows)
+
+
+def act(version, sections, effective_from="2024-01-01", effective_to=None) -> Source:
+    """sections: [(number, title, text)] -> a small Act, one chunk per section."""
+    info = DocumentInfo(doc_id="act", doc_type="act", title="Test Act 2000", version=version, published="2024-01-01",
+                        effective_from=effective_from, effective_to=effective_to, file=f"act{version}.pdf")
+    blocks = [{"type": "heading", "level": 3, "text": "Part 1 — Preliminary", "page": 1}]
+    for number, title, text in sections:
+        blocks += [{"type": "heading", "level": 5, "text": f"{number} {title}", "page": number},
+                   {"type": "paragraph", "text": text, "page": number, "number": None}]
+    structured = {"publication": {"sections": [{"id": "document-body", "title": "Document", "page": 1, "blocks": blocks}]}}
+    return Source(f"act@{version}", info, structured, "unreviewed")
+
+
+def seven_sections(**kw):
+    names = ["Ledger register kept", "Plaque monument headstone", "Assignment conveyance price", "Levy tariff schedule",
+             "Inhumation plot burial", "Desecration vandalism offence", "Exhumation licence permit"]
+    sections = [(i + 1, f"Section {i + 1}", f"{names[i]} number {i + 1}. See section 1." if i else names[i]) for i in range(7)]
+    return act("038", sections, **kw)
+
+
+def test_a_rate_limited_run_keeps_the_batches_already_embedded_and_resumes_without_paying_twice():
+    store, first = MemoryStore(), FlakyEmbedder(fail_on=3)
+    with pytest.raises(EmbeddingError) as err:
+        ingest([seven_sections()], first, store, SETTINGS)
+    assert "4 of 7 new chunks of act@038 were stored" in str(err.value) and "run the same command again" in str(err.value)
+    assert len(store.chunks) == 4 and all(r["embedding"] for r in store.chunks.values())
+    assert ("act", "038") not in store.documents                       # the document row is the last thing written
+    second = FlakyEmbedder()
+    results = ingest([seven_sections()], second, store, SETTINGS)
+    assert second.texts_embedded == 3 and results[0].embedded == 3 and results[0].unchanged == 4
+    assert len(store.chunks) == 7 and ("act", "038") in store.documents
+    assert first.texts_embedded + second.texts_embedded == 7          # 4 + 3: nothing embedded twice
+    third = FlakyEmbedder()
+    ingest([seven_sections()], third, store, SETTINGS)
+    assert third.texts_embedded == 0
+
+
+def test_a_failed_database_write_loses_at_most_the_batch_in_flight():
+    store, first = FlakyStore(fail_upsert_on=3), FlakyEmbedder()
+    with pytest.raises(StoreError) as err:
+        ingest([seven_sections()], first, store, SETTINGS)
+    assert "WriteTimeout" in str(err.value) and "4 of 7 new chunks" in str(err.value)
+    assert len(store.chunks) == 4
+    assert first.texts_embedded == 6                                  # the third batch was embedded, but its write failed
+    second = FlakyEmbedder()
+    store.fail_upsert_on = None
+    ingest([seven_sections()], second, store, SETTINGS)
+    assert len(store.chunks) == 7 and second.texts_embedded == 3
+
+
+def vanishing_pair():
+    old = seven_sections()
+    new = seven_sections()
+    section = new.structured["publication"]["sections"][0]
+    blocks = section["blocks"]
+    # drop sections 6 and 7, change the text of 2 and 3, add section 8
+    keep = [b for b in blocks if not str(b.get("text", "")).startswith(("6 Section", "7 Section", "Desecration", "Exhumation"))]
+    for b in keep:
+        if b.get("text", "").startswith(("Plaque", "Assignment")):
+            b["text"] += " Amended."
+    keep += [{"type": "heading", "level": 5, "text": "8 Section 8", "page": 8}, {"type": "paragraph", "text": "Brand new clause.", "page": 8, "number": None}]
+    section["blocks"] = keep
+    return old, new
+
+
+def test_vanished_sections_are_deleted_only_after_every_write_succeeded():
+    old, new = vanishing_pair()
+    store = MemoryStore()
+    ingest([old], FlakyEmbedder(), store, SETTINGS)
+    assert {"act@038:s-6", "act@038:s-7"} <= set(store.chunks)
+    with pytest.raises(EmbeddingError):
+        ingest([new], FlakyEmbedder(fail_on=2), store, SETTINGS)
+    assert {"act@038:s-6", "act@038:s-7"} <= set(store.chunks), "nothing may be deleted while writes are still failing"
+    with pytest.raises(StoreError):
+        ingest([new], FlakyEmbedder(), FlakyStoreFrom(store, fail_links=True), SETTINGS)
+    assert {"act@038:s-6", "act@038:s-7"} <= set(store.chunks), "a failed links write must not trigger deletion either"
+    results = ingest([new], FlakyEmbedder(), store, SETTINGS)
+    assert not {"act@038:s-6", "act@038:s-7"} & set(store.chunks) and "act@038:s-8" in store.chunks
+    assert results[0].deleted == 2
+
+
+def FlakyStoreFrom(store: MemoryStore, fail_links: bool) -> FlakyStore:
+    flaky = FlakyStore(fail_links=fail_links)
+    flaky.chunks, flaky.documents, flaky.links = store.chunks, store.documents, store.links      # same data, failing links write
+    return flaky
+
+
+def test_progress_is_logged_per_batch(caplog):
+    with caplog.at_level(logging.INFO, logger="konverter.rag.ingest"):
+        ingest([seven_sections()], FlakyEmbedder(), MemoryStore(), SETTINGS)
+    messages = [r.getMessage() for r in caplog.records if "embedded and stored batch" in r.getMessage()]
+    assert messages[0].endswith("batch 1/4 (2/7 chunks)") and messages[-1].endswith("batch 4/4 (7/7 chunks)")

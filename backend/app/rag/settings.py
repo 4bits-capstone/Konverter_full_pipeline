@@ -28,6 +28,10 @@ class RagSettings:
     embed_model: str = "voyage-law-2"
     embed_dim: int = 1024
     embed_batch: int = 64
+    embed_batch_tokens: int = 30_000
+    embed_max_retries: int = 8
+    db_batch: int = 50
+    db_timeout: float = 60.0
     max_chars: int = 2500
     voyage_api_key: str = field(default="", repr=False)
     openai_api_key: str = field(default="", repr=False)
@@ -60,14 +64,20 @@ def load_rag_settings(env: Mapping[str, str] | None = None) -> RagSettings:
         dim = int(get("RAG_EMBED_DIM", "1024"))
         batch = int(get("RAG_EMBED_BATCH", "64"))
         top_k = int(get("RAG_TOP_K", "8"))
+        batch_tokens = int(get("RAG_EMBED_BATCH_TOKENS", "30000"))
+        max_retries = int(get("RAG_EMBED_MAX_RETRIES", "8"))
+        db_batch = int(get("RAG_DB_BATCH", "50"))
+        db_timeout = float(get("RAG_DB_TIMEOUT", "60"))
         min_similarity = float(get("RAG_MIN_SIMILARITY", "0.3"))
         max_chars = int(get("RAG_CHUNK_MAX_CHARS", "2500"))
     except ValueError as exc:
-        raise ConfigError("RAG_EMBED_DIM, RAG_EMBED_BATCH, RAG_CHUNK_MAX_CHARS and RAG_TOP_K must be integers, RAG_MIN_SIMILARITY a number") from exc
+        raise ConfigError("RAG_EMBED_DIM, RAG_EMBED_BATCH, RAG_CHUNK_MAX_CHARS and RAG_TOP_K, RAG_EMBED_BATCH_TOKENS, RAG_EMBED_MAX_RETRIES and RAG_DB_BATCH must be integers, RAG_MIN_SIMILARITY and RAG_DB_TIMEOUT numbers") from exc
     if not 1 <= dim <= 2000:
         raise ConfigError("RAG_EMBED_DIM must be between 1 and 2000 (the pgvector index limit)")
     if not 1 <= top_k <= 50 or not 0 <= min_similarity <= 1:
         raise ConfigError("RAG_TOP_K must be 1-50 and RAG_MIN_SIMILARITY between 0 and 1")
+    if batch_tokens < 1000 or max_retries < 1 or db_batch < 1 or db_timeout <= 0:
+        raise ConfigError("RAG_EMBED_BATCH_TOKENS must be >= 1000, RAG_EMBED_MAX_RETRIES and RAG_DB_BATCH >= 1, RAG_DB_TIMEOUT > 0")
     if batch < 1 or max_chars < 200:
         raise ConfigError("RAG_EMBED_BATCH must be >= 1 and RAG_CHUNK_MAX_CHARS >= 200")
     return RagSettings(
@@ -75,6 +85,10 @@ def load_rag_settings(env: Mapping[str, str] | None = None) -> RagSettings:
         embed_model=get("RAG_EMBED_MODEL", _DEFAULT_MODEL[provider]),
         embed_dim=dim,
         embed_batch=batch,
+        embed_batch_tokens=batch_tokens,
+        embed_max_retries=max_retries,
+        db_batch=db_batch,
+        db_timeout=db_timeout,
         max_chars=max_chars,
         voyage_api_key=get("VOYAGE_API_KEY"),
         openai_api_key=get("OPENAI_API_KEY"),

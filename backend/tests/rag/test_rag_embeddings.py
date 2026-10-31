@@ -1,10 +1,12 @@
 from __future__ import annotations
 
+import json
+
 import httpx
 import pytest
 
 from app.rag.embeddings import (
-    EmbeddingError, HashEmbedder, OpenAIEmbedder, VoyageEmbedder, build_embedder,
+    EmbeddingError, HashEmbedder, OpenAIEmbedder, VoyageEmbedder, build_embedder, estimate_tokens, plan_batches,
 )
 from app.rag.settings import ConfigError, RagSettings, load_rag_settings
 
@@ -155,3 +157,84 @@ def test_hash_embedder_is_deterministic_and_normalised():
     a, b = e.embed(["right of interment", "right of interment"])
     assert a == b and abs(sum(x * x for x in a) - 1.0) < 1e-9
     assert e.embed(["completely different words"])[0] != a
+
+
+# --- rate limits, timeouts, token-sized batches --------------------------------------------------------
+
+def test_a_429_without_retry_after_backs_off_longer_and_is_capped():
+    responses = [httpx.Response(429, json={}) for _ in range(7)] + [ok(1, 2)]
+    sleeps = []
+    e = VoyageEmbedder("m", 2, KEY, client=client(lambda r: responses.pop(0)), sleep=sleeps.append, max_attempts=8)
+    assert e.embed(["x"]) == [[0.0, 0.0]]
+    assert sleeps == [5.0, 10.0, 20.0, 40.0, 60.0, 60.0, 60.0]
+
+
+def test_retry_after_wins_and_is_capped_at_five_minutes():
+    responses = [httpx.Response(429, headers={"retry-after": "12"}, json={}),
+                 httpx.Response(429, headers={"retry-after": "99999"}, json={}), ok(1, 2)]
+    sleeps = []
+    VoyageEmbedder("m", 2, KEY, client=client(lambda r: responses.pop(0)), sleep=sleeps.append).embed(["x"])
+    assert sleeps == [12.0, 300.0]
+
+
+def test_persistent_rate_limiting_is_reported_with_the_attempt_count():
+    e = VoyageEmbedder("m", 2, KEY, client=client(lambda r: httpx.Response(429, json={"detail": "Rate limit reached"})),
+                       sleep=lambda s: None, max_attempts=3)
+    with pytest.raises(EmbeddingError, match=r"HTTP 429: Rate limit reached \(gave up after 3 attempts\)"):
+        e.embed(["x"])
+
+
+@pytest.mark.parametrize("exc", [httpx.ReadTimeout("t"), httpx.WriteTimeout("t"), httpx.ConnectTimeout("t"), httpx.ReadError("r")])
+def test_timeouts_and_resets_are_retried(exc):
+    outcomes = [exc]
+
+    def handler(request):
+        if outcomes:
+            raise outcomes.pop(0)
+        return ok(1, 2)
+
+    sleeps = []
+    assert VoyageEmbedder("m", 2, KEY, client=client(handler), sleep=sleeps.append).embed(["x"]) == [[0.0, 0.0]]
+    assert sleeps == [2.0]
+
+
+def test_the_default_client_has_explicit_timeouts():
+    t = VoyageEmbedder("m", 2, KEY).__dict__["_client"].timeout
+    assert (t.connect, t.write) == (10.0, 60.0) and t.read >= 60.0
+
+
+def test_batches_are_sized_by_estimated_tokens_as_well_as_count():
+    texts = ["a" * 300] * 10                                  # 100 tokens each
+    assert estimate_tokens("a" * 300) == 100
+    groups = plan_batches(texts, max_items=64, max_tokens=350)
+    assert [len(g) for g in groups] == [3, 3, 3, 1] and [i for g in groups for i in g] == list(range(10))
+    assert [len(g) for g in plan_batches(texts, max_items=4, max_tokens=10**6)] == [4, 4, 2]
+    assert plan_batches(["a" * 3000, "b", "c"], max_items=64, max_tokens=500) == [[0], [1, 2]]      # an oversize text rides alone
+    assert plan_batches([], 64, 1000) == []
+
+
+def test_embed_sends_one_request_per_token_batch_in_order_and_counts_provider_tokens():
+    seen = []
+
+    def handler(request):
+        batch = json.loads(request.content)["input"]
+        seen.append(batch)
+        return httpx.Response(200, json={"data": [{"index": i, "embedding": [float(len(t)), 0.0]} for i, t in enumerate(batch)],
+                                         "usage": {"total_tokens": 7}})
+
+    e = VoyageEmbedder("m", 2, KEY, batch_size=64, batch_tokens=1000, client=client(handler))
+    texts = ["x" * 1500, "y" * 1500, "z" * 1500, "w" * 30]           # 500 tokens each, last tiny
+    vectors = e.embed(texts)
+    assert [len(b) for b in seen] == [2, 2] and [v[0] for v in vectors] == [1500.0, 1500.0, 1500.0, 30.0]
+    assert e.calls == 2 and e.tokens == 14
+
+
+def test_batch_limits_come_from_settings():
+    s = RagSettings(voyage_api_key=KEY, embed_batch=5, embed_batch_tokens=2000, embed_max_retries=3)
+    e = build_embedder(s)
+    assert (e.batch_size, e.batch_tokens, e._attempts) == (5, 2000, 3)
+    c = load_rag_settings({"RAG_EMBED_BATCH_TOKENS": "5000", "RAG_EMBED_MAX_RETRIES": "10", "RAG_DB_BATCH": "25", "RAG_DB_TIMEOUT": "90"})
+    assert (c.embed_batch_tokens, c.embed_max_retries, c.db_batch, c.db_timeout) == (5000, 10, 25, 90.0)
+    for env in ({"RAG_EMBED_BATCH_TOKENS": "10"}, {"RAG_DB_BATCH": "0"}, {"RAG_DB_TIMEOUT": "0"}, {"RAG_EMBED_MAX_RETRIES": "0"}):
+        with pytest.raises(ConfigError):
+            load_rag_settings(env)

@@ -7,9 +7,11 @@ from __future__ import annotations
 
 import hashlib
 import json
+import logging
 import math
+import time
 from dataclasses import dataclass
-from typing import Any, Iterable, Protocol, Sequence
+from typing import Any, Callable, Iterable, Protocol, Sequence
 
 import httpx
 
@@ -17,6 +19,9 @@ from .models import Chunk, Link
 from .settings import ConfigError, RagSettings
 
 PAGE = 1000
+log = logging.getLogger("konverter.rag.store")
+_RETRY_STATUS = {408, 429, 500, 502, 503, 504, 520, 521, 522, 523, 524}   # 52x: Cloudflare in front of Supabase
+MAX_WAIT = 60.0
 
 
 class StoreError(RuntimeError):
@@ -37,7 +42,8 @@ class ExistingChunk:
 
 
 def vector_literal(vector: Sequence[float]) -> str:
-    return "[" + ",".join(repr(float(v)) for v in vector) + "]"
+    # pgvector stores float32, which 8 significant digits round-trip: half the bytes of repr() on a 1024-float vector.
+    return "[" + ",".join(format(float(v), ".8g") for v in vector) + "]"
 
 
 def chunk_row(chunk: Chunk, review_status: str) -> dict[str, Any]:
@@ -93,28 +99,48 @@ class Store(Protocol):
 # --------------------------------------------------------------------------------------------
 
 class SupabaseStore:
-    def __init__(self, settings: RagSettings, client: httpx.Client | None = None) -> None:
+    def __init__(self, settings: RagSettings, client: httpx.Client | None = None,
+                 sleep: Callable[[float], None] = time.sleep, max_attempts: int = 5) -> None:
         if not settings.supabase_url or not settings.supabase_key:
             raise ConfigError("SUPABASE_URL and SUPABASE_SERVICE_ROLE_KEY must be set")
+        self._batch = max(1, settings.db_batch)
+        self._sleep, self._attempts = sleep, max_attempts
         self._base = f"{settings.supabase_url.rstrip('/')}/rest/v1"
         self._headers = {"apikey": settings.supabase_key, "Authorization": f"Bearer {settings.supabase_key}"}
-        self._client = client or httpx.Client(timeout=60)
+        timeout = httpx.Timeout(connect=10.0, read=settings.db_timeout, write=settings.db_timeout, pool=10.0)
+        self._client = client or httpx.Client(timeout=timeout)
 
     def _request(self, method: str, path: str, *, params: dict | None = None, json_body: Any = None,
                  prefer: str | None = None, extra: dict[str, str] | None = None) -> httpx.Response:
         headers = {**self._headers, **(extra or {}), **({"Prefer": prefer} if prefer else {})}
-        try:
-            response = self._client.request(method, f"{self._base}/{path}", params=params, json=json_body, headers=headers)
-        except httpx.HTTPError as exc:
-            raise StoreError(f"{method} {path}: request failed ({type(exc).__name__})") from None
-        if response.status_code >= 400:
+        # Every call here is safe to repeat: reads, deletes by key, and upserts (merge-duplicates).
+        for attempt in range(1, self._attempts + 1):
             try:
-                detail = response.json()
-                message = detail.get("message") or detail.get("hint") or ""
-            except ValueError:
-                message = response.text
-            raise StoreError(f"{method} {path}: HTTP {response.status_code}: {str(message)[:200]}")
-        return response
+                response = self._client.request(method, f"{self._base}/{path}", params=params, json=json_body, headers=headers)
+            except httpx.TransportError as exc:               # timeouts, resets, DNS
+                if attempt == self._attempts:
+                    raise StoreError(f"{method} {path}: request failed ({type(exc).__name__}) after {attempt} attempts") from None
+                self._pause(attempt, None, f"{method} {path}: {type(exc).__name__}")
+                continue
+            if response.status_code in _RETRY_STATUS and attempt < self._attempts:
+                self._pause(attempt, response, f"{method} {path}: HTTP {response.status_code}")
+                continue
+            if response.status_code >= 400:
+                try:
+                    detail = response.json()
+                    message = detail.get("message") or detail.get("hint") or ""
+                except ValueError:
+                    message = response.text
+                tail = f" (gave up after {attempt} attempts)" if response.status_code in _RETRY_STATUS else ""
+                raise StoreError(f"{method} {path}: HTTP {response.status_code}: {str(message)[:200]}{tail}")
+            return response
+        raise StoreError(f"{method} {path}: gave up")  # pragma: no cover
+
+    def _pause(self, attempt: int, response: httpx.Response | None, what: str) -> None:
+        header = response.headers.get("retry-after", "") if response is not None else ""
+        wait = min(float(header), 300.0) if header.replace(".", "", 1).isdigit() else min(2.0 * 2 ** (attempt - 1), MAX_WAIT)
+        log.warning("%s, retrying in %.0fs (attempt %d/%d)", what, wait, attempt, self._attempts)
+        self._sleep(wait)
 
     def _select(self, table: str, params: dict[str, str]) -> list[dict[str, Any]]:
         rows: list[dict[str, Any]] = []
@@ -137,8 +163,8 @@ class SupabaseStore:
         return rows[0] if rows else None
 
     def upsert_chunks(self, rows: list[dict[str, Any]]) -> None:
-        for start in range(0, len(rows), 100):
-            self._request("POST", "rag_chunks", params={"on_conflict": "chunk_id"}, json_body=rows[start : start + 100],
+        for start in range(0, len(rows), self._batch):
+            self._request("POST", "rag_chunks", params={"on_conflict": "chunk_id"}, json_body=rows[start : start + self._batch],
                           prefer="resolution=merge-duplicates,return=minimal")
 
     def delete_chunks(self, chunk_ids: list[str]) -> None:
@@ -148,8 +174,10 @@ class SupabaseStore:
 
     def replace_links(self, doc_id: str, version: str, rows: list[dict[str, Any]]) -> None:
         self._request("DELETE", "rag_links", params={"doc_id": f"eq.{doc_id}", "version": f"eq.{version}"}, prefer="return=minimal")
-        for start in range(0, len(rows), 200):
-            self._request("POST", "rag_links", json_body=rows[start : start + 200], prefer="return=minimal")
+        for start in range(0, len(rows), self._batch):
+            # An upsert, so repeating a request that actually reached the server cannot fail on the primary key.
+            self._request("POST", "rag_links", params={"on_conflict": "doc_id,version,from_section,to_section,kind"},
+                          json_body=rows[start : start + self._batch], prefer="resolution=merge-duplicates,return=minimal")
 
     def upsert_document(self, row: dict[str, Any]) -> None:
         self._request("POST", "rag_documents", params={"on_conflict": "doc_id,version"}, json_body=[row],

@@ -187,6 +187,23 @@ pgvector 0.8 test (`test_rag_sql.py`, 11 tests including the real-Postgres one) 
 Not verified: the workflow has not been imported into a running n8n (node versions and credential wiring are the likely snags), and nothing has been run against live Voyage,
 DeepSeek or Supabase.
 
+## Ingest resilience (after the first real run failed with a Supabase WriteTimeout)
+
+Cause: `ingest` embedded every chunk first and wrote afterwards, and each upsert request carried 100 rows of 1024 floats written with 17 digits (about
+2 MB) against a flat 60 s timeout with no retry. A late failure threw away all the embedding spend.
+
+- **Write as you go**: each embedding batch is upserted as soon as it is embedded. On the next run those chunks are "unchanged" (same `content_hash`, same model,
+  same `row_hash`) and are neither embedded nor paid for again. A failure reports how many new chunks were stored and says to re-run the same command.
+- **Delete last**: chunks of vanished sections are removed only after every embedding, chunk write and links write has succeeded; the document row is written after that.
+  Tests fail the embedder (429) and the store (timeout, links write) in the middle and check nothing is deleted until a clean run.
+- **Store**: explicit `httpx.Timeout(connect 10 s, read/write RAG_DB_TIMEOUT, pool 10 s)`; retries with backoff (2, 4, 8 ... capped at 60 s, Retry-After honoured)
+  on timeouts, connection errors, 408/429/5xx and Cloudflare 52x; 4xx are not retried. Batch size `RAG_DB_BATCH` (default 50). Link inserts are now upserts so a
+  repeated request cannot fail on the primary key. Vectors are sent with 8 significant digits (float32 round-trips), about half the bytes.
+- **Voyage/OpenAI**: batches are cut by count (`RAG_EMBED_BATCH`) and estimated tokens (`RAG_EMBED_BATCH_TOKENS`, 3 characters per token, deliberately generous; an oversize text
+  goes alone). Up to `RAG_EMBED_MAX_RETRIES` (8) attempts: Retry-After if the server sends it (capped at 5 minutes), else 5, 10, 20, 40, 60 s after a 429 and 2, 4, 8 ... after
+  other errors. Timeouts and connection resets are retried too. The provider's token count is accumulated in `embedder.tokens`.
+- Each batch logs `embedded and stored batch i/n`.
+
 ## Decisions on links and eval (after Phase 3 review)
 
 - **History notes are never read as links.** Margin notes such as "S. 6A inserted by No. 61/2009 s. 9." cite sections of the AMENDING Act. `links.py`

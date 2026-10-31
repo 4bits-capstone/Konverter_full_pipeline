@@ -12,9 +12,10 @@ from app.rag.store import MemoryStore, StoreError, SupabaseStore, chunk_row, lin
 KEY = "service-role-SECRET-0987654321"
 
 
-def make_store(handler):
-    settings = RagSettings(supabase_url="https://x.supabase.co/", supabase_key=KEY)
-    return SupabaseStore(settings, httpx.Client(transport=httpx.MockTransport(handler)))
+def make_store(handler, sleeps=None, **settings_kw):
+    settings = RagSettings(supabase_url="https://x.supabase.co/", supabase_key=KEY, **settings_kw)
+    pauses = sleeps if sleeps is not None else []
+    return SupabaseStore(settings, httpx.Client(transport=httpx.MockTransport(handler)), sleep=pauses.append, max_attempts=4)
 
 
 def chunk(**kw) -> Chunk:
@@ -41,10 +42,16 @@ def test_row_carries_every_required_column_and_a_stable_row_hash():
 
 
 def test_vector_literal_is_pgvector_text():
-    assert vector_literal([1, 0.5, -2.25]) == "[1.0,0.5,-2.25]"
+    assert vector_literal([1, 0.5, -2.25]) == "[1,0.5,-2.25]"
+    # compact: 8 significant digits round-trip float32, about half the bytes of repr()
+    v = [0.1234567890123, 1 / 3, -2.5e-07]
+    assert vector_literal(v) == "[0.12345679,0.33333333,-2.5e-07]"
+    import struct
+    assert all(struct.unpack("f", struct.pack("f", float(t)))[0] == struct.unpack("f", struct.pack("f", x))[0]
+               for t, x in zip(vector_literal(v).strip("[]").split(","), v))
 
 
-def test_upsert_merges_in_batches_of_100_with_the_key_in_headers_only():
+def test_upsert_merges_in_batches_with_the_key_in_headers_only():
     requests = []
 
     def handler(request):
@@ -53,12 +60,85 @@ def test_upsert_merges_in_batches_of_100_with_the_key_in_headers_only():
 
     store = make_store(handler)
     store.upsert_chunks([{"chunk_id": f"c{i}"} for i in range(250)])
-    assert len(requests) == 3
+    assert len(requests) == 5                                   # default RAG_DB_BATCH is 50
     r = requests[0]
     assert r.method == "POST" and str(r.url) == "https://x.supabase.co/rest/v1/rag_chunks?on_conflict=chunk_id"
     assert r.headers["prefer"] == "resolution=merge-duplicates,return=minimal"
     assert r.headers["apikey"] == KEY and r.headers["authorization"] == f"Bearer {KEY}"
     assert KEY not in r.content.decode() and KEY not in str(r.url)
+
+
+def test_the_batch_size_is_configurable():
+    requests = []
+    make_store(lambda r: (requests.append(json.loads(r.content)), httpx.Response(201))[1], db_batch=2).upsert_chunks(
+        [{"chunk_id": f"c{i}"} for i in range(5)])
+    assert [len(r) for r in requests] == [2, 2, 1]
+
+
+def test_the_client_has_explicit_timeouts():
+    store = SupabaseStore(RagSettings(supabase_url="https://x.supabase.co", supabase_key=KEY, db_timeout=45))
+    t = store._client.timeout
+    assert (t.connect, t.read, t.write, t.pool) == (10.0, 45.0, 45.0, 10.0)
+
+
+def test_a_write_timeout_is_retried_with_backoff_then_succeeds():
+    outcomes = [httpx.WriteTimeout("slow"), httpx.WriteTimeout("slow")]
+    calls, pauses = [], []
+
+    def handler(request):
+        calls.append(1)
+        if outcomes:
+            raise outcomes.pop(0)
+        return httpx.Response(201)
+
+    make_store(handler, pauses).upsert_chunks([{"chunk_id": "c1"}])
+    assert len(calls) == 3 and pauses == [2.0, 4.0]
+
+
+def test_giving_up_names_the_error_and_the_attempts_without_the_key():
+    def handler(request):
+        raise httpx.WriteTimeout("slow", request=request)
+
+    pauses = []
+    with pytest.raises(StoreError) as err:
+        make_store(handler, pauses).upsert_chunks([{"chunk_id": "c1"}])
+    assert "POST rag_chunks: request failed (WriteTimeout) after 4 attempts" in str(err.value) and KEY not in str(err.value)
+    assert pauses == [2.0, 4.0, 8.0]
+
+
+@pytest.mark.parametrize("status", [429, 500, 502, 503, 504, 522])
+def test_server_side_errors_are_retried(status):
+    responses = [httpx.Response(status, json={"message": "busy"}), httpx.Response(201)]
+    pauses = []
+    make_store(lambda r: responses.pop(0), pauses).upsert_chunks([{"chunk_id": "c1"}])
+    assert pauses == [2.0] and not responses
+
+
+def test_retry_after_is_honoured():
+    responses = [httpx.Response(429, headers={"retry-after": "7"}, json={}), httpx.Response(201)]
+    pauses = []
+    make_store(lambda r: responses.pop(0), pauses).upsert_chunks([{"chunk_id": "c1"}])
+    assert pauses == [7.0]
+
+
+def test_persistent_server_errors_report_the_attempts():
+    with pytest.raises(StoreError, match=r"HTTP 503: busy \(gave up after 4 attempts\)"):
+        make_store(lambda r: httpx.Response(503, json={"message": "busy"})).upsert_chunks([{"chunk_id": "c1"}])
+
+
+def test_client_errors_are_not_retried():
+    calls = []
+    with pytest.raises(StoreError, match="HTTP 400"):
+        make_store(lambda r: (calls.append(1), httpx.Response(400, json={"message": "bad column"}))[1]).upsert_chunks([{"chunk_id": "c1"}])
+    assert len(calls) == 1
+
+
+def test_link_inserts_are_idempotent_upserts():
+    seen = []
+    make_store(lambda r: (seen.append((r.method, dict(r.url.params), r.headers.get("prefer"))), httpx.Response(201))[1]).replace_links(
+        "act", "038", [{"doc_id": "act", "version": "038", "from_section": "a", "to_section": "b", "kind": "refers_to"}])
+    assert seen[0][0] == "DELETE"
+    assert seen[1][1] == {"on_conflict": "doc_id,version,from_section,to_section,kind"} and "merge-duplicates" in seen[1][2]
 
 
 def test_existing_chunks_follow_pagination():
