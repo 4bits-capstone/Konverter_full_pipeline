@@ -6,7 +6,7 @@
   ingest --from-structured FILE --as KEY [--pdf PDF]   stored structured.json (no Docling needed)
   ask "<question>" [--doc ID] [--as-of YYYY-MM-DD] [--links] [-k N]   answer with citations and the retrieved chunks
   index [--status|--create|--drop]   the optional HNSW index (off by default; drop it for bulk ingests, rebuild once at the end)
-  n8n-export                   regenerate rag/n8n/konverter-rag-ask.json (the system prompt comes from prompts/answer_system.txt)
+  n8n-export [--from-env]      regenerate the n8n Ask workflow (prompt from prompts/answer_system.txt; --from-env copies your model/size settings into it)
   eval [--questions eval/questions.csv] [--out eval/results.jsonl] [--setup NAME] [--links]   run every question through ask
 
 Secrets come from the environment (see .env.example); they are never printed.
@@ -63,7 +63,11 @@ def _parser() -> argparse.ArgumentParser:
     mode.add_argument("--create", action="store_true", help="build the index (pgvector >= 0.8 only)")
     mode.add_argument("--drop", action="store_true", help="drop the index (before a bulk ingest)")
 
-    sub.add_parser("n8n-export", help="regenerate rag/n8n/konverter-rag-ask.json from the template and the shared prompt")
+    ex = sub.add_parser("n8n-export", help="regenerate the n8n Ask workflow from the template and the shared prompt")
+    ex.add_argument("--from-env", action="store_true",
+                    help="fill the Config node from your environment (model, sizes, URLs) so n8n matches Python; writes the gitignored "
+                         "rag/n8n/konverter-rag-ask.local.json unless --out is given")
+    ex.add_argument("--out", type=Path, help="output file (default: the committed export, or the .local file with --from-env)")
 
     ev = sub.add_parser("eval", help="run questions.csv through ask")
     ev.add_argument("--questions", type=Path, default=Path("eval/questions.csv"))
@@ -103,10 +107,14 @@ def main(argv: list[str] | None = None) -> int:
             print(render_sql(args.dim or settings.embed_dim))
             return 0
         if args.command == "n8n-export":
-            from .n8n import EXPORT, export_text
+            from .n8n import EXPORT, LOCAL_EXPORT, config_from_settings, export_text
 
-            EXPORT.write_text(export_text(), encoding="utf-8")
-            print(f"wrote {EXPORT}")
+            config = config_from_settings(settings) if args.from_env else None
+            out = args.out or (LOCAL_EXPORT if args.from_env else EXPORT)
+            out.write_text(export_text(config), encoding="utf-8")
+            print(f"wrote {out}")
+            if config:
+                print("Config node set to: " + ", ".join(f"{k}={v}" for k, v in config.items() if k != "supabase_url"))
             return 0
         if args.command == "index":
             return _index(args, settings)

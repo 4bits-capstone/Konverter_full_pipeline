@@ -199,6 +199,7 @@ def test_eval_lines_are_what_score_py_reads(tmp_path):
     lines = [json.loads(l) for l in out.read_text().splitlines()]
     assert {"question_id", "setup", "retrieved", "answer", "abstained", "latency_ms"} <= set(lines[0])
     assert lines[0]["retrieved"][0] == "act:s-2" and lines[0]["setup"] == "vector"
+    assert lines[0]["model"] == "deepseek-chat"                                  # so runs on different models are never mixed up
     assert lines[1]["retrieved"] and lines[1]["used"] == [] and lines[1]["abstained"] is True      # ranked before the floor, none passed it
     assert lines[1]["top_similarity"] is not None
     score = load_score()

@@ -262,3 +262,64 @@ def test_request_validation_in_the_workflow():
     assert norm({})["error"] == "question is required"
     assert "as_of_date" in norm({"question": "q", "as_of_date": "01/02/2025"})["error"]
     assert "meta_filter" in norm({"question": "q", "meta_filter": {"x": {"y": 1}}})["error"]
+
+
+# --- keeping the Config node equal to the environment (one model for Python and n8n) ----------------------
+
+def config_of(workflow):
+    node = next(n for n in workflow["nodes"] if n["name"] == "Config")
+    return {a["name"]: a["value"] for a in node["parameters"]["assignments"]["assignments"]}
+
+
+def test_the_config_node_can_be_filled_from_the_environment():
+    from app.rag.settings import load_rag_settings
+
+    settings = load_rag_settings({"RAG_LLM_MODEL": "deepseek-flash", "RAG_EMBED_MODEL": "voyage-3-large", "RAG_TOP_K": "5",
+                                  "DEEPSEEK_BASE_URL": "https://llm.example/", "SUPABASE_URL": "https://abc.supabase.co/"})
+    workflow = n8n_module.render_workflow(config=n8n_module.config_from_settings(settings))
+    cfg = config_of(workflow)
+    assert (cfg["llm_model"], cfg["embed_model"], cfg["top_k"]) == ("deepseek-flash", "voyage-3-large", 5)
+    assert cfg["llm_url"] == "https://llm.example/chat/completions" and cfg["supabase_url"] == "https://abc.supabase.co"
+    # nothing else moved: the prompt and the code are the generated ones
+    assert js_of(workflow, "Build prompt") == js("Build prompt")
+    # and the committed export is untouched by this
+    assert config_of(WORKFLOW)["llm_model"] == "deepseek-chat" and n8n_module.EXPORT.read_text(encoding="utf-8") == n8n_module.export_text()
+
+
+def test_only_settings_that_are_not_secret_reach_the_config():
+    from app.rag.settings import load_rag_settings
+
+    keys = {"VOYAGE_API_KEY": "voy-SECRET-111", "OPENAI_API_KEY": "oa-SECRET-222", "DEEPSEEK_API_KEY": "ds-SECRET-333",
+            "SUPABASE_SERVICE_ROLE_KEY": "sb-SECRET-444"}
+    config = n8n_module.config_from_settings(load_rag_settings(keys))
+    assert "SECRET" not in json.dumps(config) and "SECRET" not in n8n_module.export_text(config)
+
+
+def test_an_unknown_config_field_is_an_error():
+    with pytest.raises(ValueError, match="no field"):
+        n8n_module.render_workflow(config={"not_a_field": 1})
+
+
+def js_of(workflow, name):
+    return next(n for n in workflow["nodes"] if n["name"] == name)["parameters"]["jsCode"]
+
+
+def test_cli_from_env_writes_a_local_file_with_the_pythons_model(tmp_path, monkeypatch, capsys):
+    from app.rag import cli
+
+    monkeypatch.setenv("RAG_LLM_MODEL", "deepseek-flash")
+    monkeypatch.setenv("VOYAGE_API_KEY", "voy-SECRET-111")
+    out = tmp_path / "wf.json"
+    assert cli.main(["n8n-export", "--from-env", "--out", str(out)]) == 0
+    text = out.read_text(encoding="utf-8")
+    assert config_of(json.loads(text))["llm_model"] == "deepseek-flash" and "SECRET" not in text
+    assert "llm_model=deepseek-flash" in capsys.readouterr().out
+    assert n8n_module.LOCAL_EXPORT.name.endswith(".local.json")
+    # the default (no --from-env) is still the committed, environment-independent export
+    assert cli.main(["n8n-export", "--out", str(tmp_path / "plain.json")]) == 0
+    assert (tmp_path / "plain.json").read_text(encoding="utf-8") == n8n_module.EXPORT.read_text(encoding="utf-8")
+
+
+def test_the_local_export_is_gitignored():
+    ignore = (n8n_module.N8N_DIR.parents[1] / ".gitignore").read_text(encoding="utf-8")
+    assert "rag/n8n/*.local.json" in ignore

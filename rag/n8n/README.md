@@ -40,6 +40,11 @@ Edit the prompt only in `answer_system.txt`.
    | `llm_url`, `llm_model`, `llm_max_tokens` | DeepSeek chat completions endpoint and model (defaults match `DEEPSEEK_BASE_URL`, `RAG_LLM_MODEL`) |
    | `top_k`, `min_similarity` | Default number of chunks, and the similarity floor (`RAG_TOP_K`, `RAG_MIN_SIMILARITY`) |
 
+   **Keep Python and n8n on the same models.** The Config node and your `.env` are two places that hold the same settings (for example `RAG_LLM_MODEL`
+   against `llm_model`). To copy yours into the workflow instead of typing them: `python -m app.rag n8n-export --from-env` writes
+   `rag/n8n/konverter-rag-ask.local.json` (gitignored; model names, sizes and URLs only, never a key) and you import that file. Every answer
+   carries `model`, and `eval` writes it on each line, so a comparison of the two can be checked.
+
 5. **Activate** and call it:
 
    ```bash

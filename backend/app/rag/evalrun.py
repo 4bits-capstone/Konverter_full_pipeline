@@ -34,7 +34,7 @@ def run_eval(questions: Iterable[dict[str, str]], embedder: Embedder, store: Sto
             "question_id": q["id"], "setup": setup, "category": q.get("category"),
             "retrieved": ranked_sections(result), "used": result["retrieved"],
             "answer": result["answer"], "citations": result["citations"], "abstained": result["abstained"],
-            "abstain_reason": result.get("abstain_reason"), "latency_ms": result["latency_ms"],
+            "abstain_reason": result.get("abstain_reason"), "latency_ms": result["latency_ms"], "model": result.get("model"),
             "top_similarity": next((r["similarity"] for r in ranked if r["similarity"] is not None), None),
             **({"error": result["error"]} if result.get("error") else {}),
         }
