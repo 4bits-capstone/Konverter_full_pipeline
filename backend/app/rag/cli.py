@@ -181,6 +181,8 @@ def _ingest(args: argparse.Namespace, settings) -> int:
     embedder, store = build_embedder(settings), SupabaseStore(settings)
     for result in ingest(sources, embedder, store, settings, args.dry_run):
         print(("[dry run] " if args.dry_run else "") + result.line())
+        if result.timing():
+            print("  " + result.timing())
         for warning in result.warnings:
             print(f"  warning: {warning}", file=sys.stderr)
     print(f"embedding calls: {embedder.calls}, texts embedded: {embedder.texts_embedded} "

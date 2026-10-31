@@ -380,8 +380,17 @@ def FlakyStoreFrom(store: MemoryStore, fail_links: bool) -> FlakyStore:
     return flaky
 
 
-def test_progress_is_logged_per_batch(caplog):
+def test_progress_and_timing_are_logged_per_batch(caplog, monkeypatch):
+    ticks = iter(x * 0.5 for x in range(1000))              # every clock read advances half a second
+    monkeypatch.setattr(ingest_module, "_clock", lambda: next(ticks))
+    store = MemoryStore()
     with caplog.at_level(logging.INFO, logger="konverter.rag.ingest"):
-        ingest([seven_sections()], FlakyEmbedder(), MemoryStore(), SETTINGS)
-    messages = [r.getMessage() for r in caplog.records if "embedded and stored batch" in r.getMessage()]
-    assert messages[0].endswith("batch 1/4 (2/7 chunks)") and messages[-1].endswith("batch 4/4 (7/7 chunks)")
+        results = ingest([seven_sections()], FlakyEmbedder(), store, SETTINGS)
+    messages = [r.getMessage() for r in caplog.records if ": batch " in r.getMessage()]
+    assert len(messages) == 4
+    assert "batch 1/4 (2/7 chunks): embed 0.5s, upload 0.5s (" in messages[0] and " MB)" in messages[0]
+    assert "batch 4/4 (7/7 chunks)" in messages[-1]
+    r = results[0]
+    assert r.embed_seconds == pytest.approx(2.0) and r.upload_seconds == pytest.approx(2.0) and r.uploaded_bytes > 0
+    assert "embedding 2.0s, upload 2.0s" in r.timing() and "MB of chunk rows" in r.timing()
+    assert results[0].line() and ingest([seven_sections()], FlakyEmbedder(), store, SETTINGS)[0].timing() == ""     # nothing uploaded: no timing line

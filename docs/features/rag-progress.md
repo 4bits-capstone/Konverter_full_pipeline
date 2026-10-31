@@ -198,11 +198,15 @@ Cause: `ingest` embedded every chunk first and wrote afterwards, and each upsert
   Tests fail the embedder (429) and the store (timeout, links write) in the middle and check nothing is deleted until a clean run.
 - **Store**: explicit `httpx.Timeout(connect 10 s, read/write RAG_DB_TIMEOUT, pool 10 s)`; retries with backoff (2, 4, 8 ... capped at 60 s, Retry-After honoured)
   on timeouts, connection errors, 408/429/5xx and Cloudflare 52x; 4xx are not retried. Batch size `RAG_DB_BATCH` (default 50). Link inserts are now upserts so a
-  repeated request cannot fail on the primary key. Vectors are sent with 8 significant digits (float32 round-trips), about half the bytes.
+  repeated request cannot fail on the primary key. Vectors are sent compactly (see below).
 - **Voyage/OpenAI**: batches are cut by count (`RAG_EMBED_BATCH`) and estimated tokens (`RAG_EMBED_BATCH_TOKENS`, 3 characters per token, deliberately generous; an oversize text
   goes alone). Up to `RAG_EMBED_MAX_RETRIES` (8) attempts: Retry-After if the server sends it (capped at 5 minutes), else 5, 10, 20, 40, 60 s after a 429 and 2, 4, 8 ... after
   other errors. Timeouts and connection resets are retried too. The provider's token count is accumulated in `embedder.tokens`.
-- Each batch logs `embedded and stored batch i/n`.
+- Each batch logs `batch i/n (done/total chunks): embed Xs, upload Ys (Z MB)`, and the CLI prints a per-document `embedding Xs, upload Ys (N MB of chunk rows)` line.
+- **Vector serialisation (corrected).** pgvector stores float32. A first version used 8 significant digits on the claim that they round-trip float32; that was wrong
+  (measured on 200,000 Gaussian components: 6 digits change 97% of the stored values, 7 digits 69%, 8 digits 12%, 9 digits 1.2%; a float32 needs up to 9). Each
+  component is now converted to float32 and sent as the shortest decimal that parses back to exactly that float32: 0 differences in 60,000 random components of mixed magnitude
+  (test), 11.4 characters per component on average against 20.2 for `repr` (about 44% smaller). Rounding to a fixed width would have been smaller by only 6% and lossy.
 
 ## Decisions on links and eval (after Phase 3 review)
 

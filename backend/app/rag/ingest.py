@@ -9,6 +9,7 @@ from __future__ import annotations
 import hashlib
 import json
 import logging
+import time
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Iterable, Sequence
@@ -22,6 +23,7 @@ from .settings import RagSettings
 from .store import ExistingChunk, Store, StoreError, chunk_row, link_rows, vector_literal
 
 log = logging.getLogger("konverter.rag.ingest")
+_clock = time.perf_counter      # replaced in tests
 
 
 @dataclass
@@ -34,12 +36,21 @@ class SyncResult:
     deleted: int = 0
     links: int = 0
     links_written: bool = False
+    embed_seconds: float = 0.0
+    upload_seconds: float = 0.0
+    uploaded_bytes: int = 0
     warnings: list[str] = field(default_factory=list)
 
     def line(self) -> str:
         return (f"{self.key}: {self.chunks} chunks — embedded {self.embedded}, metadata-updated {self.metadata_updated}, "
                 f"unchanged {self.unchanged}, deleted {self.deleted}; {self.links} links"
                 f"{'' if self.links_written else ' (unchanged)'}")
+
+    def timing(self) -> str:
+        if not (self.embed_seconds or self.upload_seconds):
+            return ""
+        return (f"{self.key}: embedding {self.embed_seconds:.1f}s, upload {self.upload_seconds:.1f}s "
+                f"({self.uploaded_bytes / 1e6:.1f} MB of chunk rows)")
 
 
 @dataclass
@@ -106,14 +117,23 @@ def sync_document(
             groups = embedder.plan_batches(texts)
             for number, group in enumerate(groups, 1):
                 ids = [plan.embed[index] for index in group]
+                t0 = _clock()
                 vectors = embedder.embed([texts[index] for index in group], "document")
-                store.upsert_chunks([
+                t1 = _clock()
+                batch_rows = [
                     {**rows[cid], "embedding": vector_literal(vec), "embedding_model": f"{embedder.provider}:{embedder.model}",
                      "embedding_dim": embedder.dimension}
                     for cid, vec in zip(ids, vectors)
-                ])
+                ]
+                size = len(json.dumps(batch_rows, separators=(",", ":")).encode())
+                store.upsert_chunks(batch_rows)
+                t2 = _clock()
                 stored += len(ids)
-                log.info("%s: embedded and stored batch %d/%d (%d/%d chunks)", result.key, number, len(groups), stored, len(plan.embed))
+                result.embed_seconds += t1 - t0
+                result.upload_seconds += t2 - t1
+                result.uploaded_bytes += size
+                log.info("%s: batch %d/%d (%d/%d chunks): embed %.1fs, upload %.1fs (%.2f MB)",
+                         result.key, number, len(groups), stored, len(plan.embed), t1 - t0, t2 - t1, size / 1e6)
         if plan.update_meta:
             store.upsert_chunks([rows[cid] for cid in plan.update_meta])     # no embedding keys: stored vector is kept
         if result.links_written:

@@ -9,6 +9,7 @@ import hashlib
 import json
 import logging
 import math
+import struct
 import time
 from dataclasses import dataclass
 from typing import Any, Callable, Iterable, Protocol, Sequence
@@ -41,9 +42,32 @@ class ExistingChunk:
         return f"{self.embedding_model}:{self.embedding_dim}" if self.embedding_model else None
 
 
+_F32 = struct.Struct("f")
+
+
+def _float32(x: float) -> float:
+    return _F32.unpack(_F32.pack(x))[0]
+
+
+def _component(x: float) -> str:
+    """The shortest decimal that pgvector will store as exactly float32(x).
+
+    pgvector keeps float32. Sending 17 digits is wasteful, but so is guessing a fixed width: 7 significant
+    digits would change about 69% of the stored values and 8 about 12% (a float32 needs up to 9). So convert
+    to float32 first, then take the shortest string that parses back to that same float32.
+    """
+    if not math.isfinite(x):
+        raise ValueError("embedding contains a non-finite value")
+    f = _float32(float(x))
+    for digits in range(1, 10):
+        text = format(f, f".{digits}g")
+        if _float32(float(text)) == f:
+            return text
+    return format(f, ".9g")
+
+
 def vector_literal(vector: Sequence[float]) -> str:
-    # pgvector stores float32, which 8 significant digits round-trip: half the bytes of repr() on a 1024-float vector.
-    return "[" + ",".join(format(float(v), ".8g") for v in vector) + "]"
+    return "[" + ",".join(_component(v) for v in vector) + "]"
 
 
 def chunk_row(chunk: Chunk, review_status: str) -> dict[str, Any]:

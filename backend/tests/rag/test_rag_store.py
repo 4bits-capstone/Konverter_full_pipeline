@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import json
+import random
+import struct
 
 import httpx
 import pytest
@@ -41,14 +43,45 @@ def test_row_carries_every_required_column_and_a_stable_row_hash():
     assert chunk_row(chunk(version=None), "unreviewed")["version"] == ""          # unversioned documents
 
 
+def f32(x: float) -> float:
+    return struct.unpack("f", struct.pack("f", x))[0]
+
+
 def test_vector_literal_is_pgvector_text():
-    assert vector_literal([1, 0.5, -2.25]) == "[1,0.5,-2.25]"
-    # compact: 8 significant digits round-trip float32, about half the bytes of repr()
-    v = [0.1234567890123, 1 / 3, -2.5e-07]
-    assert vector_literal(v) == "[0.12345679,0.33333333,-2.5e-07]"
-    import struct
-    assert all(struct.unpack("f", struct.pack("f", float(t)))[0] == struct.unpack("f", struct.pack("f", x))[0]
-               for t, x in zip(vector_literal(v).strip("[]").split(","), v))
+    assert vector_literal([1, 0.5, -2.25, 0, -0.0]) == "[1,0.5,-2.25,0,-0]"
+    assert vector_literal([0.1, 1e-7, 123456.0]) == "[0.1,1e-07,123456]"
+    with pytest.raises(ValueError):
+        vector_literal([float("nan")])
+    with pytest.raises(ValueError):
+        vector_literal([float("inf")])
+
+
+def test_the_literal_stores_exactly_the_float32_of_the_original():
+    """pgvector stores float32. Whatever is sent must parse back to the very same float32 as the 17-digit original,
+    for every component, across magnitudes."""
+    rng = random.Random(7)
+    values = [rng.gauss(0, 0.03) for _ in range(30_000)]
+    values += [rng.uniform(-1, 1) * 10 ** rng.randint(-30, 30) for _ in range(30_000)]
+    values += [0.1, 0.2, 0.3, 1 / 3, 2 / 3, 16777217.0, 1e-45, 3.4e38, -3.4e38, 1.17549435e-38]
+    sent = vector_literal(values).strip("[]").split(",")
+    assert len(sent) == len(values)
+    assert all(f32(float(token)) == f32(v) for token, v in zip(sent, values))
+
+
+def test_a_fixed_number_of_digits_would_not_have_been_safe():
+    """Why not '%.7g' (or .8g): it changes the stored value of most (or many) components."""
+    rng = random.Random(7)
+    values = [rng.gauss(0, 0.03) for _ in range(20_000)]
+    changed = lambda d: sum(f32(float(format(v, f".{d}g"))) != f32(v) for v in values) / len(values)
+    assert changed(7) > 0.5 and changed(8) > 0.05
+    assert sum(f32(float(t)) != f32(v) for t, v in zip(vector_literal(values).strip("[]").split(","), values)) == 0
+
+
+def test_the_literal_is_much_smaller_than_the_default_serialisation():
+    rng = random.Random(3)
+    vec = [rng.gauss(0, 0.03) for _ in range(1024)]
+    compact, naive = len(vector_literal(vec)), len("[" + ",".join(repr(v) for v in vec) + "]")
+    assert compact < 0.6 * naive
 
 
 def test_upsert_merges_in_batches_with_the_key_in_headers_only():
