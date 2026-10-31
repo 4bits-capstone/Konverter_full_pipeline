@@ -157,6 +157,32 @@ The 16 PDF-rebuilt sections have their margin history notes stripped (they wrap 
 `metadata.history_notes`). About 8 converter-sourced Act chunks (s-3, s-5, s-18B, s-43, s-84A, sch1-2) still contain fragments of such notes, mostly in
 odd shapes inside tables. They are noise, not enacted text. Not fixed.
 
+## Phase 4 (started): the part that does not need SQL
+
+Held until the pgvector test passes: retrieval (`match_chunks` calls, `--links` expansion), `ask`/`eval` CLI wiring and the n8n Ask workflow.
+
+Built now (no database involved):
+
+- `prompts/answer_system.txt`: the one system prompt. n8n will embed the same text, and a test will compare them.
+  Adapted from the base workflow's prompt with two additions: a rule for chunks whose header says `contains: ...` (cite every listed ID) and a rule
+  for passages from different versions that disagree (state each version, do not choose).
+- `llm.py`: `DeepSeekClient` (`/chat/completions`, temperature 0, `response_format: json_object`, retries, no key in errors).
+- `answer.py`: `answer_question(question, rows, llm, settings)` returns the same JSON as the n8n workflow:
+  `{answer, citations, unsupported_citations, abstained, retrieved, scores, latency_ms, model, usage}` plus `abstain_reason`
+  (`no_passages`, `model`, `no_valid_citations`, `llm_error`) and `error` when the LLM fails.
+  Enforced in code: nothing at or above `RAG_MIN_SIMILARITY` -> "Not found in the provided documents." without calling the model; citations kept only
+  if they name a retrieved section or one listed in a chunk's `contains`; an answer with no valid citation becomes an abstention; LLM errors or unparseable
+  output become an abstention.
+- New settings: `DEEPSEEK_API_KEY`, `DEEPSEEK_BASE_URL`, `RAG_LLM_MODEL`, `RAG_TOP_K` (8), `RAG_MIN_SIMILARITY` (0.3). In `.env.example`.
+
+To change in `rag/n8n/` when unblocked (from reading `docs/rag-inputs/konverter-rag-ask.json`):
+
+- `match_chunks` body: `match_count` -> `k`, `law_as_of` -> `as_of_date` (the sync test will check RPC parameter names as well as the prompt).
+- "Build prompt" reads `metadata.heading_path` and `metadata.version`; in `rag_chunks` both are columns (`heading_path`, `version`).
+- Voyage and DeepSeek nodes use `voyageaiApi` / `openAiApi` credential types; switch to Header Auth credentials. Add the force-abstain rule and the `contains`
+  handling in "Parse answer", and load the prompt text from `prompts/answer_system.txt`.
+- The workflow's `retrieved` lists sections that passed the similarity floor. For eval, decide whether recall is measured before or after the floor (Phase 5).
+
 ## Next: Phase 4
 
 Python `ask` (retrieve with filters and the optional one-hop `--links`, build prompt, DeepSeek call, JSON validation, force-abstain rules),

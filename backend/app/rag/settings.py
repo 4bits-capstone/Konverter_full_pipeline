@@ -33,6 +33,12 @@ class RagSettings:
     openai_api_key: str = field(default="", repr=False)
     supabase_url: str = ""
     supabase_key: str = field(default="", repr=False)
+    deepseek_api_key: str = field(default="", repr=False)
+    deepseek_base_url: str = "https://api.deepseek.com"
+    llm_model: str = "deepseek-chat"
+    llm_max_tokens: int = 1200
+    top_k: int = 8
+    min_similarity: float = 0.3
     cache_dir: Path = _BACKEND / "runtime" / "rag-cache"
 
     @property
@@ -53,11 +59,15 @@ def load_rag_settings(env: Mapping[str, str] | None = None) -> RagSettings:
     try:
         dim = int(get("RAG_EMBED_DIM", "1024"))
         batch = int(get("RAG_EMBED_BATCH", "64"))
+        top_k = int(get("RAG_TOP_K", "8"))
+        min_similarity = float(get("RAG_MIN_SIMILARITY", "0.3"))
         max_chars = int(get("RAG_CHUNK_MAX_CHARS", "2500"))
     except ValueError as exc:
-        raise ConfigError("RAG_EMBED_DIM, RAG_EMBED_BATCH and RAG_CHUNK_MAX_CHARS must be integers") from exc
+        raise ConfigError("RAG_EMBED_DIM, RAG_EMBED_BATCH, RAG_CHUNK_MAX_CHARS and RAG_TOP_K must be integers, RAG_MIN_SIMILARITY a number") from exc
     if not 1 <= dim <= 2000:
         raise ConfigError("RAG_EMBED_DIM must be between 1 and 2000 (the pgvector index limit)")
+    if not 1 <= top_k <= 50 or not 0 <= min_similarity <= 1:
+        raise ConfigError("RAG_TOP_K must be 1-50 and RAG_MIN_SIMILARITY between 0 and 1")
     if batch < 1 or max_chars < 200:
         raise ConfigError("RAG_EMBED_BATCH must be >= 1 and RAG_CHUNK_MAX_CHARS >= 200")
     return RagSettings(
@@ -70,5 +80,10 @@ def load_rag_settings(env: Mapping[str, str] | None = None) -> RagSettings:
         openai_api_key=get("OPENAI_API_KEY"),
         supabase_url=get("SUPABASE_URL").rstrip("/"),
         supabase_key=get("SUPABASE_SERVICE_ROLE_KEY"),
+        deepseek_api_key=get("DEEPSEEK_API_KEY"),
+        deepseek_base_url=get("DEEPSEEK_BASE_URL", "https://api.deepseek.com").rstrip("/"),
+        llm_model=get("RAG_LLM_MODEL", "deepseek-chat"),
+        top_k=top_k,
+        min_similarity=min_similarity,
         cache_dir=Path(get("RAG_CACHE_DIR")) if get("RAG_CACHE_DIR") else _BACKEND / "runtime" / "rag-cache",
     )
