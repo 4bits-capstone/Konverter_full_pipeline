@@ -10,7 +10,7 @@ from __future__ import annotations
 
 import re
 from dataclasses import dataclass, field
-from typing import Any, Iterator
+from typing import Any, Iterator, Sequence
 
 from .blocks import Line, flatten
 from .models import Chunk, DocumentInfo
@@ -45,6 +45,8 @@ class Unit:
     path: list[str]
     atoms: list[Line] = field(default_factory=list)
     notes: list[str] = field(default_factory=list)   # legislative history margin notes ("S. 5A inserted by ...")
+    contains: list[str] = field(default_factory=list)  # other sections whose text could not be separated out
+    text_source: str | None = None                      # "pdf-text-layer" when rebuilt from the PDF itself
 
 
 @dataclass
@@ -101,6 +103,7 @@ def _units_prose(lines: list[Line], doc_type: str) -> Iterator[Unit]:
     last_rec = 0
     rec_heads: dict[int, str] = {}   # canonical recommendation openings, to recognise their repeats
     expect_question = False
+    discard_tail = False     # after the appendix list of questions: end matter, not content
 
     def start(sid: str) -> Unit:
         return Unit(sid, list(path))
@@ -110,7 +113,9 @@ def _units_prose(lines: list[Line], doc_type: str) -> Iterator[Unit]:
             if current:
                 yield current
             path = path[: max(line.level - 1, 0)] + [line.text]
-            current, expect_question = None, False
+            current, expect_question, discard_tail = None, False, False
+            continue
+        if discard_tail and not (line.number and _BARE_NUM.match(line.number)):
             continue
         if line.kind == "para" and line.text.strip().lower() in ("recommendation", "recommendations") and path and not path[-1].lower().startswith("recommendation"):
             continue  # call-out label, not content
@@ -147,6 +152,9 @@ def _units_prose(lines: list[Line], doc_type: str) -> Iterator[Unit]:
             # A question is its head plus (a)/(b) sub-items. Anything after (a footnote,
             # the next callout's prose, end matter) is not part of it.
             yield current
+            if in_questions:
+                current, discard_tail = None, True
+                continue
             current = start(f"h-{slug(path[-1] if path else 'start')}")
         elif current is None:
             current = start(f"h-{slug(path[-1] if path else 'start')}")
@@ -310,10 +318,18 @@ def _pieces(atoms: list[Line], limit: int) -> list[tuple[str, list[Line]]]:
 
 # --- public API --------------------------------------------------------------------------
 
-def chunk_document(info: DocumentInfo, structured: dict[str, Any], max_chars: int = MAX_CHARS) -> ChunkReport:
+def chunk_document(
+    info: DocumentInfo,
+    structured: dict[str, Any],
+    max_chars: int = MAX_CHARS,
+    pdf_pages: Sequence[str] | None = None,
+) -> ChunkReport:
+    """`pdf_pages` is the PDF's own text layer, one string per page (see pdftext.py). When given,
+    Act sections whose heading the converter lost are recovered from it."""
     lines = [l for l in flatten(structured) if l.text.strip()]
+    gap_warnings: list[str] = []
     if info.doc_type == "act":
-        units = _units_act(lines, info.title)
+        units = _recover_missing_sections(list(_units_act(lines, info.title)), pdf_pages, info.doc_id, gap_warnings)
     else:
         units = _units_prose(_expand_rec_tables(lines) if info.doc_type == "report" else lines, info.doc_type)
 
@@ -360,22 +376,189 @@ def chunk_document(info: DocumentInfo, structured: dict[str, Any], max_chars: in
                     version=info.version,
                     effective_from=info.effective_from_date,
                     effective_to=info.effective_to,
-                    metadata={**metadata, **({"history_notes": unit.notes} if unit.notes else {})},
+                    metadata={
+                        **metadata,
+                        **({"history_notes": unit.notes} if unit.notes else {}),
+                        **({"contains": [f"{info.doc_id}:{unit.sid}", *unit.contains]} if unit.contains else {}),
+                        **({"text_source": unit.text_source} if unit.text_source else {}),
+                    },
                 )
             )
-    if info.doc_type == "act":
-        report.warnings += _act_gaps(report.chunks)
+    report.warnings += gap_warnings
     return report
 
 
-def _act_gaps(chunks: list[Chunk]) -> list[str]:
-    """Docling occasionally loses a section heading; its text then sits inside the
-    preceding section's chunks. Say so rather than guess the boundary."""
-    numbers = sorted({int(m.group(1)) for c in chunks if (m := re.match(r"^\w+:s-(\d+)", c.section_id))})
-    missing = sorted(set(range(numbers[0], numbers[-1] + 1)) - set(numbers)) if numbers else []
-    if not missing:
+# --- recovering sections the converter lost ------------------------------------------------
+#
+# Docling sometimes drops a section heading, splits "29" from its title, or loses the body
+# altogether, so the text of section 5 ends up inside section 4 (a wrong citation) or nowhere.
+# Gaps are found from the numbering. Each missing section is first cut out of the converter's own
+# atoms; if that is not possible the whole affected span is rebuilt from the PDF text layer and
+# marked metadata.text_source = "pdf-text-layer". If even that fails the chunk says what it
+# contains (metadata.contains) so nothing is cited as the wrong section.
+
+_SECTION_SID = re.compile(r"^s-(\d+)([A-Z]{0,2})$")
+_PDF_FURNITURE = re.compile(
+    r"^(?:Authorised by the Chief Parliamentary Counsel|No\. \d+ of \d{4}|.*\bAct \d{4}|\d{1,3}|[ivxlc]+|"
+    r"(?:Part|Division|Subdivision)\s+\d+[A-Z]{0,2}\s*[—–-].*)\s*$",
+    re.IGNORECASE,
+)
+
+
+def _collapse(text: str) -> str:
+    return re.sub(r"\s+", " ", text).strip()
+
+
+def _label(sid: str) -> str:
+    return sid[2:]
+
+
+def _missing_between(a: str, b: str) -> list[int]:
+    ma, mb = _SECTION_SID.match(a), _SECTION_SID.match(b)
+    if not (ma and mb):
         return []
-    return [
-        f"{chunks[0].doc_id}: no heading found for section(s) {', '.join(map(str, missing))} between s-{numbers[0]} "
-        f"and s-{numbers[-1]} (lost by the converter, or repealed); their text, if present, is inside the previous section"
-    ]
+    na, nb = int(ma.group(1)), int(mb.group(1))
+    missing = list(range(na + 1, nb))
+    if mb.group(2) and na < nb:          # "5A" without a "5" before it
+        missing.append(nb)
+    return missing
+
+
+def _heading_re(label: str) -> re.Pattern[str]:
+    return re.compile(rf"(?m)^{re.escape(label)}[ \t]+(?=[A-Z])")
+
+
+def _heading_pages(label: str, pdf_pages: Sequence[str], lo: int, hi: int) -> bool:
+    pattern = _heading_re(label)
+    return any(pattern.search(pdf_pages[p - 1]) for p in range(max(lo, 1), min(hi, len(pdf_pages)) + 1))
+
+
+def _split_at_heading(unit: Unit, n: int, pdf_pages: Sequence[str], lo: int, hi: int) -> Unit | None:
+    """Cut `unit` where section `n` starts: find its heading and first body line in the PDF text
+    layer, then the matching atom in the converter output."""
+    pattern = _heading_re(str(n))
+    for number in range(max(lo, 1), min(hi, len(pdf_pages)) + 1):
+        for m in pattern.finditer(pdf_pages[number - 1]):
+            window = _collapse(pdf_pages[number - 1][m.end() : m.end() + 900])
+            for i, atom in enumerate(unit.atoms[1:], start=1):
+                key = _collapse(_atom_text(atom))[:40]
+                pos = window.find(key) if len(key) >= 8 else -1
+                title = window[:pos].strip() if pos >= 0 else ""
+                if 0 < pos <= 220 and title:
+                    new = Unit(f"s-{n}", list(unit.path), [Line("heading", f"{n} {title}", number)] + unit.atoms[i:])
+                    unit.atoms = unit.atoms[:i]
+                    own = [x for x in unit.notes if re.match(rf"^Ss?\.?\s*{n}\b", x)]
+                    new.notes = own
+                    unit.notes = [x for x in unit.notes if x not in own]
+                    return new
+    return None
+
+
+def _pdf_lines(pdf_pages: Sequence[str], lo: int, hi: int) -> list[tuple[int, str, bool]]:
+    """(page, line, ends_with_space) for body lines, page furniture removed."""
+    out = []
+    for number in range(max(lo, 1), min(hi, len(pdf_pages)) + 1):
+        for raw in pdf_pages[number - 1].splitlines():
+            if raw.strip() and not _PDF_FURNITURE.match(raw.strip()):
+                out.append((number, raw.strip(), raw.endswith(" ")))
+    return out
+
+
+def _rebuild_from_pdf(
+    labels: list[str], following: str | None, path: list[str], pdf_pages: Sequence[str], lo: int, hi: int
+) -> list[Unit] | None:
+    """Units for `labels` (document order) cut out of the PDF text layer. None if the first
+    heading cannot be found."""
+    lines = _pdf_lines(pdf_pages, lo, hi)
+    starts: dict[str, int] = {}
+    cursor = 0
+    for label in labels + ([following] if following else []):
+        pattern = re.compile(rf"^{re.escape(label)}[ \t]+(?=[A-Z])")
+        at = next((k for k in range(cursor, len(lines)) if pattern.match(lines[k][1])), None)
+        if at is None:
+            if label == labels[0]:
+                return None
+            continue
+        starts[label], cursor = at, at + 1
+    ordered = [lab for lab in labels if lab in starts]
+    end_all = starts.get(following, len(lines)) if following else len(lines)
+    units: list[Unit] = []
+    for j, label in enumerate(ordered):
+        stop = starts[ordered[j + 1]] if j + 1 < len(ordered) else end_all
+        block = lines[starts[label] : stop]
+        # The heading may wrap: keep joining while the line ends with a space and the next is not a clause.
+        k = 1
+        title = block[0][1]
+        while k < len(block) and block[k - 1][2] and not block[k][1].startswith("(") and k < 3:
+            title += " " + block[k][1]
+            k += 1
+        unit = Unit(f"s-{label}", list(path), [Line("heading", _collapse(title), block[0][0])], text_source="pdf-text-layer")
+        for page, text, _ in block[k:]:
+            if _HISTORY_NOTE.match(text) and _INLINE_NOTE.search(text):
+                unit.notes.append(text)
+                continue
+            text = re.sub(r"\s{2,}", " ", _INLINE_NOTE.sub("", text)).strip()
+            prev = unit.atoms[-1] if len(unit.atoms) > 1 else None
+            if prev and not _CLAUSE.match(text) and not (prev.text.endswith(_TERMINAL) and text[:1].isupper()):
+                unit.atoms[-1] = Line(prev.kind, f"{prev.text} {text}", prev.page)
+            else:
+                unit.atoms.append(Line("para", text, page))
+        units.append(unit)
+    return units
+
+
+def _recover_missing_sections(
+    units: list[Unit], pdf_pages: Sequence[str] | None, doc_id: str, warnings: list[str]
+) -> list[Unit]:
+    out: list[Unit] = []
+    for i, unit in enumerate(units):
+        following = units[i + 1] if i + 1 < len(units) else None
+        missing = _missing_between(unit.sid, following.sid) if following else []
+        if not missing:
+            out.append(unit)
+            continue
+        names = [f"{doc_id}:s-{n}" for n in missing]
+        if pdf_pages is None:
+            unit.contains += names
+            out.append(unit)
+            warnings.append(
+                f"{doc_id}: no heading for section(s) {', '.join(map(str, missing))} after {unit.sid}; no PDF text "
+                f"layer given, so that section's chunks are marked as containing them"
+            )
+            continue
+        pages = [a.page for a in unit.atoms if a.page]
+        lo = min(pages) if pages else 1
+        hi = max([max(pages)] + [a.page for a in following.atoms[:1] if a.page]) if pages else lo
+        present = [n for n in missing if _heading_pages(str(n), pdf_pages, lo, hi)]
+        gone = [n for n in missing if n not in present]
+        if gone:
+            warnings.append(f"{doc_id}: section(s) {', '.join(map(str, gone))} have no heading in the PDF either (repealed or omitted)")
+        if not present:
+            out.append(unit)
+            continue
+        # 1. cut each missing section out of the converter's own atoms
+        trial = Unit(unit.sid, list(unit.path), list(unit.atoms), list(unit.notes))
+        cut, current = [], trial
+        for n in present:
+            piece = _split_at_heading(current, n, pdf_pages, lo, hi)
+            if piece is None:
+                cut = []
+                break
+            cut.append(piece)
+            current = piece
+        if cut:
+            out += [trial, *cut]
+            continue
+        # 2. rebuild the span from the PDF text layer
+        labels = [_label(unit.sid), *[str(n) for n in present]]
+        rebuilt = _rebuild_from_pdf(labels, _label(following.sid), unit.path, pdf_pages, lo, hi)
+        if rebuilt:
+            out += rebuilt
+            warnings.append(
+                f"{doc_id}: rebuilt {', '.join(u.sid for u in rebuilt)} from the PDF text layer (converter lost the headings and text)"
+            )
+            continue
+        unit.contains += [f"{doc_id}:s-{n}" for n in present]
+        out.append(unit)
+        warnings.append(f"{doc_id}: section(s) {', '.join(map(str, present))} could not be separated from {unit.sid}; its chunks are marked as containing them")
+    return out
