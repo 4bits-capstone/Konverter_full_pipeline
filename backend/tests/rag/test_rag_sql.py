@@ -84,13 +84,15 @@ def test_match_chunks_in_a_real_postgres(tmp_path: Path):
     done = subprocess.run(["psql", url, "-v", "ON_ERROR_STOP=1", "-q", "-f", str(script)], capture_output=True, text=True)
     assert done.returncode == 0, done.stderr
 
+    # Plain INSERT ... VALUES, so the untyped literals are coerced to the column types
+    # (text[], vector, date). Going through "SELECT ... FROM (VALUES ...)" would make them text.
     rows = []
     for i in range(12):
-        rows.append(f"('a:{i}','a','','act','a:s-{i}','{{}}','t','[1,{i / 100},0]','2024-01-01',null)")
+        rows.append(f"('a:{i}','a','','act','a:s-{i}','{{}}','t','[1,{i / 100},0]','2024-01-01',null,'h','r')")
     for i in range(8):
-        rows.append(f"('b:{i}','b','','report','b:p-{i}','{{}}','t','[0,1,{i / 100}]','2020-01-01','2024-06-01')")
-    psql("insert into rag_chunks (chunk_id,doc_id,version,doc_type,section_id,heading_path,content,embedding,effective_from,effective_to,"
-         "content_hash,row_hash) select v.*,'h','r' from (values " + ",".join(rows) + ") as v(a,b,c,d,e,f,g,h,i,j)")
+        rows.append(f"('b:{i}','b','','report','b:p-{i}','{{}}','t','[0,1,{i / 100}]','2020-01-01','2024-06-01','h','r')")
+    psql("insert into rag_chunks (chunk_id,doc_id,version,doc_type,section_id,heading_path,content,embedding,"
+         "effective_from,effective_to,content_hash,row_hash) values " + ",".join(rows))
     q = "'[0,1,0]'::vector(3)"
     assert psql(f"select count(*) from match_chunks({q}, 5, array['a'])") == "5"          # filtered query still returns k rows
     assert psql(f"select count(*) from match_chunks({q}, 8, array['b'])") == "8"
