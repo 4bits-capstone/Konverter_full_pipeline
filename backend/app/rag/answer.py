@@ -28,7 +28,8 @@ def system_prompt() -> str:
 
 
 def usable_rows(rows: Sequence[dict[str, Any]], min_similarity: float) -> list[dict[str, Any]]:
-    return [r for r in rows if r.get("chunk_id") and float(r.get("similarity") or 0) >= min_similarity]
+    """Vector hits above the floor, plus sections added by link expansion (they have no similarity to compare)."""
+    return [r for r in rows if r.get("chunk_id") and (r.get("via_link") or float(r.get("similarity") or 0) >= min_similarity)]
 
 
 def _header(row: dict[str, Any]) -> str:
@@ -50,6 +51,10 @@ def build_messages(question: str, rows: Sequence[dict[str, Any]]) -> list[dict[s
         {"role": "system", "content": system_prompt()},
         {"role": "user", "content": f"PASSAGES:\n\n{passages}\n\nQUESTION: {question}"},
     ]
+
+
+def _score(row: dict[str, Any]) -> float | None:
+    return None if row.get("similarity") is None else round(float(row["similarity"]), 3)
 
 
 def ranked_sections(result: dict[str, Any]) -> list[str]:
@@ -79,10 +84,11 @@ def answer_question(question: str, rows: Sequence[dict[str, Any]], llm: LLM, set
     kept = usable_rows(rows, settings.min_similarity)
     # Everything match_chunks returned, before the similarity floor. Retrieval quality (recall@k, MRR) is
     # measured on this, so setups compare on ranking alone; `retrieved` / `scores` are what the answer saw.
-    ranked = [{"chunk_id": r["chunk_id"], "section_id": r["section_id"], "similarity": round(float(r.get("similarity") or 0), 3)}
-              for r in rows if r.get("chunk_id")]
+    ranked = [{"chunk_id": r["chunk_id"], "section_id": r["section_id"], "similarity": _score(r),
+               **({"via_link": r["via_link"]} if r.get("via_link") else {})} for r in rows if r.get("chunk_id")]
     retrieved = list(dict.fromkeys(r["section_id"] for r in kept))
-    scores = [{"chunk_id": r["chunk_id"], "section_id": r["section_id"], "similarity": round(float(r["similarity"]), 3)} for r in kept]
+    scores = [{"chunk_id": r["chunk_id"], "section_id": r["section_id"], "similarity": _score(r),
+               **({"via_link": r["via_link"]} if r.get("via_link") else {})} for r in kept]
 
     def result(**fields: Any) -> dict[str, Any]:
         base = {"answer": NOT_FOUND, "citations": [], "unsupported_citations": [], "abstained": True,
@@ -99,7 +105,7 @@ def answer_question(question: str, rows: Sequence[dict[str, Any]], llm: LLM, set
 
     allowed = allowed_citations(kept)
     claimed = list(dict.fromkeys(str(c) for c in (data.get("citations") if isinstance(data.get("citations"), list) else [])))
-    in_text = [i for i in _INLINE_ID.findall(str(data.get("answer") or "")) if i not in claimed]
+    in_text = [i for i in dict.fromkeys(_INLINE_ID.findall(str(data.get("answer") or ""))) if i not in claimed]
     valid = [c for c in claimed if c in allowed]
     unsupported = [c for c in [*claimed, *in_text] if c not in allowed]
     meta = {"model": reply.model or llm.model, "usage": reply.usage}
