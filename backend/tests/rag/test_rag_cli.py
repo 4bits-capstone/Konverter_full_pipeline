@@ -70,6 +70,7 @@ def test_folder_ingest_skips_files_without_a_manifest_entry_and_reports_missing_
 @pytest.mark.parametrize("argv,message", [
     (["ingest"], "either a folder"),
     (["ingest", "--from-structured", "x.json"], "manifest is required"),
+    (["ingest", "--from-structured", "x.json", "--as", "k", "--manifest", "nope/documents.json"], "manifest not found:"),
 ])
 def test_argument_errors(argv, message, capsys):
     assert cli.main(argv) == 2

@@ -156,8 +156,10 @@ def _ingest(args: argparse.Namespace, settings) -> int:
     if bool(args.folder) == bool(from_one):
         raise ValueError("give either a folder, or --from-store / --from-structured with --as")
     manifest_path = args.manifest or (args.folder / "documents.json" if args.folder else None)
-    if manifest_path is None or not manifest_path.is_file():
-        raise FileNotFoundError("a manifest is required: --manifest documents.json (or <folder>/documents.json)")
+    if manifest_path is None:
+        raise FileNotFoundError("a manifest is required: --manifest documents.json")
+    if not manifest_path.is_file():
+        raise FileNotFoundError(f"manifest not found: {manifest_path.resolve()} (paths are relative to the current directory, {Path.cwd()})")
     manifest = load_manifest(manifest_path)
     warnings: list[str] = []
     if args.folder:
