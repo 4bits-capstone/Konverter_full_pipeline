@@ -17,6 +17,7 @@ from pathlib import Path
 from typing import Any
 
 from .footnote_numbering import resolve_footnote_number
+from .text_styles import render_styled
 
 # A footnote number that Docling split off from its own citation text, and
 # that the pipeline's own repair pass (pipeline.py's
@@ -294,19 +295,25 @@ def _render_footnotes_list(notes: list[dict[str, Any]]) -> str:
     parts = []
     for note, result in zip(notes, resolved):
         safe_id = html.escape(str(note["id"]), quote=True)
+        text = str(note.get("text", ""))
+        styles = note.get("styles") or []
         if trustworthy and result:
             number, remainder = result
+            # The remainder is always a suffix of the text (the leading
+            # number is all that's stripped), so its offset in the full
+            # string is what shifts the style ranges.
+            body = render_styled(text, styles, len(text) - len(remainder))
             parts.append(
                 f'<li id="{safe_id}" value="{html.escape(number, quote=True)}">'
-                f"{html.escape(remainder)}</li>"
+                f"{body}</li>"
             )
         elif trustworthy:
             parts.append(
                 f'<li id="{safe_id}" style="list-style: none">'
-                f'{html.escape(str(note.get("text", "")))}</li>'
+                f"{render_styled(text, styles)}</li>"
             )
         else:
-            parts.append(f'<li id="{safe_id}">{html.escape(str(note.get("text", "")))}</li>')
+            parts.append(f'<li id="{safe_id}">{render_styled(text, styles)}</li>')
     return "".join(parts)
 
 

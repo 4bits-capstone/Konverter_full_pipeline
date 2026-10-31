@@ -8,6 +8,7 @@ from datetime import datetime
 from typing import Any
 
 from .footnote_numbering import FOOTNOTE_LEADING_NUMBER_RE
+from .text_styles import styles_for_text
 from .preview_html import build_accessible_html
 
 __all__ = ["build_accessible_html", "build_json_ld", "build_publication"]
@@ -1088,15 +1089,19 @@ def build_publication(
 
         if label == "footnote":
             for entry_text in _split_footnote_entries(text):
-                current["footnotes"].append(
-                    {
-                        "id": _unique_slug(
-                            f"footnote-{len(current['footnotes']) + 1}", counts
-                        ),
-                        "text": entry_text,
-                        "page": page,
-                    }
-                )
+                note = {
+                    "id": _unique_slug(
+                        f"footnote-{len(current['footnotes']) + 1}", counts
+                    ),
+                    "text": entry_text,
+                    "page": page,
+                }
+                # Style ranges index into the whole block's text, so they
+                # only carry over when the block wasn't split into entries.
+                styles = styles_for_text(block, entry_text)
+                if styles:
+                    note["styles"] = styles
+                current["footnotes"].append(note)
             continue
 
         if label.startswith("section_header_"):

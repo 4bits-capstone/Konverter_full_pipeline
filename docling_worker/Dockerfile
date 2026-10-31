@@ -5,7 +5,7 @@
 #       -t linnhtinnyo/konverter-docling-worker:v1 .
 #   docker push linnhtinnyo/konverter-docling-worker:v1
 #
-# Torch/torchvision/timm/scipy versions match backend.gpu.Dockerfile's proven
+# Torch/torchvision/timm/scipy versions match the previously deployed GPU backend image's proven
 # cu121 combination (table-structure detection needs timm+scipy at import
 # time; torch/torchvision must be a matched cu121 pair for CUDA to attach).
 # Deploy the RunPod endpoint with a CUDA >= 12.1 filter.

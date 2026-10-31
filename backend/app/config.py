@@ -107,6 +107,7 @@ class Settings:
     description_max_chars: int
     log_level: str
     openai_api_key: str = field(repr=False)
+    claude_api_key: str = field(repr=False)
     docling_mode: str
     docling_endpoint_url: str
     runpod_api_key: str = field(repr=False)
@@ -165,6 +166,7 @@ def load_settings() -> Settings:
         ),
         log_level=os.getenv("KONVERTER_LOG_LEVEL", "INFO").strip().upper(),
         openai_api_key=os.getenv("OPENAI_API_KEY", "").strip(),
+        claude_api_key=os.getenv("CLAUDE_API_KEY", "").strip(),
         docling_mode=_as_docling_mode("KONVERTER_DOCLING_MODE", "local"),
         docling_endpoint_url=os.getenv("KONVERTER_DOCLING_ENDPOINT_URL", "").strip(),
         runpod_api_key=os.getenv("KONVERTER_RUNPOD_API_KEY", "").strip(),

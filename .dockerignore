@@ -13,4 +13,3 @@ backend/runtime
 **/*.zip
 **/.vite
 data
-data;C
