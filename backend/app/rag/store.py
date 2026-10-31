@@ -84,6 +84,10 @@ class Store(Protocol):
         self, embedding: Sequence[float], k: int = 5, doc_ids: Sequence[str] | None = None,
         as_of_date: str | None = None, meta_filter: dict[str, Any] | None = None,
     ) -> list[dict[str, Any]]: ...
+    def expand_links(
+        self, seed_sections: Sequence[str], exclude_sections: Sequence[str] = (), doc_ids: Sequence[str] | None = None,
+        as_of_date: str | None = None, meta_filter: dict[str, Any] | None = None, max_sections: int = 3,
+    ) -> list[dict[str, Any]]: ...
 
 
 # --------------------------------------------------------------------------------------------
@@ -159,8 +163,29 @@ class SupabaseStore:
                 "as_of_date": as_of_date, "meta_filter": meta_filter or {}}
         return self._request("POST", "rpc/match_chunks", json_body=body).json()
 
+    def expand_links(self, seed_sections, exclude_sections=(), doc_ids=None, as_of_date=None, meta_filter=None, max_sections=3):
+        body = {"seed_sections": list(seed_sections), "exclude_sections": list(exclude_sections),
+                "doc_ids": list(doc_ids) if doc_ids else None, "as_of_date": as_of_date,
+                "meta_filter": meta_filter or {}, "max_sections": max_sections}
+        return self._request("POST", "rpc/expand_links", json_body=body).json()
+
 
 # --------------------------------------------------------------------------------------------
+
+def _in_force(row: dict[str, Any], as_of_date: str | None) -> bool:
+    return not as_of_date or (
+        (row.get("effective_from") is None or row["effective_from"] <= as_of_date)
+        and (row.get("effective_to") is None or as_of_date < row["effective_to"])
+    )
+
+
+def _passes(row: dict[str, Any], doc_ids, as_of_date, meta_filter) -> bool:
+    return (
+        (not doc_ids or row["doc_id"] in doc_ids)
+        and _in_force(row, as_of_date)
+        and all(row["metadata"].get(key) == value for key, value in (meta_filter or {}).items())
+    )
+
 
 class MemoryStore:
     """In-memory twin of SupabaseStore. Counts writes so tests can assert "nothing was written"."""
@@ -214,15 +239,36 @@ class MemoryStore:
         for row in self.chunks.values():
             if row.get("embedding") is None:
                 continue
-            if doc_ids and row["doc_id"] not in doc_ids:
-                continue
-            if as_of_date and not (
-                (row.get("effective_from") is None or row["effective_from"] <= as_of_date)
-                and (row.get("effective_to") is None or row["effective_to"] > as_of_date)
-            ):
-                continue
-            if meta_filter and any(row["metadata"].get(key) != value for key, value in meta_filter.items()):
+            if not _passes(row, doc_ids, as_of_date, meta_filter):
                 continue
             hits.append({**{c: v for c, v in row.items() if c not in ("embedding", "row_hash", "content_hash")},
                          "similarity": cosine(parse(row["embedding"]), embedding)})
         return sorted(hits, key=lambda h: -h["similarity"])[: max(k, 0)]
+
+    def expand_links(self, seed_sections, exclude_sections=(), doc_ids=None, as_of_date=None, meta_filter=None, max_sections=3):
+        """Mirrors the SQL function of the same name."""
+        seeds = list(seed_sections)
+        candidates = []                      # (seed_rank, direction, kind, target, via)
+        for rows in self.links.values():
+            for link in rows:
+                if link["from_section"] in seeds:
+                    candidates.append((seeds.index(link["from_section"]), 0, link["kind"], link["to_section"], link["from_section"]))
+                if link["to_section"] in seeds:
+                    candidates.append((seeds.index(link["to_section"]), 1, link["kind"], link["from_section"], link["to_section"]))
+        usable: dict[str, list[dict[str, Any]]] = {}
+        for row in self.chunks.values():
+            if _passes(row, doc_ids, as_of_date, meta_filter):
+                usable.setdefault(row["section_id"], []).append(row)
+        picked: dict[str, tuple] = {}
+        for cand in sorted(candidates):
+            target = cand[3]
+            if target not in set(exclude_sections) and target in usable and target not in picked:
+                picked[target] = cand
+        chosen = sorted(picked.values(), key=lambda c: (c[0], c[1], c[2], c[3]))[: max(max_sections, 0)]
+        out = []
+        for seed_rank, _, kind, target, via in chosen:
+            newest = max(r["version"] for r in usable[target])
+            for row in sorted((r for r in usable[target] if r["version"] == newest), key=lambda r: r["chunk_id"]):
+                out.append({**{c: v for c, v in row.items() if c not in ("embedding", "row_hash", "content_hash")},
+                            "via_section": via, "link_kind": kind})
+        return out

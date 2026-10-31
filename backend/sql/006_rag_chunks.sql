@@ -134,6 +134,63 @@ begin
 end;
 $$;
 
+-- expand_links: one hop from the sections a search found, following extracted cross-references in either
+-- direction. Applies the same doc / date / metadata filters as match_chunks, so a linked section can never leak
+-- in from a version that is not in force. Targets already retrieved (exclude_sections) are skipped; at most
+-- max_sections target sections are returned, ordered by the rank of the seed they were reached from (outgoing links
+-- before incoming, then kind). For each target the newest version that passes the filters is returned, all its chunks.
+create or replace function expand_links(
+  seed_sections    text[],
+  exclude_sections text[]  default '{}'::text[],
+  doc_ids          text[]  default null,
+  as_of_date       date    default null,
+  meta_filter      jsonb   default '{}'::jsonb,
+  max_sections     int     default 3
+) returns table (
+  via_section text, link_kind text,
+  chunk_id text, doc_id text, version text, doc_type text, section_id text, heading_path text[],
+  content text, page_start int, page_end int, source_file text,
+  effective_from date, effective_to date, metadata jsonb
+)
+language sql stable
+as $$
+  with cand as (
+    select l.to_section as target, l.from_section as via, l.kind as kind,
+           array_position(seed_sections, l.from_section) as seed_rank, 0 as dir
+    from rag_links l where l.from_section = any(seed_sections)
+    union all
+    select l.from_section, l.to_section, l.kind,
+           array_position(seed_sections, l.to_section), 1
+    from rag_links l where l.to_section = any(seed_sections)
+  ),
+  usable as (
+    select c.* from rag_chunks c
+    where c.section_id in (select target from cand)
+      and (doc_ids is null or c.doc_id = any(doc_ids))
+      and (as_of_date is null
+           or ((c.effective_from is null or c.effective_from <= as_of_date)
+               and (c.effective_to is null or as_of_date < c.effective_to)))
+      and c.metadata @> coalesce(meta_filter, '{}'::jsonb)
+  ),
+  picked as (
+    select distinct on (cd.target) cd.target, cd.via, cd.kind, cd.seed_rank, cd.dir
+    from cand cd
+    where cd.target <> all(coalesce(exclude_sections, '{}'::text[]))
+      and exists (select 1 from usable u where u.section_id = cd.target)
+    order by cd.target, cd.seed_rank, cd.dir, cd.kind
+  ),
+  limited as (
+    select * from picked order by seed_rank, dir, kind, target limit greatest(max_sections, 0)
+  )
+  select lm.via, lm.kind,
+         u.chunk_id, u.doc_id, u.version, u.doc_type, u.section_id, u.heading_path,
+         u.content, u.page_start, u.page_end, u.source_file, u.effective_from, u.effective_to, u.metadata
+  from limited lm
+  join usable u on u.section_id = lm.target
+  where u.version = (select max(u2.version) from usable u2 where u2.section_id = lm.target)
+  order by lm.seed_rank, lm.dir, lm.kind, lm.target, u.chunk_id;
+$$;
+
 -- Only the backend's service role (and n8n using that key) may read or write.
 alter table rag_documents enable row level security;
 alter table rag_chunks    enable row level security;
@@ -141,3 +198,5 @@ alter table rag_links     enable row level security;
 revoke all on rag_documents, rag_chunks, rag_links from anon, authenticated;
 revoke all on function match_chunks(vector({{EMBEDDING_DIM}}), int, text[], date, jsonb) from public, anon, authenticated;
 grant execute on function match_chunks(vector({{EMBEDDING_DIM}}), int, text[], date, jsonb) to service_role;
+revoke all on function expand_links(text[], text[], text[], date, jsonb, int) from public, anon, authenticated;
+grant execute on function expand_links(text[], text[], text[], date, jsonb, int) to service_role;

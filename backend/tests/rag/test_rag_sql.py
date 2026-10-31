@@ -48,6 +48,19 @@ def test_iterative_scan_is_set_only_where_the_server_supports_it():
     assert "array[0, 8, 0]" in guard and "using hnsw (embedding vector_cosine_ops)" in guard and "raise notice" in guard
 
 
+def test_expand_links_has_the_agreed_signature_and_the_same_filters_as_match_chunks():
+    sql = render_sql(1024)
+    signature = re.search(r"create or replace function expand_links\((.*?)\) returns table", sql, re.S).group(1)
+    names = [line.strip().split()[0] for line in signature.strip().splitlines() if line.strip()]
+    assert names == ["seed_sections", "exclude_sections", "doc_ids", "as_of_date", "meta_filter", "max_sections"]
+    body = sql[sql.index("function expand_links"):]
+    assert "as_of_date < c.effective_to" in body and "c.effective_from <= as_of_date" in body
+    assert "c.metadata @> coalesce(meta_filter" in body and "c.doc_id = any(doc_ids)" in body
+    assert "limit greatest(max_sections, 0)" in body
+    assert re.search(r"grant execute on function expand_links\(text\[\], text\[\], text\[\], date, jsonb, int\) to service_role", sql)
+    assert re.search(r"revoke all on function expand_links\(.*\) from public, anon, authenticated", sql)
+
+
 def test_tables_are_locked_to_the_service_role():
     sql = render_sql(1024)
     for table in ("rag_documents", "rag_chunks", "rag_links"):
@@ -99,3 +112,20 @@ def test_match_chunks_in_a_real_postgres(tmp_path: Path):
     assert psql(f"select count(*) from match_chunks({q}, 50, null, '2025-01-01')") == "12"   # b ended 2024-06-01
     assert psql(f"select count(*) from match_chunks({q}, 50, null, '2023-01-01')") == "8"    # a not yet in force
     assert psql(f"select chunk_id from match_chunks({q}, 1)").startswith("b:")
+
+    # expand_links: a:s-0 cites a:s-1, a:s-2 and b:p-0; a:s-3 cites a:s-0 (an incoming link)
+    psql("insert into rag_links (doc_id,version,from_section,to_section,kind) values "
+         "('a','','a:s-0','a:s-1','refers_to'),('a','','a:s-0','a:s-2','refers_to'),"
+         "('a','','a:s-0','b:p-0','refers_to'),('a','','a:s-3','a:s-0','refers_to')")
+
+    def expand(args: str) -> str:
+        return psql("select coalesce(string_agg(distinct section_id, ',' order by section_id), '') "
+                    f"from expand_links(array['a:s-0'], {args})")
+
+    assert expand("array['a:s-0'], null, null, '{}'::jsonb, 3") == "a:s-1,a:s-2,b:p-0"      # outgoing first, capped at 3
+    assert expand("array['a:s-0'], null, null, '{}'::jsonb, 10") == "a:s-1,a:s-2,a:s-3,b:p-0"   # incoming link included
+    assert expand("array['a:s-0'], array['a'], null, '{}'::jsonb, 10") == "a:s-1,a:s-2,a:s-3"   # document filter
+    assert expand("array['a:s-0'], null, '2025-01-01', '{}'::jsonb, 10") == "a:s-1,a:s-2,a:s-3"  # b ended in 2024
+    assert expand("array['a:s-0'], null, '2023-01-01', '{}'::jsonb, 10") == "b:p-0"            # a not yet in force
+    assert expand("array['a:s-0','a:s-1'], null, null, '{}'::jsonb, 10") == "a:s-2,a:s-3,b:p-0"  # already retrieved: skipped
+    assert expand("array['a:s-0'], null, null, '{}'::jsonb, 1") == "a:s-1"
