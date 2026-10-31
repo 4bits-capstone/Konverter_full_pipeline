@@ -94,17 +94,73 @@ Backend suite: 401 tests pass (29 new RAG tests).
 - None of the gold cross-reference pairs (paper q-9 <-> rec-11/rec-6, q-11 <-> rec-24, q-12 <-> rec-25, rec-22 <-> s 77)
   has an explicit pointer in the converted text, so `--links` will not help those questions.
 
+## Phase 2 follow-up (reviewer fixes)
+
+- **Lost Act sections** (`chunking.py`, "recovering sections the converter lost"). Gaps in the section numbering are detected
+  (including a `5A` with no `5` before it). Each missing section is first cut out of the converter's own atoms, using the PDF
+  text layer (`pdftext.py`, pypdfium2) to find the heading and first body line. If that fails the affected span is rebuilt
+  from the PDF text layer and tagged `metadata.text_source = "pdf-text-layer"`. If the PDF cannot resolve it either, every chunk of
+  the preceding section carries `metadata.contains = ["act:s-4", "act:s-5"]`, so it is never cited as just s 4. Sections with no heading in
+  the PDF either (181-185, repealed) are not invented. Without a PDF text layer (ingest from stored structured.json only) the
+  preceding chunks are tagged `contains` conservatively. Found on the real Act: 5 recovered from converter atoms; 7, 8, 9, 12, 29, 40, 51,
+  63, 83 rebuilt from the PDF. The earlier check had missed 9, 12, 40 and 51 because 9A, 12A, 40A and 51A exist. 16 chunks are PDF-sourced.
+  Tests: `test_rag_recovery.py` (success, no-PDF, unrecoverable, repealed).
+- **Paper end matter**: the stray `h-` chunk after the last appendix question is gone.
+- **Q12 gold** (`docs/rag-inputs/questions.csv`): the report never cites s 77 in Recommendation 22. It cites it only in footnotes
+  (fn 9 `s 77(1)(a)-(b)`, fn 10 `ss 77(1)(c)-(d)`, fn 12, fn 39) to paras 7.9, 7.10 and 7.33. Gold changed from `report:rec-22;act:s-77` to
+  `report:para-7.9;act:s-77`; question text unchanged. Footnotes are not embedded in v1, so para 7.9 is found by topic, not by the "s 77" string.
+
+## Phase 3: built
+
+- `settings.py`: `RagSettings` from env (`RAG_EMBED_PROVIDER/MODEL/DIM/BATCH`, `RAG_CHUNK_MAX_CHARS`, `RAG_CACHE_DIR`, `VOYAGE_API_KEY`,
+  `OPENAI_API_KEY`, `SUPABASE_URL`, `SUPABASE_SERVICE_ROLE_KEY`). Defaults live here only (voyage / voyage-law-2 / 1024). Secrets excluded from `repr`.
+- `embeddings.py`: `Embedder` interface; `VoyageEmbedder`, `OpenAIEmbedder` (sends `dimensions` for the text-embedding-3 models), `HashEmbedder` (tests).
+  Batching, retry with backoff on 429/5xx (honours Retry-After), errors carry status and a short message but never headers or keys. A response whose
+  vector length differs from `RAG_EMBED_DIM` is an error.
+- `store.py`: `SupabaseStore` over PostgREST (httpx; paging, merge-duplicates upserts, quoted deletes) and `MemoryStore` (same interface and
+  the same `match_chunks` semantics as the SQL).
+- `backend/sql/006_rag_chunks.sql`: template. Tables `rag_documents`, `rag_chunks`, `rag_links` (prefixed because 001 already has `documents`);
+  `match_chunks(query_embedding, k, doc_ids, as_of_date, meta_filter)`; RLS on, grants to `service_role` only. The embedding size is the
+  placeholder `{{EMBEDDING_DIM}}`, rendered by `python -m app.rag sql`. No provider or model names in SQL (a test enforces it).
+  `effective_from` inclusive, `effective_to` exclusive.
+- **pgvector version**: I cannot see the Supabase project (no credentials used), so the version is unchecked. The migration does not assume it:
+  the HNSW index is created only if `pg_extension` says >= 0.8.0 (otherwise a notice and an exact scan), and `match_chunks` sets
+  `hnsw.iterative_scan = relaxed_order` inside an exception block, so older servers simply ignore it. Check with
+  `select extversion from pg_extension where extname = 'vector';`.
+- `ingest.py`: planning (`plan_sync`) and `sync_document`. Re-embed when `content_hash` or the embedding fingerprint (provider:model:dim) changes;
+  update rows whose other columns changed (`row_hash`) without touching the vector; delete vanished chunks last; links rewritten only when their hash
+  changes. Sources: folder of PDFs plus manifest (uses `<stem>.structured.json` beside the PDF, else a sha256-keyed cache, else converts with the existing
+  pipeline), `--from-store ID --as KEY`, `--from-structured FILE --as KEY [--pdf]`. Links resolve against the batch plus sections already stored.
+- `cli.py` / `__main__.py`: `python -m app.rag sql [--dim N]`, `python -m app.rag ingest ...` (`--dry-run`, `--only`, `--reconvert`).
+- `.env.example` has a RAG block.
+
+### Results
+
+Local end-to-end with `MemoryStore` and the fake embedder on the three real converted documents: 836 report + 287 paper + 308 Act chunks = 1,431
+chunks; all 20 gold sections present; second run embeds 0 and writes 0. Links: 4 paper, 137 Act, 0 report. Backend suite: 475 passed, 1 skipped.
+
+### Not verified (be aware)
+
+- The SQL has not been executed: this machine has Postgres 14 but no pgvector. `test_match_chunks_in_a_real_postgres` is skipped unless
+  `RAG_TEST_DATABASE_URL` points at a scratch Postgres with pgvector (it creates the rag_* tables, asserts that a `doc_ids`-filtered query returns k rows,
+  and checks the date window). The filtered-k and date-window behaviour is tested against `MemoryStore`, which mirrors the SQL.
+- The Voyage and OpenAI request shapes are tested against mocked transports, not live APIs.
+- Links are computed against sections known at ingest time. After adding a document later, re-run ingest over all documents (it embeds nothing) to refresh cross-document links.
+
 ## Open questions
 
-1. Add a curated `links.csv` for the cross-document gold pairs? (Default: no.)
-2. HNSW cosine index (default) or IVFFlat?
+None blocking.
 
-## Next: Phase 3
+## Next: Phase 4
 
-SQL migrations with a `{{EMBEDDING_DIM}}` placeholder rendered by `python -m app.rag sql`; `Embedder` interface (Voyage, OpenAI);
-Supabase store over PostgREST; idempotent ingest (skip unchanged, re-embed on hash or model change, delete vanished sections);
-CLI `ingest`, with a conversion cache keyed by PDF sha256.
+Python `ask` (retrieve with filters and the optional one-hop `--links`, build prompt, DeepSeek call, JSON validation, force-abstain rules),
+shared prompt file, n8n Ask workflow adapted from `konverter-rag-ask.json`, tests with mocked embeddings and LLM.
+
+## Phase 5 notes
+
+- Add a "parent section" retrieval option as an eval setting: retrieve a paragraph, send its whole section to the LLM (median chunk is ~330 characters).
+- Curated links must never be derived from `questions.csv`; any future links need an independent source.
 
 ## Test fixtures
 
-`backend/tests/rag/fixtures/` holds trimmed real converter output; how it was cut is in `backend/tests/rag/README.md`.
+`backend/tests/rag/fixtures/` holds trimmed real converter output (and PDF text-layer pages for the recovery tests); how it was cut is in `backend/tests/rag/README.md`.

@@ -11,6 +11,8 @@ through `KonverterPipeline.process` + `build_publication` with no human review:
 | `act_end.json` | same | ss 180–186, Schedule 1 start, Endnotes start |
 | `report.json` | VLRC Funeral and Burial Instructions report (2016) | all 25 recommendations, chapter 6 up to para 6.25 |
 | `paper.json` | VLRC consultation paper (2015) | chapters 7–8 and the appendix list of questions |
+| `act_gap_s5/s7/s29/s63/s83.json` | same | the converter's output around sections whose headings it lost (5; 7-9; 29; 63; 83), each slice contiguous |
+| `act_pdf_pages.json` | same PDF | the PDF text layer of the pages those slices and `act_end` need, for section recovery |
 | `documents.json` | benchmark manifest | doc ids, types, versions, dates |
 
 The Act is split in three files because each slice is contiguous on its own: the chunker
