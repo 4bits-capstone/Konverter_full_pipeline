@@ -183,6 +183,38 @@ To change in `rag/n8n/` when unblocked (from reading `docs/rag-inputs/konverter-
   handling in "Parse answer", and load the prompt text from `prompts/answer_system.txt`.
 - The workflow's `retrieved` lists sections that passed the similarity floor. For eval, decide whether recall is measured before or after the floor (Phase 5).
 
+## Decisions on links and eval (after Phase 3 review)
+
+- **History notes are never read as links.** Margin notes such as "S. 6A inserted by No. 61/2009 s. 9." cite sections of the AMENDING Act. `links.py`
+  strips them (whole notes, and any `No. N/YYYY s. ...` citation tail, including the fragments still left in ~8 converter-sourced chunks and notes wrapped
+  over several lines) before looking for "section N"; `metadata.history_notes` and `metadata.contains` are never read. Tests: the exact example gives no link
+  to `act:s-9`, seven shapes of note give none, genuine references next to a note are still linked, and no real-Act link has an amending-act citation as evidence.
+  The Act's link count is unchanged (137), so nothing legitimate was lost.
+- **Eval metrics are measured in two places.**
+  1. *Retrieval* (recall@k, hit@k, MRR) is measured BEFORE the similarity floor, on the ranked `match_chunks` results, because that is what compares setups
+     (plain vector, filters, `--links`, parent-section). `answer_question` returns it as `ranked` (chunk, section, similarity, pre-floor); the eval's
+     `retrieved[]` is `ranked_sections(result)`. `retrieved` / `scores` in the answer JSON stay what the model saw (after the floor), as in the n8n workflow.
+  2. *End to end* is reported AFTER the floor: answered correctly (answerable questions) and correctly abstained (unanswerable).
+  3. The floor (`RAG_MIN_SIMILARITY`, default 0.3, a placeholder) is calibrated separately, on the unanswerable questions (Q15, Q16) and with a check that it
+     does not suppress answerable ones. It is not tuned against retrieval recall. Report the similarity of the top hit for each unanswerable question.
+
+## Footnote-links experiment: feasibility check (not built)
+
+Question: does paragraph text keep footnote reference numbers? **Yes.** Para 7.9 reads "...a right of interment.8 What is actually purchased ... memorial at the
+plot. 9 In addition ... from the plot, 10 or endorse ... to exhume a body. 11" and 7.10 ends "...memorialisation.13". Numbers restart in each chapter. So footnotes
+can be mapped to paragraphs by number within the chapter; they are not tied to a sentence, only to the paragraph that contains the reference.
+
+Details that matter when building it:
+
+- The footnote's number is the leading digits of its text ("10 Cemeteries and Crematoria Act ..."), not the id (`footnote-10-7`): ids and text numbers
+  disagree in some chapters, and about 10% of footnotes (for example `footnote-9-7`, the s 77 one) have no leading number, so the id number is the fallback.
+- The converter loses some footnotes: chapter 6 has 210 footnote entries but numbers up to 236 (about 26 missing, with gaps such as 5, 14, 37).
+- A strict "next number follows the previous" scan matched 503 of 693 footnotes (73%): 90% or more in 7 of 9 chapters, but only 51 of 210 in chapter 6, where
+  one missing footnote desynchronises the scan. A per-number lookup within the chapter (the number must follow a letter or punctuation, and match in increasing
+  paragraph order) is the right design: every one of the 172 distinct chapter-6 numbers has an inline reference somewhere in the chapter.
+- False hits ("aged 18 years" for footnote 18) are limited by requiring monotonic paragraph order and the number to follow a word or punctuation directly.
+- Decision for the experiment: map at paragraph level where the number resolves uniquely; attach to the section (chapter heading unit) where it does not.
+
 ## Next: Phase 4
 
 Python `ask` (retrieve with filters and the optional one-hop `--links`, build prompt, DeepSeek call, JSON validation, force-abstain rules),

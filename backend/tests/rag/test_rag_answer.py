@@ -39,7 +39,7 @@ def ask(rows, llm, question="What may a holder do?"):
     return answer_question(question, rows, llm, SETTINGS)
 
 
-SHAPE = {"answer", "citations", "unsupported_citations", "abstained", "retrieved", "scores", "latency_ms"}
+SHAPE = {"answer", "citations", "unsupported_citations", "abstained", "retrieved", "scores", "ranked", "latency_ms"}
 
 
 # --- prompt ---------------------------------------------------------------------------------
@@ -179,3 +179,13 @@ def test_new_settings_are_validated():
     for env in ({"RAG_MIN_SIMILARITY": "1.5"}, {"RAG_TOP_K": "0"}, {"RAG_TOP_K": "x"}):
         with pytest.raises(ConfigError):
             load_rag_settings(env)
+
+
+def test_ranked_keeps_everything_before_the_similarity_floor_for_scoring():
+    rows = [row("act:s-77", 0.8), row("act:s-79", 0.2), row("report:rec-2", 0.1), row("act:s-79", 0.05, chunk_id="act@038:s-79#2")]
+    out = ask(rows, FakeLLM({"answer": "x [act:s-77]", "citations": ["act:s-77"], "abstained": False}))
+    assert out["retrieved"] == ["act:s-77"]                                  # what the answer was allowed to see
+    assert answer.ranked_sections(out) == ["act:s-77", "act:s-79", "report:rec-2"]
+    assert [r["similarity"] for r in out["ranked"]] == [0.8, 0.2, 0.1, 0.05]
+    refused = ask(rows[1:], FakeLLM(error=AssertionError("not called")))
+    assert refused["abstained"] and refused["retrieved"] == [] and answer.ranked_sections(refused) == ["act:s-79", "report:rec-2"]

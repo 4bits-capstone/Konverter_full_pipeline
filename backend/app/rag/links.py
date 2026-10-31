@@ -9,6 +9,7 @@ from __future__ import annotations
 import re
 from typing import Iterable
 
+from .chunking import _INLINE_NOTE
 from .models import Chunk, Link
 
 _NUM = r"\d{1,3}[A-Z]{0,2}"
@@ -29,6 +30,19 @@ _OWNER = re.compile(
 def _owner(text: str, match: re.Match[str]) -> str | None:
     found = _OWNER.match(text[match.end() :])
     return found.group(1).strip() if found else None
+
+
+# "No. 61/2009 s. 9", "Nos 61/2009 s. 40, 16/2021 s. 11(3)", "No. 4/2015 ss 4 - 8": citations of the AMENDING Act.
+# Margin history notes are made of these; the sections they name belong to another Act, so they are never links.
+_AMENDING_CITATION = re.compile(
+    r"\bNos?\.?\s*\d+/\d{4}(?:\s*(?:,|and)?\s*(?:ss?\.?\s?\d+[A-Z]{0,2}(?:\([^)]*\))*(?:\s*[–-]\s*\d+[A-Z]{0,2})?|\d+/\d{4}))*",
+    re.IGNORECASE,
+)
+
+
+def strip_history_notes(text: str) -> str:
+    """Remove legislative history notes, whole or fragmentary, so their section numbers are never read."""
+    return _AMENDING_CITATION.sub(" ", _INLINE_NOTE.sub(" ", text))
 
 
 def _numbers(match: re.Match[str]) -> list[str]:
@@ -52,7 +66,7 @@ def extract_links(chunks: Iterable[Chunk], known_sections: set[str]) -> list[Lin
         )
 
     for chunk in chunks:
-        text = chunk.text
+        text = strip_history_notes(chunk.text)
         if chunk.doc_type == "act":
             for m in _SECTION.finditer(text):
                 owner = _owner(text, m)

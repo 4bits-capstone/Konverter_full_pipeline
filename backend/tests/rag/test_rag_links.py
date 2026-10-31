@@ -1,7 +1,10 @@
 from __future__ import annotations
 
 import json
+import re
 from pathlib import Path
+
+import pytest
 
 from app.rag.chunking import chunk_document
 from app.rag.links import extract_links
@@ -87,3 +90,46 @@ def test_paper_questions_that_cite_other_questions():
 def test_duplicate_mentions_make_one_link():
     c = chunk("act", "act:s-1", "section 2 ... section 2 again", doc_id="act")
     assert len(extract_links([c], {"act:s-1", "act:s-2"})) == 1
+
+
+# --- legislative history notes cite the AMENDING Act, never this one ---------------------------------
+
+KNOWN = {"act:s-1", "act:s-6A", "act:s-9", "act:s-22", "act:s-40", "act:s-8"}
+
+
+def test_a_history_note_produces_no_link_to_the_section_it_names():
+    text = "6A Cemetery trusts\nS. 6A inserted by No. 61/2009 s. 9.\nThe trust is a body corporate."
+    assert kinds(extract_links([chunk("act", "act:s-1", text, doc_id="act")], KNOWN)) == set()
+
+
+@pytest.mark.parametrize("note", [
+    "S. 6A insertedby No. 61/2009 s. 9.",                                   # words run together by the layout
+    "S. 6A\ninsertedby\nNo. 61/2009\ns. 9.",                                # wrapped over four lines
+    "Sch. 1 cl. 4 (Heading) amendedby No. 61/2009 s. 22(2)(a)",
+    "S. 8(1) amended by Nos 61/2009 s. 40, 16/2021 s. 22.",
+    "S. 3(1) def.of affected person insertedby | the meaning",                 # fragment: note cut by a table cell
+    "inserted by No. 4/2015 ss 8 - 9",
+    "by No. 61/2009 s. 9",                                                     # tail only, prefix lost
+])
+def test_history_note_shapes_never_yield_links(note):
+    chunk_ = chunk("act", "act:s-1", f"A holder may inter remains. {note} The trust must keep a register.", doc_id="act")
+    assert kinds(extract_links([chunk_], KNOWN)) == set(), note
+
+
+def test_real_references_next_to_a_history_note_are_still_linked():
+    text = "A holder may act under section 8. S. 6A inserted by No. 61/2009 s. 9. See also section 40."
+    assert {t for _, t, _ in kinds(extract_links([chunk("act", "act:s-1", text, doc_id="act")], KNOWN))} == {"act:s-8", "act:s-40"}
+
+
+def test_notes_held_in_metadata_are_not_read_either():
+    c = chunk("act", "act:s-1", "A holder may inter remains.", doc_id="act")
+    c.metadata = {"history_notes": ["S. 6A inserted by No. 61/2009 s. 9."], "contains": ["act:s-9"]}
+    assert extract_links([c], KNOWN) == []
+
+
+def test_real_act_chunks_with_leftover_note_fragments_do_not_link_to_the_amending_acts_sections():
+    for name in ("act_front", "act_end"):
+        chunks = chunk_document(MANIFEST["act@038"], json.loads((FIXTURES / f"{name}.json").read_text())).chunks
+        known = {f"act:s-{n}" for n in range(1, 200)} | {c.section_id for c in chunks}
+        for link in extract_links(chunks, known):
+            assert not re.search(r"No\.?s? ?\d+/\d{4}", link.evidence), link

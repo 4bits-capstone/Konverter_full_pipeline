@@ -52,6 +52,11 @@ def build_messages(question: str, rows: Sequence[dict[str, Any]]) -> list[dict[s
     ]
 
 
+def ranked_sections(result: dict[str, Any]) -> list[str]:
+    """Pre-floor ranked section IDs, de-duplicated: the `retrieved` list the eval scores."""
+    return list(dict.fromkeys(item["section_id"] for item in result["ranked"]))
+
+
 def allowed_citations(rows: Sequence[dict[str, Any]]) -> set[str]:
     allowed = {r["section_id"] for r in rows}
     for r in rows:
@@ -72,12 +77,16 @@ def answer_question(question: str, rows: Sequence[dict[str, Any]], llm: LLM, set
     """`rows` are match_chunks results (best first). Returns the JSON the n8n workflow also returns."""
     started = time.monotonic() if started is None else started
     kept = usable_rows(rows, settings.min_similarity)
+    # Everything match_chunks returned, before the similarity floor. Retrieval quality (recall@k, MRR) is
+    # measured on this, so setups compare on ranking alone; `retrieved` / `scores` are what the answer saw.
+    ranked = [{"chunk_id": r["chunk_id"], "section_id": r["section_id"], "similarity": round(float(r.get("similarity") or 0), 3)}
+              for r in rows if r.get("chunk_id")]
     retrieved = list(dict.fromkeys(r["section_id"] for r in kept))
     scores = [{"chunk_id": r["chunk_id"], "section_id": r["section_id"], "similarity": round(float(r["similarity"]), 3)} for r in kept]
 
     def result(**fields: Any) -> dict[str, Any]:
         base = {"answer": NOT_FOUND, "citations": [], "unsupported_citations": [], "abstained": True,
-                "retrieved": retrieved, "scores": scores, "latency_ms": round((time.monotonic() - started) * 1000)}
+                "retrieved": retrieved, "scores": scores, "ranked": ranked, "latency_ms": round((time.monotonic() - started) * 1000)}
         return {**base, **fields}
 
     if not kept:
