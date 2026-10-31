@@ -202,6 +202,9 @@ Cause: `ingest` embedded every chunk first and wrote afterwards, and each upsert
 - **Voyage/OpenAI**: batches are cut by count (`RAG_EMBED_BATCH`) and estimated tokens (`RAG_EMBED_BATCH_TOKENS`, 3 characters per token, deliberately generous; an oversize text
   goes alone). Up to `RAG_EMBED_MAX_RETRIES` (8) attempts: Retry-After if the server sends it (capped at 5 minutes), else 5, 10, 20, 40, 60 s after a 429 and 2, 4, 8 ... after
   other errors. Timeouts and connection resets are retried too. The provider's token count is accumulated in `embedder.tokens`.
+- **Split on failure.** On a slow link (about 22 KB/s seen: 0.88 MB took 39.6 s to upload against 2.1 s to embed, with `ReadError` resets) resending the same
+  big body keeps failing. After two failed attempts a batch is split in half and the halves are sent separately, recursively; a single row gets every retry.
+  Only transient failures (timeouts, resets, 408/429/5xx) split; a 4xx is raised at once.
 - Each batch logs `batch i/n (done/total chunks): embed Xs, upload Ys (Z MB)`, and the CLI prints a per-document `embedding Xs, upload Ys (N MB of chunk rows)` line.
 - **Vector serialisation (corrected).** pgvector stores float32. A first version used 8 significant digits on the claim that they round-trip float32; that was wrong
   (measured on 200,000 Gaussian components: 6 digits change 97% of the stored values, 7 digits 69%, 8 digits 12%, 9 digits 1.2%; a float32 needs up to 9). Each

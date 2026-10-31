@@ -230,3 +230,68 @@ def test_memory_store_keeps_the_embedding_on_a_metadata_only_upsert():
     store.upsert_chunks([chunk_row(chunk(), "reviewed")])                      # no embedding keys
     row = store.chunks["act@038:s-1"]
     assert row["embedding"] == "[1.0,0.0]" and row["metadata"]["review_status"] == "reviewed"
+
+
+# --- a failing upload is split, not resent at the same size -----------------------------------------------
+
+def rows_of(n):
+    return [{"chunk_id": f"c{i:03}", "pad": "x" * 10} for i in range(n)]
+
+
+def test_a_batch_the_link_keeps_dropping_is_split_until_the_pieces_get_through():
+    sent, ok = [], []
+
+    def handler(request):
+        batch = json.loads(request.content)
+        sent.append(len(batch))
+        if len(batch) > 12:                                    # the link drops anything bigger than this
+            raise httpx.ReadError("connection reset", request=request)
+        ok.extend(r["chunk_id"] for r in batch)
+        return httpx.Response(201)
+
+    pauses = []
+    make_store(handler, pauses).upsert_chunks(rows_of(50))
+    assert ok == [f"c{i:03}" for i in range(50)]               # every row written exactly once, in order
+    assert sent[:4] == [50, 50, 25, 25]                        # two tries at full size, then halves
+    assert max(n for n in sent if n > 12) == 50 and sum(1 for n in sent if n <= 12) >= 4
+    assert len(pauses) == sum(1 for n in sent if n > 12) / 2   # one pause per failed pair of attempts
+
+
+def test_one_row_that_never_gets_through_fails_with_all_its_retries_and_the_rest_is_kept():
+    ok = []
+
+    def handler(request):
+        batch = json.loads(request.content)
+        if any(r["chunk_id"] == "c002" for r in batch):
+            raise httpx.WriteTimeout("slow", request=request)
+        ok.extend(r["chunk_id"] for r in batch)
+        return httpx.Response(201)
+
+    with pytest.raises(StoreError, match=r"WriteTimeout\) after 4 attempts") as err:
+        make_store(handler).upsert_chunks(rows_of(4))
+    assert err.value.transient is True
+    assert ok == ["c000", "c001"]                              # rows before the bad one were written
+
+
+def test_client_errors_are_never_split():
+    sent = []
+
+    def handler(request):
+        sent.append(len(json.loads(request.content)))
+        return httpx.Response(400, json={"message": "column does not exist"})
+
+    with pytest.raises(StoreError) as err:
+        make_store(handler).upsert_chunks(rows_of(10))
+    assert sent == [10] and err.value.transient is False
+
+
+def test_server_errors_also_split():
+    sent = []
+
+    def handler(request):
+        batch = json.loads(request.content)
+        sent.append(len(batch))
+        return httpx.Response(504 if len(batch) > 3 else 201, json={"message": "gateway timeout"})
+
+    make_store(handler).upsert_chunks(rows_of(8))
+    assert sent == [8, 8, 4, 4, 2, 2, 4, 4, 2, 2]

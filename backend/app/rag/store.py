@@ -26,7 +26,12 @@ MAX_WAIT = 60.0
 
 
 class StoreError(RuntimeError):
-    """HTTP status plus a short server message; never request headers (they carry the key)."""
+    """HTTP status plus a short server message; never request headers (they carry the key).
+    `transient` is true when the cause looks like the link or the server (timeout, reset, 5xx), not the request."""
+
+    def __init__(self, message: str, transient: bool = False) -> None:
+        super().__init__(message)
+        self.transient = transient
 
 
 @dataclass(frozen=True)
@@ -135,19 +140,20 @@ class SupabaseStore:
         self._client = client or httpx.Client(timeout=timeout)
 
     def _request(self, method: str, path: str, *, params: dict | None = None, json_body: Any = None,
-                 prefer: str | None = None, extra: dict[str, str] | None = None) -> httpx.Response:
+                 prefer: str | None = None, extra: dict[str, str] | None = None, attempts: int | None = None) -> httpx.Response:
         headers = {**self._headers, **(extra or {}), **({"Prefer": prefer} if prefer else {})}
         # Every call here is safe to repeat: reads, deletes by key, and upserts (merge-duplicates).
-        for attempt in range(1, self._attempts + 1):
+        limit = attempts or self._attempts
+        for attempt in range(1, limit + 1):
             try:
                 response = self._client.request(method, f"{self._base}/{path}", params=params, json=json_body, headers=headers)
             except httpx.TransportError as exc:               # timeouts, resets, DNS
-                if attempt == self._attempts:
-                    raise StoreError(f"{method} {path}: request failed ({type(exc).__name__}) after {attempt} attempts") from None
-                self._pause(attempt, None, f"{method} {path}: {type(exc).__name__}")
+                if attempt == limit:
+                    raise StoreError(f"{method} {path}: request failed ({type(exc).__name__}) after {attempt} attempts", True) from None
+                self._pause(attempt, None, f"{method} {path}: {type(exc).__name__}", limit)
                 continue
-            if response.status_code in _RETRY_STATUS and attempt < self._attempts:
-                self._pause(attempt, response, f"{method} {path}: HTTP {response.status_code}")
+            if response.status_code in _RETRY_STATUS and attempt < limit:
+                self._pause(attempt, response, f"{method} {path}: HTTP {response.status_code}", limit)
                 continue
             if response.status_code >= 400:
                 try:
@@ -156,14 +162,15 @@ class SupabaseStore:
                 except ValueError:
                     message = response.text
                 tail = f" (gave up after {attempt} attempts)" if response.status_code in _RETRY_STATUS else ""
-                raise StoreError(f"{method} {path}: HTTP {response.status_code}: {str(message)[:200]}{tail}")
+                raise StoreError(f"{method} {path}: HTTP {response.status_code}: {str(message)[:200]}{tail}",
+                                 response.status_code in _RETRY_STATUS)
             return response
         raise StoreError(f"{method} {path}: gave up")  # pragma: no cover
 
-    def _pause(self, attempt: int, response: httpx.Response | None, what: str) -> None:
+    def _pause(self, attempt: int, response: httpx.Response | None, what: str, limit: int | None = None) -> None:
         header = response.headers.get("retry-after", "") if response is not None else ""
         wait = min(float(header), 300.0) if header.replace(".", "", 1).isdigit() else min(2.0 * 2 ** (attempt - 1), MAX_WAIT)
-        log.warning("%s, retrying in %.0fs (attempt %d/%d)", what, wait, attempt, self._attempts)
+        log.warning("%s, retrying in %.0fs (attempt %d/%d)", what, wait, attempt, limit or self._attempts)
         self._sleep(wait)
 
     def _select(self, table: str, params: dict[str, str]) -> list[dict[str, Any]]:
@@ -188,8 +195,21 @@ class SupabaseStore:
 
     def upsert_chunks(self, rows: list[dict[str, Any]]) -> None:
         for start in range(0, len(rows), self._batch):
-            self._request("POST", "rag_chunks", params={"on_conflict": "chunk_id"}, json_body=rows[start : start + self._batch],
-                          prefer="resolution=merge-duplicates,return=minimal")
+            self._upsert_chunks(rows[start : start + self._batch])
+
+    def _upsert_chunks(self, rows: list[dict[str, Any]]) -> None:
+        """Send a batch; if the link or server fails it twice, send two half-size requests instead of the same big one
+        again (a slow upload that gets dropped at 700 KB usually gets through at 350 KB). A single row gets every retry."""
+        try:
+            self._request("POST", "rag_chunks", params={"on_conflict": "chunk_id"}, json_body=rows,
+                          prefer="resolution=merge-duplicates,return=minimal", attempts=2 if len(rows) > 1 else None)
+        except StoreError as exc:
+            if not exc.transient or len(rows) == 1:
+                raise
+            middle = len(rows) // 2
+            log.warning("splitting a failing batch of %d rows into %d + %d", len(rows), middle, len(rows) - middle)
+            self._upsert_chunks(rows[:middle])
+            self._upsert_chunks(rows[middle:])
 
     def delete_chunks(self, chunk_ids: list[str]) -> None:
         for start in range(0, len(chunk_ids), 50):
