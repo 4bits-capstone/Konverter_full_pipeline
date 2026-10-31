@@ -20,8 +20,8 @@ services:
   # backend:
   #   build:
   #     context: .
-  #     dockerfile: backend.gpu.Dockerfile
-  #   image: linnhtinnyo/konverter-backend:v4-gpu
+  #     dockerfile: backend.Dockerfile
+  #   image: linnhtinnyo/konverter-backend:v4
   #   ports:
   #     - "8000:8000"
   #   env_file:

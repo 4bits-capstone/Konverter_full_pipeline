@@ -14,7 +14,8 @@ import pypdfium2 as pdfium
 from . import docling_runner, runpod_client, storage_bucket
 from .config import Settings
 from .metadata_rules import empty_metadata_payload, extract_metadata_from_docling
-from .toc_hierarchy import TocHierarchyResolver
+from .text_styles import extract_style_ranges
+from .toc_hierarchy import _ALWAYS_TOP_LEVEL, TocHierarchyResolver
 from .visual_structure import (
     _block_in_region,
     annotate_pdf_artifacts,
@@ -375,6 +376,371 @@ def _exclude_repeating_decorative_pictures(document: dict[str, Any]) -> None:
             continue
         for picture, _ in entries:
             picture.setdefault("meta", {})["konverter_exclude_from_output"] = True
+
+
+_PICTURE_PAGE_NUMBER_MAX_POINTS = 40.0
+# Wider than the shared _PAGE_EDGE_MARGIN_POINTS(45) the text-labelled
+# version of this fix uses -- found live against a real report
+# ("Recklessness"): five genuine page-number pictures ("viii", "xiv"...)
+# sitting at left=46-49pt, just past that narrower band, went uncaught.
+# Safe to widen here specifically rather than touch the shared constant:
+# the real safety gate is the independent-re-read-must-be-a-bare-page-
+# number check below, not this distance on its own.
+_PICTURE_PAGE_NUMBER_EDGE_MARGIN_POINTS = 60.0
+
+
+def _recover_page_number_pictures(
+    document: dict[str, Any], pdf_path: Path | None
+) -> None:
+    """A page number styled as part of a chapter's own design (bold,
+    coloured, an unusual font treatment on a front-matter page) can get
+    classified by Docling's layout model as a "picture" rather than
+    recognised as text -- found live across a VLRC corpus check: 30+
+    instances, always tiny (~17-32pt), always sitting right at a page's
+    edge margin, on roman-numeral-paginated front-matter pages. Cropping
+    the exact region and independently re-reading the PDF's own text
+    layer -- the same technique _recover_orphaned_footnote_markers already
+    uses -- cleanly recovers the real number ("xxiv") with nothing
+    garbled: Docling's own layout model misjudged the *type* here, it
+    never lost the content.
+
+    Scoped to the same page-edge margin band a genuine page number
+    already lives in (matching _reclassify_page_edge_numbers_mislabelled_
+    as_text's own criteria for the text-labelled version of this same
+    problem), and only commits to excluding the picture if the
+    independently re-read text is itself a bare page-number shape -- an
+    unrelated small picture that happens to sit in that margin (unlikely,
+    but not impossible) is left untouched rather than guessed away."""
+    if pdf_path is None or not pdf_path.is_file():
+        return
+    pictures = document.get("pictures", [])
+    if not pictures:
+        return
+    try:
+        import pymupdf
+    except Exception:
+        return
+
+    pages_meta = document.get("pages") or {}
+    try:
+        with pymupdf.open(pdf_path) as pdf:
+            for picture in pictures:
+                prov = (picture.get("prov") or [{}])[0]
+                bbox = prov.get("bbox") or {}
+                page_no = prov.get("page_no")
+                left, right = bbox.get("l"), bbox.get("r")
+                top, bottom = bbox.get("t"), bbox.get("b")
+                if None in (left, right, top, bottom, page_no):
+                    continue
+                if not (1 <= page_no <= len(pdf)):
+                    continue
+                width, height = abs(right - left), abs(top - bottom)
+                if (
+                    width > _PICTURE_PAGE_NUMBER_MAX_POINTS
+                    or height > _PICTURE_PAGE_NUMBER_MAX_POINTS
+                ):
+                    continue
+                page_meta = pages_meta.get(str(page_no), pages_meta.get(page_no, {})) or {}
+                size = page_meta.get("size") or {}
+                page_height = float(size.get("height", 0))
+                page_width = float(size.get("width", 0))
+                if not page_height:
+                    continue
+                # Origin-agnostic on purpose, same as
+                # _reclassify_page_edge_numbers_mislabelled_as_text: a
+                # page number at either the visual top or bottom edge
+                # produces a ratio near 0 or near 1 regardless of whether
+                # the raw bbox is TOPLEFT- or BOTTOMLEFT-origin, so no
+                # coordinate conversion is needed just to test this.
+                ratio = float(top) / page_height
+                if not (ratio < _PAGE_MARGIN_TOP_RATIO or ratio > 1 - _PAGE_MARGIN_TOP_RATIO):
+                    continue
+                at_left_edge = float(left) < _PICTURE_PAGE_NUMBER_EDGE_MARGIN_POINTS
+                at_right_edge = bool(page_width) and (
+                    page_width - float(right)
+                ) < _PICTURE_PAGE_NUMBER_EDGE_MARGIN_POINTS
+                if not (at_left_edge or at_right_edge):
+                    continue
+
+                top_left_top, top_left_bottom = float(top), float(bottom)
+                if str(bbox.get("coord_origin", "")).upper().endswith("BOTTOMLEFT"):
+                    top_left_top, top_left_bottom = (
+                        page_height - top_left_top,
+                        page_height - top_left_bottom,
+                    )
+                clip_top = min(top_left_top, top_left_bottom)
+                clip_bottom = max(top_left_top, top_left_bottom)
+                clip = pymupdf.Rect(
+                    max(0.0, float(left) - 2.0),
+                    max(0.0, clip_top - 2.0),
+                    float(right) + 2.0,
+                    clip_bottom + 2.0,
+                )
+                try:
+                    recovered = pdf[page_no - 1].get_text("text", clip=clip).strip()
+                except Exception:
+                    continue
+                if not _BARE_PAGE_NUMBER_RE.match(_normalise_furniture_text(recovered)):
+                    continue
+                picture.setdefault("meta", {})["konverter_exclude_from_output"] = True
+    except Exception:
+        return
+
+
+_CHAPTER_DIVIDER_TEXT_RE = re.compile(r"^\s*chapter\s+\d+\s*$", re.IGNORECASE)
+_DECORATIVE_PICTURE_POSITION_TOLERANCE_POINTS = 20.0
+
+
+def _exclude_repeating_chapter_divider_pictures(document: dict[str, Any]) -> None:
+    """A chapter-opening divider graphic (a coloured box printing "CHAPTER
+    N", the number changing every chapter) sits well outside
+    _exclude_repeating_decorative_pictures's own size ceiling -- VLRC's
+    own real figures and this kind of divider graphic are both comfortably
+    over 100pt, so size alone can't be the discriminator here the way it
+    safely is for the tiny page-template case above. And because the
+    digit count itself varies ("1" is narrower than "10"), the bounding
+    box isn't quite identical page to page either, so even without the
+    size ceiling this shape would never group under that function's exact-
+    position match.
+
+    Found live: 11 occurrences of the same divider graphic in one VLRC
+    report, confirmed by cropping the region and reading it directly --
+    a coloured box with "CHAPTER 10" (etc.) printed on it, always at
+    close to the same top-right position, never repeating exactly.
+
+    What makes excluding a large, position-varying picture safe here, in
+    a way size or position alone wouldn't be: at least one occurrence in
+    the same position cluster must have a "CHAPTER N"-shaped text
+    structurally nested *inside* it in Docling's own document tree (not
+    just sitting nearby on the same page) -- direct, textual confirmation
+    that this specific graphic is a chapter divider, not a coincidentally
+    similarly-placed real figure. Docling extracted this nested label for
+    only 4 of the 11 real instances in the report this was found on, so
+    requiring it on *every* member of a cluster would silently leave most
+    of them unexcluded -- once even one member is confirmed, every other
+    picture in the same tight position cluster shares its provenance."""
+    pictures = document.get("pictures", [])
+    if not pictures:
+        return
+    picture_refs = {str(picture.get("self_ref", "")) for picture in pictures}
+    confirming_labels: dict[str, list[dict[str, Any]]] = {}
+    for item in document.get("texts", []):
+        if not _CHAPTER_DIVIDER_TEXT_RE.match(str(item.get("text", "")).strip()):
+            continue
+        parent_ref = str((item.get("parent") or {}).get("$ref", ""))
+        if parent_ref in picture_refs:
+            confirming_labels.setdefault(parent_ref, []).append(item)
+    confirmed_refs = set(confirming_labels)
+    if not confirmed_refs:
+        return
+
+    entries: list[tuple[dict[str, Any], int, float, float]] = []
+    for picture in pictures:
+        prov = (picture.get("prov") or [{}])[0]
+        bbox = prov.get("bbox") or {}
+        page_no = prov.get("page_no")
+        left, top = bbox.get("l"), bbox.get("t")
+        if None in (left, top, page_no):
+            continue
+        entries.append((picture, page_no, float(left), float(top)))
+
+    clusters: list[list[tuple[dict[str, Any], int, float, float]]] = []
+    for entry in entries:
+        _, _, left, top = entry
+        for cluster in clusters:
+            _, _, ref_left, ref_top = cluster[0]
+            if (
+                abs(left - ref_left) <= _DECORATIVE_PICTURE_POSITION_TOLERANCE_POINTS
+                and abs(top - ref_top) <= _DECORATIVE_PICTURE_POSITION_TOLERANCE_POINTS
+            ):
+                cluster.append(entry)
+                break
+        else:
+            clusters.append([entry])
+
+    for cluster in clusters:
+        pages = {entry[1] for entry in cluster}
+        if len(pages) < _DECORATIVE_PICTURE_REPEAT_THRESHOLD:
+            continue
+        refs = {str(entry[0].get("self_ref", "")) for entry in cluster}
+        if not (refs & confirmed_refs):
+            continue
+        for picture, *_ in cluster:
+            picture.setdefault("meta", {})["konverter_exclude_from_output"] = True
+            picture_ref = str(picture.get("self_ref", ""))
+            # A "CHAPTER N" label nested under an excluded divider graphic
+            # is now an orphan -- the chapter's real title is already
+            # extracted separately as its own heading elsewhere, so this
+            # copy has no purpose left but to float as a stray, meaningless
+            # one-word paragraph once its own picture stops anchoring it.
+            for label_item in confirming_labels.get(picture_ref, []):
+                label_item.setdefault("meta", {})["konverter_exclude_from_output"] = True
+
+
+def _bbox_overlap_ratio(
+    first: dict[str, float], second: dict[str, float]
+) -> float:
+    left = max(first["l"], second["l"])
+    right = min(first["r"], second["r"])
+    top = max(min(first["t"], first["b"]), min(second["t"], second["b"]))
+    bottom = min(max(first["t"], first["b"]), max(second["t"], second["b"]))
+    if right <= left or bottom <= top:
+        return 0.0
+    intersection = (right - left) * (bottom - top)
+    first_area = abs(first["r"] - first["l"]) * abs(first["t"] - first["b"])
+    second_area = abs(second["r"] - second["l"]) * abs(second["t"] - second["b"])
+    smaller_area = min(first_area, second_area)
+    return intersection / smaller_area if smaller_area > 0 else 0.0
+
+
+_HEADING_ACCENT_OVERLAP_RATIO = 0.5
+
+
+def _exclude_decorative_heading_accent_pictures(document: dict[str, Any]) -> None:
+    """A back-matter section heading ("Glossary", "Index", "Bibliography"
+    etc.) is sometimes printed with a coloured accent box directly behind
+    it as part of the report's own design -- found live across a VLRC
+    corpus check: a "picture" entity whose bounding box nearly exactly
+    overlaps a "Glossary" or "Index" heading's own text box, on 8 of 10
+    documents checked. It isn't a missing figure Docling failed to
+    caption; it's a design accent that happens to sit exactly where the
+    heading text already is.
+
+    The overlap itself -- not mere proximity -- is the safety signal: a
+    genuine figure positioned near a heading (a chart at the end of one
+    chapter, immediately followed by the next chapter's title) would
+    never substantially *overlap* that heading's own bounding box, only
+    sit near it. Scoped further to headings matching the same narrow,
+    established back-matter title list toc_hierarchy.py already trusts
+    for TOC-level classification (glossary/bibliography/references/index/
+    appendices) -- not any heading a real figure might legitimately
+    precede -- so this can't fire on an ordinary chapter opener."""
+    pictures = document.get("pictures", [])
+    if not pictures:
+        return
+    heading_boxes: list[tuple[int, dict[str, float]]] = []
+    for item in document.get("texts", []):
+        text = str(item.get("text", "")).strip()
+        if not _ALWAYS_TOP_LEVEL.fullmatch(text):
+            continue
+        prov = (item.get("prov") or [{}])[0]
+        bbox = prov.get("bbox") or {}
+        page_no = prov.get("page_no")
+        if None in (bbox.get("l"), bbox.get("t"), bbox.get("r"), bbox.get("b"), page_no):
+            continue
+        heading_boxes.append((page_no, bbox))
+    if not heading_boxes:
+        return
+
+    for picture in pictures:
+        prov = (picture.get("prov") or [{}])[0]
+        bbox = prov.get("bbox") or {}
+        page_no = prov.get("page_no")
+        if None in (bbox.get("l"), bbox.get("t"), bbox.get("r"), bbox.get("b"), page_no):
+            continue
+        for heading_page, heading_bbox in heading_boxes:
+            if heading_page != page_no:
+                continue
+            if _bbox_overlap_ratio(bbox, heading_bbox) >= _HEADING_ACCENT_OVERLAP_RATIO:
+                picture.setdefault("meta", {})["konverter_exclude_from_output"] = True
+                break
+
+
+_MIN_DIAGRAM_TEXT_FRAGMENTS = 2
+
+
+def _exclude_diagram_text_fragments(
+    document: dict[str, Any], pdf_path: Path | None, api_key: str
+) -> list[str]:
+    """A genuine chart or diagram's own internal labels (an axis value, a
+    legend entry, a flowchart box's caption) get structurally nested by
+    Docling under the picture they belong to -- found live across a VLRC
+    corpus check: a data table's legend broken into four disconnected
+    fragments ("Per" / "centage of" / "To" / "tal"), a flowchart's dozen
+    box labels, an infographic's "Element 1/2/3/4" captions -- each one
+    promoted to its own independent floating paragraph with no visual
+    context, reading as meaningless noise.
+
+    The existing bare-number exclusion elsewhere in this file already
+    handles a chart's own axis *numbers* this same way, but can't safely
+    widen to all nested text: the identical structural shape also covers
+    a cover page's real contact details (an address, a phone number)
+    printed over a background photo -- confirmed live and deliberately
+    protected content, not diagram noise. Telling the two apart from
+    position or fragment shape alone isn't reliable; whether a fragment
+    is part of a picture's own diagram content or independent text that
+    merely overlaps it is fundamentally a visual judgement.
+
+    A fragment classified "diagram" is excluded outright, the same
+    mechanism the other picture-decoration fixes in this file use --
+    deliberately not just flagged for review. An earlier version of this
+    fix only flagged candidates, on the reasoning that removing text
+    outright risks a wrong classification silently dropping real content.
+    Found live that this defeats the entire point of an automated check
+    when the actual review workflow is bulk-accept-everything: a flag
+    nobody inspects item-by-item doesn't reduce any work, it just adds
+    noise to a queue that gets waved through unread, and the diagram
+    text survives into the export exactly as before. Validated directly
+    against two real, live pages first (a table's fragmented legend, a
+    full-page flowchart) with a 100% correct classification on both
+    before trusting exclusion over flagging. Returns the list of
+    fragment texts that were excluded, purely for logging -- any missing
+    key, request failure, or invalid response leaves every fragment
+    exactly as extraction left it, same fail-closed behaviour as every
+    other check in this module."""
+    excluded_texts: list[str] = []
+    if pdf_path is None or not api_key:
+        return excluded_texts
+    pictures = document.get("pictures", [])
+    if not pictures:
+        return excluded_texts
+    picture_refs = {str(picture.get("self_ref", "")) for picture in pictures}
+    by_picture: dict[str, list[dict[str, Any]]] = {}
+    for item in document.get("texts", []):
+        parent_ref = str((item.get("parent") or {}).get("$ref", ""))
+        if parent_ref not in picture_refs:
+            continue
+        # Docling's own "caption" label is a strong, free, already-correct
+        # signal on its own -- a figure's caption is exactly the kind of
+        # genuine, reader-needed content this whole check exists to
+        # protect, never diagram noise, regardless of what the VLM would
+        # say about it. Found live: without this, "Figure 2: The elements
+        # of the offence 'recklessly causing serious injury'" -- a real,
+        # correctly-extracted caption -- got excluded right alongside the
+        # diagram's own internal labels.
+        if _raw_label(item) == "caption":
+            continue
+        text = str(item.get("text", "")).strip()
+        if not text or _BARE_PAGE_NUMBER_RE.match(_normalise_furniture_text(text)):
+            continue
+        by_picture.setdefault(parent_ref, []).append(item)
+
+    for parent_ref, items in by_picture.items():
+        if len(items) < _MIN_DIAGRAM_TEXT_FRAGMENTS:
+            continue
+        picture = next(
+            (p for p in pictures if str(p.get("self_ref", "")) == parent_ref), None
+        )
+        if picture is None:
+            continue
+        prov = (picture.get("prov") or [{}])[0]
+        page_no = prov.get("page_no")
+        if page_no is None:
+            continue
+
+        from . import diagram_vlm
+
+        fragments = [str(item.get("text", "")).strip() for item in items]
+        classifications = diagram_vlm.classify_picture_text_fragments(
+            pdf_path=pdf_path, page=page_no, fragments=fragments, api_key=api_key
+        )
+        if classifications is None:
+            continue
+        for item, classification in zip(items, classifications):
+            if classification == "diagram":
+                item.setdefault("meta", {})["konverter_exclude_from_output"] = True
+                excluded_texts.append(str(item.get("text", "")).strip())
+    return excluded_texts
 
 
 def _normalise_furniture_text(value: Any) -> str:
@@ -1305,6 +1671,40 @@ def _footnote_font_size_outlier(
     return abs(block_font_size - body_text_font_size) <= 1.0
 
 
+def _attach_text_styles(blocks: list[dict[str, Any]], pdf_path: Path) -> None:
+    """Recover italic/bold runs for footnote text from the PDF's own font
+    data (Docling drops them -- see text_styles.py) and attach them as
+    `styles`/`styles_text` on each footnote block. Best-effort: any failure
+    leaves blocks untouched and rendering falls back to plain text."""
+    try:
+        import pymupdf
+
+        pdf = pymupdf.open(pdf_path)
+    except Exception:
+        return
+    try:
+        stack = list(blocks)
+        while stack:
+            block = stack.pop()
+            stack.extend(block.get("children") or [])
+            if block.get("label") != "footnote":
+                continue
+            bounds = block.get("source_bounds")
+            text = str(block.get("text", "")).strip()
+            if not bounds or not text:
+                continue
+            try:
+                page = pdf[int(block.get("page", 1)) - 1]
+                ranges = extract_style_ranges(page, bounds, text)
+            except Exception:
+                continue
+            if ranges:
+                block["styles"] = ranges
+                block["styles_text"] = text
+    finally:
+        pdf.close()
+
+
 @dataclass
 class PipelineOutput:
     blocks: list[dict[str, Any]]
@@ -1328,6 +1728,8 @@ class KonverterPipeline:
         raw_document, blocks, doc_confidence, warnings = self._run_docling(
             pdf_path, stage, document_id
         )
+
+        _attach_text_styles(blocks, pdf_path)
 
         stage(4, "Extracting metadata")
         try:
@@ -1376,6 +1778,20 @@ class KonverterPipeline:
         _relabel_misclassified_page_furniture(raw_document)
         _synthesize_missing_pictures(raw_document, pdf_path)
         _exclude_repeating_decorative_pictures(raw_document)
+        _recover_page_number_pictures(raw_document, pdf_path)
+        _exclude_repeating_chapter_divider_pictures(raw_document)
+        _exclude_decorative_heading_accent_pictures(raw_document)
+        excluded_diagram_text = _exclude_diagram_text_fragments(
+            raw_document, pdf_path, self.settings.claude_api_key
+        )
+        if excluded_diagram_text:
+            warnings.append(
+                f"Excluded {len(excluded_diagram_text)} text fragment(s) an AI "
+                "vision model classified as belonging to a chart/diagram's own "
+                "labelling rather than independent body content: "
+                + "; ".join(repr(text) for text in excluded_diagram_text[:10])
+                + ("; ..." if len(excluded_diagram_text) > 10 else "")
+            )
         callout_regions, callout_warnings = detect_callout_regions(pdf_path)
         warnings.extend(callout_warnings)
         quote_regions, quote_warnings = detect_quote_regions(pdf_path)
@@ -1607,29 +2023,22 @@ class KonverterPipeline:
                     blocks, document, child_items, page
                 )
                 if split is not None:
-                    del blocks[-len(split):]
-                    for tier, (header_block, group_items) in enumerate(split):
-                        blocks.append(header_block)
-                        tier_block = self._build_list_block(
-                            document,
-                            f"{reference}::tier{tier}",
-                            group_items,
-                            confidence_by_ref,
-                        )
-                        # The final position-normalising sort below ranks
-                        # every block by its *raw* Docling document-tree
-                        # order, not by page geometry -- and Docling put
-                        # all N headers before the single merged list as
-                        # one contiguous unit, so every split-off piece
-                        # would still rank after every header no matter
-                        # what real ref its own id resolves to, undoing
-                        # this interleave right back into the original
-                        # bug shape. Anchoring each split list's rank to
-                        # its own paired header's real rank keeps the two
-                        # tied, so the stable append-order tiebreaker
-                        # (this loop's own order) decides between them.
-                        tier_block["_sort_rank_ref"] = header_block.get("id")
-                        blocks.append(tier_block)
+                    self._emit_diagram_split_blocks(
+                        blocks, split, reference, document, confidence_by_ref
+                    )
+                    return
+                vlm_split = self._split_diagram_list_via_vlm(
+                    blocks, child_items, page, pdf_path, self.settings.claude_api_key
+                )
+                if vlm_split is not None:
+                    self._emit_diagram_split_blocks(
+                        blocks,
+                        vlm_split,
+                        reference,
+                        document,
+                        confidence_by_ref,
+                        vlm_assisted=True,
+                    )
                     return
                 blocks.append(
                     self._build_list_block(
@@ -1867,21 +2276,8 @@ class KonverterPipeline:
         only commits to the split if every resulting group gets at least
         one item, so a coincidental run of section headers can never
         silently drop content that genuinely belongs in one list."""
-        trailing_headers: list[dict[str, Any]] = []
-        run_label: str | None = None
-        for candidate in reversed(blocks):
-            label = candidate.get("label")
-            if (
-                label in KonverterPipeline._DIAGRAM_LIST_HEADER_LABELS
-                and candidate.get("page") == page
-                and (run_label is None or label == run_label)
-            ):
-                trailing_headers.append(candidate)
-                run_label = label
-                continue
-            break
-        trailing_headers.reverse()
-        if len(trailing_headers) < 2:
+        trailing_headers = KonverterPipeline._trailing_diagram_headers(blocks, page)
+        if trailing_headers is None:
             return None
 
         page_meta = document.get("pages", {}).get(
@@ -1932,6 +2328,157 @@ class KonverterPipeline:
             return None
 
         return [(header_tops[i][0], groups[i]) for i in range(len(groups))]
+
+    # Requires the colon: real VLRC figure captions are consistently
+    # "Figure N: Title" -- but body text that merely *mentions* a figure
+    # ("Figure 3 shows the gradation of all the offences...") starts the
+    # same way without one. Found live in the "Recklessness" corpus scan:
+    # the un-anchored version of this pattern matched that sentence too.
+    _DIAGRAM_CAPTION_RE = re.compile(
+        r"^\s*(?:figure|chart|diagram)\s+\d+\s*:", re.IGNORECASE
+    )
+
+    @staticmethod
+    def _page_has_diagram_caption(blocks: list[dict[str, Any]], page: int) -> bool:
+        return any(
+            block.get("page") == page
+            and block.get("label") == "text"
+            and KonverterPipeline._DIAGRAM_CAPTION_RE.match(str(block.get("text", "")))
+            for block in blocks
+        )
+
+    @staticmethod
+    def _trailing_diagram_headers(
+        blocks: list[dict[str, Any]], page: int
+    ) -> list[dict[str, Any]] | None:
+        """The blocks immediately preceding a merged list, if they're an
+        unbroken run of 2+ same-label headers on this exact page with
+        nothing else between them and the list, on a page that has a
+        "Figure N:"-style caption somewhere on it -- shared by both the
+        geometric and VLM-assisted diagram splits below, since both only
+        ever consider this specific empty-header shape a candidate.
+
+        The caption requirement was added after a live corpus check found
+        the header-run condition alone isn't diagram-specific: an
+        ordinary chapter with several short, similarly-styled subsection
+        questions in a row (e.g. "Aubrey and recklessness in New South
+        Wales" / "The DPP Reference case") matches it too, and isn't a
+        diagram at all. Every genuine diagram found had a "Figure N:"
+        caption on its page; none of the ordinary subsection runs did --
+        a free, reliable signal the geometric split's own position-
+        tolerance check didn't need (it only ever matched the real
+        diagram regardless), but the costlier VLM fallback does, to avoid
+        spending an API call -- and risking a wrong grouping being
+        *offered*, even though never applied without passing validation
+        -- on ordinary prose. Checking the whole page rather than only
+        the block immediately before the header run is deliberately
+        looser: cost is negligible either way (13 captions total across a
+        10-document corpus check), and a caption doesn't have to sit
+        directly adjacent to the header run it describes."""
+        trailing: list[dict[str, Any]] = []
+        run_label: str | None = None
+        for candidate in reversed(blocks):
+            label = candidate.get("label")
+            if (
+                label in KonverterPipeline._DIAGRAM_LIST_HEADER_LABELS
+                and candidate.get("page") == page
+                and (run_label is None or label == run_label)
+            ):
+                trailing.append(candidate)
+                run_label = label
+                continue
+            break
+        trailing.reverse()
+        if len(trailing) < 2:
+            return None
+        if not KonverterPipeline._page_has_diagram_caption(blocks, page):
+            return None
+        return trailing
+
+    @staticmethod
+    def _split_diagram_list_via_vlm(
+        blocks: list[dict[str, Any]],
+        child_items: list[dict[str, Any]],
+        page: int,
+        pdf_path: Path | None,
+        api_key: str,
+    ) -> list[tuple[dict[str, Any], list[dict[str, Any]]]] | None:
+        """Fallback for the same diagram shape _split_diagram_list_by_
+        preceding_headers targets, for pages the geometric check can't
+        confidently split -- e.g. a header/item vertical-overlap pattern
+        that doesn't fit the fixed tolerance, or a layout where items
+        aren't cleanly ordered top-to-bottom per tier. Classifies the
+        *grouping* only, by index, using diagram_vlm.classify_diagram_
+        grouping -- Docling's own already-extracted item text is what
+        ends up in the document either way, never anything the model
+        itself read off the page image. See diagram_vlm.py for the full
+        rationale and the fail-closed behaviour this relies on."""
+        if pdf_path is None or not api_key:
+            return None
+        trailing_headers = KonverterPipeline._trailing_diagram_headers(blocks, page)
+        if trailing_headers is None:
+            return None
+
+        from . import diagram_vlm
+
+        header_texts = [str(header.get("text", "")) for header in trailing_headers]
+        item_texts = [str(item.get("text", "")) for item in child_items]
+        mapping = diagram_vlm.classify_diagram_grouping(
+            pdf_path=pdf_path,
+            page=page,
+            headers=header_texts,
+            items=item_texts,
+            api_key=api_key,
+        )
+        if mapping is None:
+            return None
+
+        groups: list[list[dict[str, Any]]] = [[] for _ in trailing_headers]
+        for item, header_index in zip(child_items, mapping):
+            groups[header_index].append(item)
+        if any(not group for group in groups):
+            return None
+
+        return [(trailing_headers[i], groups[i]) for i in range(len(groups))]
+
+    @staticmethod
+    def _emit_diagram_split_blocks(
+        blocks: list[dict[str, Any]],
+        split: list[tuple[dict[str, Any], list[dict[str, Any]]]],
+        reference: str,
+        document: dict[str, Any],
+        confidence_by_ref: dict[str, float | None],
+        *,
+        vlm_assisted: bool = False,
+    ) -> None:
+        del blocks[-len(split):]
+        for tier, (header_block, group_items) in enumerate(split):
+            blocks.append(header_block)
+            tier_block = KonverterPipeline._build_list_block(
+                document,
+                f"{reference}::tier{tier}",
+                group_items,
+                confidence_by_ref,
+            )
+            # The final position-normalising sort below ranks every block
+            # by its *raw* Docling document-tree order, not by page
+            # geometry -- and Docling put all N headers before the single
+            # merged list as one contiguous unit, so every split-off piece
+            # would still rank after every header no matter what real ref
+            # its own id resolves to, undoing this interleave right back
+            # into the original bug shape. Anchoring each split list's
+            # rank to its own paired header's real rank keeps the two
+            # tied, so the stable append-order tiebreaker (this loop's own
+            # order) decides between them.
+            tier_block["_sort_rank_ref"] = header_block.get("id")
+            if vlm_assisted:
+                # Routed to review regardless of confidence (see the
+                # auto-skip guard in _build_review_items_with_textpages) --
+                # a VLM-assisted grouping decision is exactly the kind of
+                # thing worth a human spot-check before it's trusted the
+                # same as the geometric split above.
+                tier_block["vlm_assisted"] = True
+            blocks.append(tier_block)
 
     @staticmethod
     def _list_item_level(item: dict[str, Any]) -> int:
@@ -2410,10 +2957,12 @@ class KonverterPipeline:
             is_orphaned_caption = label == "caption" and bool(
                 block.get("orphaned_caption")
             )
+            is_vlm_assisted = bool(block.get("vlm_assisted"))
             if (
                 confidence >= self.settings.high_confidence_threshold
                 and not suspected_misclassified_footnote
                 and not is_orphaned_caption
+                and not is_vlm_assisted
             ):
                 continue
             band = (
@@ -2559,7 +3108,7 @@ class KonverterPipeline:
                     # Docling itself cannot preserve italics on PDF text
                     # (verified directly: the DoclingDocument schema has a
                     # formatting field, but the PDF backend never populates
-                    # it — see BACKEND_AUDIT.md), so an auto-accepted legal
+                    # it — see docs/audits/BACKEND_AUDIT.md), so an auto-accepted legal
                     # citation with an italicised case name has already
                     # silently lost that styling by the time it reaches
                     # this queue; flagging it as system-validated rather
@@ -2582,6 +3131,12 @@ class KonverterPipeline:
                         "find at all. Check the original page and upload the missing "
                         "figure if there is one."
                         if is_orphaned_caption
+                        else "This list's grouping under its heading was decided by an AI "
+                        "vision model, not the usual extraction logic, because the page "
+                        "looked like a diagram a simpler check couldn't confidently split. "
+                        "The text itself is unchanged from extraction — check that each "
+                        "item landed under the correct heading against the original PDF."
+                        if is_vlm_assisted
                         else "Confirm the structure label and extracted content against the original PDF. "
                         "Changing the structure also changes the correction editor and generated output."
                     ),

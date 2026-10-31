@@ -4,13 +4,18 @@ from pathlib import Path
 
 import fitz  # PyMuPDF, used only to build test fixture PDFs with real text
 
+from app import diagram_vlm
 from app.config import Settings
 from app.pipeline import (
     KonverterPipeline,
+    _exclude_decorative_heading_accent_pictures,
+    _exclude_repeating_chapter_divider_pictures,
     _exclude_repeating_decorative_pictures,
+    _exclude_diagram_text_fragments,
     _flag_orphaned_captions,
     _is_genuine_form_content,
     _merge_indented_footnote_continuations,
+    _recover_page_number_pictures,
     _relabel_footnote_lists,
     _relabel_misclassified_page_furniture,
     _recover_orphaned_footnote_markers,
@@ -43,6 +48,7 @@ def _settings(**overrides) -> Settings:
         description_max_chars=600,
         log_level="INFO",
         openai_api_key="",
+        claude_api_key="",
         docling_mode="local",
         docling_endpoint_url="",
         runpod_api_key="",
@@ -1701,6 +1707,205 @@ def test_a_small_picture_appearing_on_only_two_pages_is_never_excluded():
         assert "meta" not in picture
 
 
+def _write_page_number_pdf(path: Path, text: str, left: float, top: float, page_width: int = 595, page_height: int = 842) -> None:
+    doc = fitz.open()
+    page = doc.new_page(width=page_width, height=page_height)
+    page.insert_text((left, top + 10), text, fontsize=9, fontname="helv")
+    doc.save(path)
+    doc.close()
+
+
+def test_a_page_edge_picture_that_is_really_a_page_number_gets_excluded(tmp_path):
+    """Reproduces a real bug found live across a VLRC corpus check: a page
+    number styled as part of a chapter's own front-matter design (bold,
+    coloured, an unusual font treatment) gets classified by Docling as a
+    "picture" instead of recognised as text. Independently re-reading the
+    exact same PDF region with pymupdf -- bypassing Docling's own picture
+    detection entirely -- cleanly recovers the real page number ("xxiv"),
+    confirming it every time: Docling misjudged the type here, not the
+    content."""
+    pdf_path = tmp_path / "source.pdf"
+    _write_page_number_pdf(pdf_path, "xxiv", left=35.0, top=800.0)
+    document = {
+        "pictures": [
+            _picture("#/pictures/0", 1, 33.0, 798.0, 65.0, 815.0),
+        ],
+        "pages": {"1": {"size": {"width": 595, "height": 842}}},
+    }
+
+    _recover_page_number_pictures(document, pdf_path)
+
+    assert document["pictures"][0]["meta"]["konverter_exclude_from_output"] is True
+
+
+def test_a_page_edge_picture_that_is_not_a_page_number_is_left_alone(tmp_path):
+    """The recovered text must itself look like a bare page number -- an
+    unrelated small picture that happens to sit in the page's edge margin
+    (a logo mark, a small icon) must never be excluded just because it's
+    tiny and near the edge."""
+    pdf_path = tmp_path / "source.pdf"
+    _write_page_number_pdf(pdf_path, "Fig.", left=35.0, top=800.0)
+    document = {
+        "pictures": [
+            _picture("#/pictures/0", 1, 33.0, 798.0, 65.0, 815.0),
+        ],
+        "pages": {"1": {"size": {"width": 595, "height": 842}}},
+    }
+
+    _recover_page_number_pictures(document, pdf_path)
+
+    assert "meta" not in document["pictures"][0]
+
+
+def test_a_large_picture_at_the_page_edge_is_never_treated_as_a_page_number(tmp_path):
+    """Scoped to genuinely tiny pictures only -- a real figure that
+    happens to sit near a page edge must never be swept up just because
+    of its position."""
+    pdf_path = tmp_path / "source.pdf"
+    _write_page_number_pdf(pdf_path, "xxiv", left=35.0, top=800.0)
+    document = {
+        "pictures": [
+            _picture("#/pictures/0", 1, 33.0, 700.0, 300.0, 830.0),
+        ],
+        "pages": {"1": {"size": {"width": 595, "height": 842}}},
+    }
+
+    _recover_page_number_pictures(document, pdf_path)
+
+    assert "meta" not in document["pictures"][0]
+
+
+def _chapter_divider_picture(self_ref: str, page_no: int, left: float, top: float) -> dict:
+    return _picture(self_ref, page_no, left, top, left + 120.0, top + 110.0)
+
+
+def test_a_chapter_divider_picture_cluster_is_excluded_once_one_member_is_confirmed():
+    """Reproduces a real bug found live in "Recklessness": a chapter-
+    opening divider graphic (a coloured box printing "CHAPTER N", the
+    number changing every chapter) repeats 11 times in one report, always
+    close to the same position but never pixel-identical (the digit count
+    itself changes the box's rendered size). Docling only extracted the
+    "CHAPTER N" label as a separate, structurally nested text child for 4
+    of the 11 real instances -- confirming even one of them is enough to
+    trust every other picture in the same tight position cluster. The
+    confirming "CHAPTER 01" label itself must also be excluded once its
+    picture is: the chapter's real title is already extracted separately
+    as its own heading, so this copy has nothing left to do but float as
+    a stray, meaningless one-word paragraph."""
+    document = {
+        "pictures": [
+            _chapter_divider_picture("#/pictures/0", 21, 418.5, 41.8),
+            _chapter_divider_picture("#/pictures/1", 79, 414.9, 41.3),
+            _chapter_divider_picture("#/pictures/2", 119, 416.0, 41.9),
+            _chapter_divider_picture("#/pictures/3", 141, 411.5, 41.4),
+        ],
+        "texts": [
+            {
+                "text": "CHAPTER 01",
+                "parent": {"$ref": "#/pictures/0"},
+            },
+        ],
+    }
+
+    _exclude_repeating_chapter_divider_pictures(document)
+
+    for picture in document["pictures"]:
+        assert picture["meta"]["konverter_exclude_from_output"] is True
+    assert document["texts"][0]["meta"]["konverter_exclude_from_output"] is True
+
+
+def test_chapter_divider_exclusion_never_fires_without_any_textual_confirmation():
+    """The same tight position cluster, repeated 3+ times, without a
+    single "CHAPTER N" label ever confirmed nested inside any member --
+    must be left alone. Position repetition alone isn't a safe signal at
+    this size the way it is for the tiny page-template case; a real,
+    similarly-sized recurring graphic (a report's own running logo, say)
+    without any chapter-marker confirmation must never be excluded."""
+    document = {
+        "pictures": [
+            _chapter_divider_picture("#/pictures/0", 21, 418.5, 41.8),
+            _chapter_divider_picture("#/pictures/1", 79, 414.9, 41.3),
+            _chapter_divider_picture("#/pictures/2", 119, 416.0, 41.9),
+        ],
+        "texts": [],
+    }
+
+    _exclude_repeating_chapter_divider_pictures(document)
+
+    for picture in document["pictures"]:
+        assert "meta" not in picture
+
+
+def test_chapter_divider_exclusion_requires_at_least_three_pages():
+    document = {
+        "pictures": [
+            _chapter_divider_picture("#/pictures/0", 21, 418.5, 41.8),
+            _chapter_divider_picture("#/pictures/1", 79, 414.9, 41.3),
+        ],
+        "texts": [
+            {"text": "CHAPTER 01", "parent": {"$ref": "#/pictures/0"}},
+        ],
+    }
+
+    _exclude_repeating_chapter_divider_pictures(document)
+
+    for picture in document["pictures"]:
+        assert "meta" not in picture
+
+
+def _heading_text(text: str, page_no: int, left: float, top: float, right: float, bottom: float) -> dict:
+    return {"text": text, "prov": [{"page_no": page_no, "bbox": {"l": left, "t": top, "r": right, "b": bottom}}]}
+
+
+def test_a_decorative_accent_picture_behind_a_glossary_heading_is_excluded():
+    """Reproduces a real bug found live across a VLRC corpus check (8 of
+    10 documents): a "picture" entity whose bounding box nearly exactly
+    overlaps a "Glossary" heading's own text box -- a coloured accent
+    behind the heading, part of the report's own back-matter design, not
+    a missing figure."""
+    document = {
+        "pictures": [_picture("#/pictures/0", 17, 42.4, 743.8, 130.4, 720.8)],
+        "texts": [_heading_text("Glossary", 17, 43.6, 742.7, 130.2, 721.3)],
+    }
+
+    _exclude_decorative_heading_accent_pictures(document)
+
+    assert document["pictures"][0]["meta"]["konverter_exclude_from_output"] is True
+
+
+def test_a_picture_merely_near_a_glossary_heading_without_overlap_is_left_alone():
+    """Proximity alone isn't the signal -- only substantial overlap is. A
+    real figure positioned near, but not behind, a back-matter heading
+    must never be excluded just for sharing a page with one."""
+    document = {
+        "pictures": [_picture("#/pictures/0", 17, 42.4, 600.0, 130.4, 500.0)],
+        "texts": [_heading_text("Glossary", 17, 43.6, 742.7, 130.2, 721.3)],
+    }
+
+    _exclude_decorative_heading_accent_pictures(document)
+
+    assert "meta" not in document["pictures"][0]
+
+
+def test_a_picture_overlapping_an_ordinary_chapter_heading_is_never_excluded():
+    """Scoped to the same narrow back-matter title list toc_hierarchy.py
+    already trusts (glossary/bibliography/references/index/appendices) --
+    an ordinary chapter heading a real figure might legitimately overlap
+    (a pull-quote graphic behind a title, say) must never trigger this."""
+    document = {
+        "pictures": [_picture("#/pictures/0", 40, 42.4, 743.8, 130.4, 720.8)],
+        "texts": [
+            _heading_text(
+                "Chapter 5: Promoting compliance", 40, 43.6, 742.7, 300.0, 721.3
+            )
+        ],
+    }
+
+    _exclude_decorative_heading_accent_pictures(document)
+
+    assert "meta" not in document["pictures"][0]
+
+
 def test_a_genuine_one_off_image_docling_never_detected_is_synthesized_as_a_picture(tmp_path):
     """Reproduces a real bug found live in "Funeral and Burial Instructions",
     spotted directly by the user: "Figure 2: Excerpt from the Hindu
@@ -2012,6 +2217,23 @@ def test_bare_number_nested_under_a_chart_is_not_promoted_to_a_floating_paragrap
     assert len(contact_blocks) == 1
 
 
+def _diagram_caption_block(text: str, top: float, page: int = 32) -> dict:
+    return {
+        "id": f"#/texts/caption-{text}",
+        "label": "text",
+        "text": text,
+        "page": page,
+        "source_bounds": {
+            "left": 60.0,
+            "top": top,
+            "right": 400.0,
+            "bottom": top + 18.0,
+            "page_width": 595.0,
+            "page_height": 842.0,
+        },
+    }
+
+
 def _diagram_header_block(text: str, top: float, page: int = 32) -> dict:
     return {
         "id": f"#/texts/header-{text}",
@@ -2066,6 +2288,7 @@ def test_a_diagram_list_flattened_across_multiple_tier_headers_is_split_back_apa
     Figure 3 (in top-left coordinates), so this test also guards the
     tolerance chosen for that ~2-3pt header/first-item overlap."""
     headers = [
+        _diagram_caption_block("Figure 3: Hierarchy of offences against the person", 101.0),
         _diagram_header_block("20 years imprisonment", 139.41),
         _diagram_header_block("15 years imprisonment", 208.75),
         _diagram_header_block("10 years imprisonment", 377.94),
@@ -2131,6 +2354,369 @@ def test_a_single_trailing_header_never_triggers_the_diagram_list_split():
     )
 
     assert split is None
+
+
+def _diagram_item_without_bbox(ref: str, text: str, page: int = 32) -> dict:
+    # No "bbox" in prov at all -- the shape that makes the geometric
+    # split bail out immediately (it has nothing to compare positions
+    # with), the exact condition the VLM fallback exists for.
+    return {"self_ref": ref, "text": text, "prov": [{"page_no": page}]}
+
+
+def test_vlm_split_is_tried_when_the_geometric_split_cannot_apply(tmp_path, monkeypatch):
+    """When the geometric check has no usable positions to work from, the
+    VLM fallback -- given a valid grouping from the (mocked) API -- can
+    still recover the correct split, using its index mapping applied to
+    Docling's own already-extracted item text, not anything the mock
+    itself supplied as text."""
+    headers = [
+        _diagram_caption_block("Figure 1: Some tiers", 101.0),
+        _diagram_header_block("Tier A", 100.0),
+        _diagram_header_block("Tier B", 300.0),
+    ]
+    child_items = [
+        _diagram_item_without_bbox("#/texts/1", "First offence."),
+        _diagram_item_without_bbox("#/texts/2", "Second offence."),
+        _diagram_item_without_bbox("#/texts/3", "Third offence."),
+    ]
+    pdf_path = tmp_path / "source.pdf"
+    doc = fitz.open()
+    doc.new_page(width=595, height=842)
+    doc.save(pdf_path)
+    doc.close()
+
+    monkeypatch.setattr(
+        diagram_vlm, "classify_diagram_grouping", lambda **kwargs: [0, 1, 1]
+    )
+
+    split = KonverterPipeline._split_diagram_list_via_vlm(
+        headers, child_items, 32, pdf_path, "sk-test-key"
+    )
+
+    assert split is not None
+    assert [header["text"] for header, _items in split] == ["Tier A", "Tier B"]
+    assert [item["text"] for item in split[0][1]] == ["First offence."]
+    assert [item["text"] for item in split[1][1]] == ["Second offence.", "Third offence."]
+
+
+def test_vlm_split_is_skipped_without_an_api_key(tmp_path, monkeypatch):
+    headers = [
+        _diagram_caption_block("Figure 1: Some tiers", 101.0),
+        _diagram_header_block("Tier A", 100.0),
+        _diagram_header_block("Tier B", 300.0),
+    ]
+    child_items = [
+        _diagram_item_without_bbox("#/texts/1", "First offence."),
+        _diagram_item_without_bbox("#/texts/2", "Second offence."),
+    ]
+    pdf_path = tmp_path / "source.pdf"
+    doc = fitz.open()
+    doc.new_page(width=595, height=842)
+    doc.save(pdf_path)
+    doc.close()
+
+    called = False
+
+    def _fake_classify(**kwargs):
+        nonlocal called
+        called = True
+        return [0, 1]
+
+    monkeypatch.setattr(diagram_vlm, "classify_diagram_grouping", _fake_classify)
+
+    split = KonverterPipeline._split_diagram_list_via_vlm(
+        headers, child_items, 32, pdf_path, ""
+    )
+
+    assert split is None
+    assert called is False
+
+
+def test_vlm_split_never_fires_on_a_single_trailing_header(tmp_path):
+    """Same guard as the geometric version: an ordinary heading followed
+    by its own single list is the common case and must never trigger an
+    API call at all."""
+    headers = [_diagram_header_block("Overview", 100.0)]
+    child_items = [_diagram_item_without_bbox("#/texts/1", "A point.")]
+    pdf_path = tmp_path / "source.pdf"
+    doc = fitz.open()
+    doc.new_page(width=595, height=842)
+    doc.save(pdf_path)
+    doc.close()
+
+    split = KonverterPipeline._split_diagram_list_via_vlm(
+        headers, child_items, 32, pdf_path, "sk-test-key"
+    )
+
+    assert split is None
+
+
+def test_diagram_split_never_fires_on_ordinary_consecutive_subsection_headers(
+    tmp_path, monkeypatch
+):
+    """Reproduces a real false-positive found live in "Recklessness": an
+    ordinary chapter with two short, similarly-styled subsection
+    questions in a row ("Aubrey and recklessness in New South Wales" /
+    "The DPP Reference case") matches the bare header-run condition just
+    as well as a genuine diagram does, but isn't one -- Docling merged a
+    short list under it for unrelated reasons, not because it's a
+    flattened chart. Neither the geometric nor the VLM path may treat
+    this as diagram data without a "Figure N:" caption immediately
+    before the header run; the VLM path in particular must never even
+    make an API call for it."""
+    headers = [
+        _diagram_header_block("Aubrey and recklessness in New South Wales", 139.41),
+        _diagram_header_block("The DPP Reference case", 300.0),
+    ]
+    child_items = [
+        _diagram_item_without_bbox("#/texts/1", "Some ordinary body text."),
+    ]
+    document = {"pages": {"32": {"size": {"width": 595.0, "height": 842.0}}}}
+
+    geometric = KonverterPipeline._split_diagram_list_by_preceding_headers(
+        headers, document, child_items, 32
+    )
+    assert geometric is None
+
+    called = False
+
+    def _fake_classify(**kwargs):
+        nonlocal called
+        called = True
+        return [0]
+
+    monkeypatch.setattr(diagram_vlm, "classify_diagram_grouping", _fake_classify)
+    pdf_path = tmp_path / "source.pdf"
+    doc = fitz.open()
+    doc.new_page(width=595, height=842)
+    doc.save(pdf_path)
+    doc.close()
+
+    vlm = KonverterPipeline._split_diagram_list_via_vlm(
+        headers, child_items, 32, pdf_path, "sk-test-key"
+    )
+    assert vlm is None
+
+
+def test_diagram_caption_pattern_ignores_body_text_that_merely_mentions_a_figure():
+    """Reproduces a real false match found live in "Recklessness": "Figure
+    3 shows the gradation of all the offences against the person..." is
+    an ordinary body-text sentence, not a caption, but it starts the same
+    way a real "Figure 3: Hierarchy of offences..." caption does. Real
+    VLRC captions are consistently "Figure N: Title" -- the colon is what
+    tells the two apart."""
+    assert KonverterPipeline._DIAGRAM_CAPTION_RE.match(
+        "Figure 3: Hierarchy of offences against the person"
+    )
+    assert not KonverterPipeline._DIAGRAM_CAPTION_RE.match(
+        "Figure 3 shows the gradation of all the offences against the person"
+    )
+
+
+def test_diagram_split_still_fires_when_the_caption_is_not_immediately_adjacent():
+    """The caption only has to be somewhere on the same page as the
+    header run, not the literal block immediately before it -- a stray
+    furniture block or an intervening paragraph between the caption and
+    the diagram's own headers shouldn't disable the check."""
+    headers = [
+        _diagram_caption_block("Figure 3: Hierarchy of offences against the person", 90.0),
+        _diagram_caption_block("filler paragraph unrelated to the diagram", 110.0),
+        _diagram_header_block("20 years imprisonment", 139.41),
+        _diagram_header_block("15 years imprisonment", 208.75),
+    ]
+    # The "filler paragraph" line above breaks _trailing_diagram_headers's
+    # own backward run-detection (it's labelled "text", not a header) just
+    # like it would in a real document -- the 2-header run at the tail is
+    # still found the same way. What this exercises is that the caption,
+    # two blocks back rather than the one immediately before the run,
+    # still satisfies the page-wide caption check.
+    result = KonverterPipeline._trailing_diagram_headers(headers, 32)
+
+    assert result is not None
+    assert [header["text"] for header in result] == [
+        "20 years imprisonment",
+        "15 years imprisonment",
+    ]
+
+
+def test_a_vlm_assisted_list_block_always_reaches_review_regardless_of_confidence():
+    """A grouping decided by the VLM fallback is exactly the kind of
+    thing worth a human spot-check before it's trusted the same as a
+    normal high-confidence extraction -- verified directly against the
+    auto-skip guard in _build_review_items_with_textpages, the same
+    mechanism that already forces a suspected-misclassified footnote or
+    an orphaned caption through regardless of its own confidence score."""
+    pipeline = KonverterPipeline(_settings())
+    blocks = [
+        {
+            "id": "#/groups/1::tier0",
+            "label": "list",
+            "text": "· First offence.",
+            "list_items": ["First offence."],
+            "page": 1,
+            "confidence": 0.99,
+            "vlm_assisted": True,
+        }
+    ]
+
+    items = pipeline._build_review_items(blocks, None)
+
+    assert len(items) == 1
+    assert items[0]["status"] == "pending"
+    assert "AI vision model" in items[0]["note"]
+
+
+def test_a_figures_own_caption_is_never_sent_for_diagram_classification(tmp_path, monkeypatch):
+    """Reproduces a real bug found live in "Recklessness": a genuine,
+    correctly-extracted figure caption ("Figure 2: The elements of the
+    offence 'recklessly causing serious injury'"), raw-labelled "caption"
+    by Docling, is structurally nested under its own picture the same
+    way the picture's internal diagram labels are -- and got excluded
+    right alongside them the first time this ran. A caption is exactly
+    the kind of genuine, reader-needed content this whole check exists
+    to protect; Docling's own "caption" label is a free, already-correct
+    signal that must never even reach the VLM, regardless of what it
+    would say about the text."""
+    pdf_path = tmp_path / "source.pdf"
+    doc = fitz.open()
+    doc.new_page(width=595, height=842)
+    doc.save(pdf_path)
+    doc.close()
+
+    document = {
+        "pictures": [{"self_ref": "#/pictures/0", "prov": [{"page_no": 1, "bbox": {"l": 40, "t": 700, "r": 200, "b": 600}}]}],
+        "texts": [
+            {"self_ref": "#/texts/0", "label": "caption", "text": "Figure 2: The elements of the offence.", "parent": {"$ref": "#/pictures/0"}, "prov": [{"page_no": 1}]},
+            {"self_ref": "#/texts/1", "text": "Element 1", "parent": {"$ref": "#/pictures/0"}, "prov": [{"page_no": 1}]},
+            {"self_ref": "#/texts/2", "text": "The victim suffered a serious injury", "parent": {"$ref": "#/pictures/0"}, "prov": [{"page_no": 1}]},
+        ],
+    }
+
+    called_with = {}
+
+    def _fake_classify(**kwargs):
+        called_with.update(kwargs)
+        return ["diagram", "diagram"]
+
+    monkeypatch.setattr(diagram_vlm, "classify_picture_text_fragments", _fake_classify)
+
+    excluded = _exclude_diagram_text_fragments(document, pdf_path, "sk-test-key")
+
+    assert "Figure 2: The elements of the offence." not in called_with.get("fragments", [])
+    assert "meta" not in document["texts"][0]
+    assert excluded == ["Element 1", "The victim suffered a serious injury"]
+
+
+def test_diagram_text_fragments_nested_under_a_picture_are_excluded_when_classified_as_diagram(
+    tmp_path, monkeypatch
+):
+    """Reproduces the real shape found live in "Review of the Bail Act":
+    a data table's own legend, broken into separate fragments nested
+    under its picture ("Per" / "centage of" / "To" / "tal"), each of
+    which would otherwise be promoted to its own disconnected floating
+    paragraph. Classified fragments are excluded outright -- flagging
+    alone doesn't reduce review work when the real workflow is bulk-
+    accept-everything, found live on a second page (a full-page
+    flowchart) where every flagged fragment survived into the export
+    unread. A fragment classified "content" (e.g. real cover-page
+    contact details nested the same structural way) must be left
+    completely untouched, and the excluded texts are returned for
+    logging."""
+    pdf_path = tmp_path / "source.pdf"
+    doc = fitz.open()
+    doc.new_page(width=595, height=842)
+    doc.save(pdf_path)
+    doc.close()
+
+    document = {
+        "pictures": [{"self_ref": "#/pictures/0", "prov": [{"page_no": 1, "bbox": {"l": 40, "t": 700, "r": 200, "b": 600}}]}],
+        "texts": [
+            {"self_ref": "#/texts/0", "text": "Per", "parent": {"$ref": "#/pictures/0"}, "prov": [{"page_no": 1}]},
+            {"self_ref": "#/texts/1", "text": "centage of", "parent": {"$ref": "#/pictures/0"}, "prov": [{"page_no": 1}]},
+            {"self_ref": "#/texts/2", "text": "1300 666 555 (within Victoria)", "parent": {"$ref": "#/pictures/0"}, "prov": [{"page_no": 1}]},
+        ],
+    }
+
+    monkeypatch.setattr(
+        diagram_vlm,
+        "classify_picture_text_fragments",
+        lambda **kwargs: ["diagram", "diagram", "content"],
+    )
+
+    excluded = _exclude_diagram_text_fragments(document, pdf_path, "sk-test-key")
+
+    excluded_flags = {
+        item["self_ref"]: bool((item.get("meta") or {}).get("konverter_exclude_from_output"))
+        for item in document["texts"]
+    }
+    assert excluded_flags["#/texts/0"] is True
+    assert excluded_flags["#/texts/1"] is True
+    assert excluded_flags["#/texts/2"] is False
+    assert excluded == ["Per", "centage of"]
+
+
+def test_diagram_text_exclusion_never_fires_with_fewer_than_two_fragments(tmp_path, monkeypatch):
+    """A single text fragment nested under a picture could easily be a
+    genuine caption -- must never trigger an API call at all."""
+    pdf_path = tmp_path / "source.pdf"
+    doc = fitz.open()
+    doc.new_page(width=595, height=842)
+    doc.save(pdf_path)
+    doc.close()
+
+    document = {
+        "pictures": [{"self_ref": "#/pictures/0", "prov": [{"page_no": 1, "bbox": {"l": 40, "t": 700, "r": 200, "b": 600}}]}],
+        "texts": [
+            {"self_ref": "#/texts/0", "text": "A single caption.", "parent": {"$ref": "#/pictures/0"}, "prov": [{"page_no": 1}]},
+        ],
+    }
+
+    called = False
+
+    def _fake_classify(**kwargs):
+        nonlocal called
+        called = True
+        return ["diagram"]
+
+    monkeypatch.setattr(diagram_vlm, "classify_picture_text_fragments", _fake_classify)
+
+    excluded = _exclude_diagram_text_fragments(document, pdf_path, "sk-test-key")
+
+    assert called is False
+    assert excluded == []
+    assert "meta" not in document["texts"][0]
+
+
+def test_diagram_text_exclusion_skipped_without_an_api_key(tmp_path, monkeypatch):
+    pdf_path = tmp_path / "source.pdf"
+    doc = fitz.open()
+    doc.new_page(width=595, height=842)
+    doc.save(pdf_path)
+    doc.close()
+
+    document = {
+        "pictures": [{"self_ref": "#/pictures/0", "prov": [{"page_no": 1, "bbox": {"l": 40, "t": 700, "r": 200, "b": 600}}]}],
+        "texts": [
+            {"self_ref": "#/texts/0", "text": "Per", "parent": {"$ref": "#/pictures/0"}, "prov": [{"page_no": 1}]},
+            {"self_ref": "#/texts/1", "text": "centage of", "parent": {"$ref": "#/pictures/0"}, "prov": [{"page_no": 1}]},
+        ],
+    }
+
+    called = False
+
+    def _fake_classify(**kwargs):
+        nonlocal called
+        called = True
+        return ["diagram", "diagram"]
+
+    monkeypatch.setattr(diagram_vlm, "classify_picture_text_fragments", _fake_classify)
+
+    excluded = _exclude_diagram_text_fragments(document, pdf_path, "")
+
+    assert called is False
+    assert excluded == []
+    for item in document["texts"]:
+        assert "meta" not in item
 
 
 def test_diagram_list_split_never_fires_when_a_tier_would_be_left_empty():

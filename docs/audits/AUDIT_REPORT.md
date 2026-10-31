@@ -471,4 +471,4 @@ Everything in "Known limitations" above is understood, scoped, and deliberately 
 
 ---
 
-*Compiled from the full session history in `BACKEND_AUDIT.md` plus a live re-verification pass against the current corpus. Every fix listed was reproduced against real document content before being fixed, covered by a regression test, and confirmed load-bearing via a disabled-function counterfactual. No existing human review decision was overridden by any persistence step referenced in this report.*
+*Compiled from the full session history in `docs/audits/BACKEND_AUDIT.md` plus a live re-verification pass against the current corpus. Every fix listed was reproduced against real document content before being fixed, covered by a regression test, and confirmed load-bearing via a disabled-function counterfactual. No existing human review decision was overridden by any persistence step referenced in this report.*
