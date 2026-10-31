@@ -106,7 +106,7 @@ Backend suite: 401 tests pass (29 new RAG tests).
   63, 83 rebuilt from the PDF. The earlier check had missed 9, 12, 40 and 51 because 9A, 12A, 40A and 51A exist. 16 chunks are PDF-sourced.
   Tests: `test_rag_recovery.py` (success, no-PDF, unrecoverable, repealed).
 - **Paper end matter**: the stray `h-` chunk after the last appendix question is gone.
-- **Q12 gold** (`docs/rag-inputs/questions.csv`): the report never cites s 77 in Recommendation 22. It cites it only in footnotes
+- **Q12 gold** (`eval/questions.csv`, moved from `docs/rag-inputs/`): the report never cites s 77 in Recommendation 22. It cites it only in footnotes
   (fn 9 `s 77(1)(a)-(b)`, fn 10 `ss 77(1)(c)-(d)`, fn 12, fn 39) to paras 7.9, 7.10 and 7.33. Gold changed from `report:rec-22;act:s-77` to
   `report:para-7.9;act:s-77`; question text unchanged. Footnotes are not embedded in v1, so para 7.9 is found by topic, not by the "s 77" string.
 
@@ -157,31 +157,35 @@ The 16 PDF-rebuilt sections have their margin history notes stripped (they wrap 
 `metadata.history_notes`). About 8 converter-sourced Act chunks (s-3, s-5, s-18B, s-43, s-84A, sch1-2) still contain fragments of such notes, mostly in
 odd shapes inside tables. They are noise, not enacted text. Not fixed.
 
-## Phase 4 (started): the part that does not need SQL
+## Phase 4: retrieval, ask, eval, n8n (done, for review)
 
-Held until the pgvector test passes: retrieval (`match_chunks` calls, `--links` expansion), `ask`/`eval` CLI wiring and the n8n Ask workflow.
+pgvector 0.8 test (`test_rag_sql.py`, 11 tests including the real-Postgres one) passed on `pgvector/pgvector:pg16` before this started.
 
-Built now (no database involved):
+- `retrieve.py`: embeds the question as a *query*, calls `match_chunks(k, doc_ids, as_of_date, meta_filter)`. With `links=True`, calls
+  `expand_links` for the sections found and appends up to 3 linked sections after the vector results (one hop, both directions, never one already retrieved);
+  they carry `via_link` and no similarity.
+- **`expand_links` SQL** (new in `006_rag_chunks.sql`): applies the same doc / date / metadata filters as `match_chunks` in one place, so a linked section cannot
+  leak in from a version that is not in force; picks the newest version that passes the filters; orders by the rank of the seed result, outgoing before incoming.
+  Mirrored by `MemoryStore.expand_links`. **The real-Postgres test was extended (seven `expand_links` assertions); it has not been run: please rerun it.**
+- `ask.py`, `answer.py`: `ask()` = retrieve + `answer_question`. Link rows bypass the similarity floor (they have no score). The result adds `ranked`
+  (pre-floor) next to `retrieved`/`scores` (what the model saw).
+- `evalrun.py`: `python -m app.rag eval` writes one JSON line per question: `question_id, setup, category, retrieved[]` (ranked sections BEFORE the floor, what
+  score.py reads), `used[]` (what the model saw), `answer, citations, abstained, abstain_reason, latency_ms, top_similarity` (for calibrating the floor).
+  `eval/questions.csv` and `eval/score.py` were moved from `docs/rag-inputs/` unchanged apart from Q12. Scoring tables, floor calibration and the README are Phase 5.
+- `cli.py`: `ask "<q>" [--doc ID[,ID]] [--as-of YYYY-MM-DD] [--links] [-k N] [--meta K=V] [--json]` (prints the answer, citations and every retrieved chunk,
+  marking those below the floor), `eval ...`, `n8n-export`.
+- **n8n** (`rag/n8n/`): template + generated export + README. Changes from the base workflow: RPC parameters `k` / `as_of_date` (and optional `meta_filter` in the
+  request); chunk columns (`heading_path`, `version`, pages) instead of `metadata.*`; Voyage and DeepSeek on Header Auth credentials, Supabase on its credential, all
+  as `REPLACE_ME` placeholders; embedding provider/model/dimension in the Config node (voyage or openai); force-abstain on no valid citation; `contains` handling;
+  `abstain_reason` and `ranked` in the response; system prompt generated from `prompts/answer_system.txt` by `python -m app.rag n8n-export`.
+- **Sync tests** (`test_rag_n8n.py`): the committed export equals the generator's output; its prompt equals the shared file; `match_chunks` is called with exactly the SQL
+  function's parameter names (and the Python store sends the same names, also for `expand_links`); no `$env`, no keys; Config defaults equal the Python defaults. With `node`
+  installed (it is on GitHub's runners) the workflow's own Build prompt / Parse answer / Not found / Normalise request code is executed on the same inputs as the Python
+  and compared: identical prompts, and identical answers for 11 model outputs (valid, invented citations, `contains`, forced abstain, model abstain, code fences, junk).
+- n8n has no link expansion; its `retrieved` is Python's `retrieved`. Its retrieval equals `ask` without `--links`.
 
-- `prompts/answer_system.txt`: the one system prompt. n8n will embed the same text, and a test will compare them.
-  Adapted from the base workflow's prompt with two additions: a rule for chunks whose header says `contains: ...` (cite every listed ID) and a rule
-  for passages from different versions that disagree (state each version, do not choose).
-- `llm.py`: `DeepSeekClient` (`/chat/completions`, temperature 0, `response_format: json_object`, retries, no key in errors).
-- `answer.py`: `answer_question(question, rows, llm, settings)` returns the same JSON as the n8n workflow:
-  `{answer, citations, unsupported_citations, abstained, retrieved, scores, latency_ms, model, usage}` plus `abstain_reason`
-  (`no_passages`, `model`, `no_valid_citations`, `llm_error`) and `error` when the LLM fails.
-  Enforced in code: nothing at or above `RAG_MIN_SIMILARITY` -> "Not found in the provided documents." without calling the model; citations kept only
-  if they name a retrieved section or one listed in a chunk's `contains`; an answer with no valid citation becomes an abstention; LLM errors or unparseable
-  output become an abstention.
-- New settings: `DEEPSEEK_API_KEY`, `DEEPSEEK_BASE_URL`, `RAG_LLM_MODEL`, `RAG_TOP_K` (8), `RAG_MIN_SIMILARITY` (0.3). In `.env.example`.
-
-To change in `rag/n8n/` when unblocked (from reading `docs/rag-inputs/konverter-rag-ask.json`):
-
-- `match_chunks` body: `match_count` -> `k`, `law_as_of` -> `as_of_date` (the sync test will check RPC parameter names as well as the prompt).
-- "Build prompt" reads `metadata.heading_path` and `metadata.version`; in `rag_chunks` both are columns (`heading_path`, `version`).
-- Voyage and DeepSeek nodes use `voyageaiApi` / `openAiApi` credential types; switch to Header Auth credentials. Add the force-abstain rule and the `contains`
-  handling in "Parse answer", and load the prompt text from `prompts/answer_system.txt`.
-- The workflow's `retrieved` lists sections that passed the similarity floor. For eval, decide whether recall is measured before or after the floor (Phase 5).
+Not verified: the workflow has not been imported into a running n8n (node versions and credential wiring are the likely snags), and nothing has been run against live Voyage,
+DeepSeek or Supabase.
 
 ## Decisions on links and eval (after Phase 3 review)
 
