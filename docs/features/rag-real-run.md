@@ -13,6 +13,15 @@ Run from the repo root with the venv active:
 
 Expected: act@038 308 chunks / 137 links, paper 287 / 4 links, report 836 / 0 links.
 
+## 1b. Free-tier note: drop the HNSW index before bulk ingests
+
+Apply the current migration once (`python -m app.rag sql`, paste into the Supabase SQL editor), then:
+
+    python -m app.rag index --status
+    python -m app.rag index --drop
+
+At this size (about 1.4k chunks) leave it dropped; searches are exact and fast.
+
 ## 2. Real run (this order)
 
     python -m app.rag ingest docs/rag-inputs/samples --manifest docs/rag-inputs/documents.json --only act@038 --only paper

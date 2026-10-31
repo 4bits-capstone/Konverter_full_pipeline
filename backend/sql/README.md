@@ -11,7 +11,7 @@ by `SUPABASE_URL` / `SUPABASE_SERVICE_ROLE_KEY` in `.env`. Each is idempotent
 | `003_audit_log_lockdown.sql` | Revokes `update`/`delete` on `audit_log` from client roles — it's insert-only. |
 | `004_wordpress_publications.sql` | `wordpress_publications` table: durable record of every WordPress publish, used to warn before creating a duplicate page. |
 | `005_enable_rls.sql` | Enables row level security on every table and revokes client-role access, so only the backend's service role can read or write them. |
-| `006_rag_chunks.sql` | **Template** for the RAG tables (`rag_documents`, `rag_chunks`, `rag_links`) and `match_chunks()`. The embedding size is not hard-coded: render it with `python -m app.rag sql` (reads `RAG_EMBED_DIM`) and paste the output. |
+| `006_rag_chunks.sql` | **Template** for the RAG tables (`rag_documents`, `rag_chunks`, `rag_links`) and `match_chunks()`. The embedding size is not hard-coded: render it with `python -m app.rag sql` (reads `RAG_EMBED_DIM`) and paste the output. The HNSW index is optional and managed with `python -m app.rag index --status/--create/--drop`. |
 
 `verify_audit_log_chain.sql` is a read-only diagnostic, not part of the setup
 sequence — run it any time to check the `audit_log` hash chain is intact.

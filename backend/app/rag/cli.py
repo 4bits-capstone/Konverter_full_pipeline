@@ -5,6 +5,7 @@
   ingest --from-store ID --as KEY      an already processed document from the app's store
   ingest --from-structured FILE --as KEY [--pdf PDF]   stored structured.json (no Docling needed)
   ask "<question>" [--doc ID] [--as-of YYYY-MM-DD] [--links] [-k N]   answer with citations and the retrieved chunks
+  index [--status|--create|--drop]   the optional HNSW index (off by default; drop it for bulk ingests, rebuild once at the end)
   n8n-export                   regenerate rag/n8n/konverter-rag-ask.json (the system prompt comes from prompts/answer_system.txt)
   eval [--questions eval/questions.csv] [--out eval/results.jsonl] [--setup NAME] [--links]   run every question through ask
 
@@ -56,6 +57,12 @@ def _parser() -> argparse.ArgumentParser:
     _retrieval_args(ask_p)
     ask_p.add_argument("--json", action="store_true", help="print the raw JSON response")
 
+    idx = sub.add_parser("index", help="show, create or drop the optional HNSW vector index")
+    mode = idx.add_mutually_exclusive_group()
+    mode.add_argument("--status", action="store_true", help="show pgvector version, index and chunk counts (default)")
+    mode.add_argument("--create", action="store_true", help="build the index (pgvector >= 0.8 only)")
+    mode.add_argument("--drop", action="store_true", help="drop the index (before a bulk ingest)")
+
     sub.add_parser("n8n-export", help="regenerate rag/n8n/konverter-rag-ask.json from the template and the shared prompt")
 
     ev = sub.add_parser("eval", help="run questions.csv through ask")
@@ -101,6 +108,8 @@ def main(argv: list[str] | None = None) -> int:
             EXPORT.write_text(export_text(), encoding="utf-8")
             print(f"wrote {EXPORT}")
             return 0
+        if args.command == "index":
+            return _index(args, settings)
         if args.command == "ask":
             return _ask(args, settings)
         if args.command == "eval":
@@ -109,6 +118,28 @@ def main(argv: list[str] | None = None) -> int:
     except (ConfigError, StoreError, LLMError, EmbeddingError, FileNotFoundError, KeyError, ValueError) as exc:
         print(f"error: {exc}", file=sys.stderr)
         return 2
+
+
+INDEX_WORTH_IT = 10_000     # chunks; below this an exact scan is fast and an HNSW index only slows writes
+
+
+def _index(args: argparse.Namespace, settings) -> int:
+    store = SupabaseStore(settings)
+    action = "create" if args.create else "drop" if args.drop else "status"
+    before = store.index_status() if action != "status" else None
+    status = {"create": store.index_create, "drop": store.index_drop, "status": store.index_status}[action]()
+    if before is not None:
+        print(f"index {'already existed' if before['index_exists'] and action == 'create' else 'was ' + ('present' if before['index_exists'] else 'absent')}"
+              f" -> {action}")
+    print(f"pgvector {status['pgvector']} (HNSW {'supported' if status['hnsw_supported'] else 'not supported: needs 0.8+'})")
+    print(f"HNSW index: {'present, ' + str(status['index_size']) if status['index_exists'] else 'absent (exact scan)'}")
+    print(f"chunks: {status['chunks']} ({status['embedded_chunks']} embedded)")
+    if action == "status":
+        if status["index_exists"] and status["chunks"] < INDEX_WORTH_IT:
+            print(f"hint: under {INDEX_WORTH_IT:,} chunks the index only slows writes; consider: python -m app.rag index --drop")
+        elif not status["index_exists"] and status["chunks"] >= INDEX_WORTH_IT and status["hnsw_supported"]:
+            print(f"hint: {status['chunks']:,} chunks; an index would speed searches: python -m app.rag index --create")
+    return 0
 
 
 def _ask(args: argparse.Namespace, settings) -> int:

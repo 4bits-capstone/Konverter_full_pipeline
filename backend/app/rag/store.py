@@ -123,6 +123,9 @@ class Store(Protocol):
         self, seed_sections: Sequence[str], exclude_sections: Sequence[str] = (), doc_ids: Sequence[str] | None = None,
         as_of_date: str | None = None, meta_filter: dict[str, Any] | None = None, max_sections: int = 3,
     ) -> list[dict[str, Any]]: ...
+    def index_status(self) -> dict[str, Any]: ...
+    def index_create(self) -> dict[str, Any]: ...
+    def index_drop(self) -> dict[str, Any]: ...
 
 
 # --------------------------------------------------------------------------------------------
@@ -140,13 +143,15 @@ class SupabaseStore:
         self._client = client or httpx.Client(timeout=timeout)
 
     def _request(self, method: str, path: str, *, params: dict | None = None, json_body: Any = None,
-                 prefer: str | None = None, extra: dict[str, str] | None = None, attempts: int | None = None) -> httpx.Response:
+                 prefer: str | None = None, extra: dict[str, str] | None = None, attempts: int | None = None,
+                 timeout: float | None = None) -> httpx.Response:
         headers = {**self._headers, **(extra or {}), **({"Prefer": prefer} if prefer else {})}
         # Every call here is safe to repeat: reads, deletes by key, and upserts (merge-duplicates).
         limit = attempts or self._attempts
         for attempt in range(1, limit + 1):
             try:
-                response = self._client.request(method, f"{self._base}/{path}", params=params, json=json_body, headers=headers)
+                response = self._client.request(method, f"{self._base}/{path}", params=params, json=json_body, headers=headers,
+                                                **({"timeout": timeout} if timeout else {}))
             except httpx.TransportError as exc:               # timeouts, resets, DNS
                 if attempt == limit:
                     raise StoreError(f"{method} {path}: request failed ({type(exc).__name__}) after {attempt} attempts", True) from None
@@ -235,6 +240,16 @@ class SupabaseStore:
                 "as_of_date": as_of_date, "meta_filter": meta_filter or {}}
         return self._request("POST", "rpc/match_chunks", json_body=body).json()
 
+    def index_status(self) -> dict[str, Any]:
+        return self._request("POST", "rpc/rag_index_status", json_body={}).json()
+
+    def index_create(self) -> dict[str, Any]:
+        # Building an index can take a while; do not retry a build that is still running on the server.
+        return self._request("POST", "rpc/rag_index_create", json_body={}, attempts=1, timeout=600).json()
+
+    def index_drop(self) -> dict[str, Any]:
+        return self._request("POST", "rpc/rag_index_drop", json_body={}, attempts=1, timeout=120).json()
+
     def expand_links(self, seed_sections, exclude_sections=(), doc_ids=None, as_of_date=None, meta_filter=None, max_sections=3):
         body = {"seed_sections": list(seed_sections), "exclude_sections": list(exclude_sections),
                 "doc_ids": list(doc_ids) if doc_ids else None, "as_of_date": as_of_date,
@@ -262,7 +277,8 @@ def _passes(row: dict[str, Any], doc_ids, as_of_date, meta_filter) -> bool:
 class MemoryStore:
     """In-memory twin of SupabaseStore. Counts writes so tests can assert "nothing was written"."""
 
-    def __init__(self) -> None:
+    def __init__(self, pgvector: str = "0.8.0") -> None:
+        self.pgvector, self.index_exists = pgvector, False
         self.chunks: dict[str, dict[str, Any]] = {}
         self.documents: dict[tuple[str, str], dict[str, Any]] = {}
         self.links: dict[tuple[str, str], list[dict[str, Any]]] = {}
@@ -344,3 +360,18 @@ class MemoryStore:
                 out.append({**{c: v for c, v in row.items() if c not in ("embedding", "row_hash", "content_hash")},
                             "via_section": via, "link_kind": kind})
         return out
+
+    def index_status(self):
+        return {"pgvector": self.pgvector, "hnsw_supported": tuple(int(x) for x in self.pgvector.split(".")[:3]) >= (0, 8, 0),
+                "index_exists": self.index_exists, "index_size": "1 MB" if self.index_exists else None,
+                "chunks": len(self.chunks), "embedded_chunks": sum(1 for r in self.chunks.values() if r.get("embedding"))}
+
+    def index_create(self):
+        if not self.index_status()["hnsw_supported"]:
+            raise StoreError("POST rpc/rag_index_create: HTTP 400: pgvector older than 0.8: no HNSW index created")
+        self.index_exists = True
+        return self.index_status()
+
+    def index_drop(self):
+        self.index_exists = False
+        return self.index_status()

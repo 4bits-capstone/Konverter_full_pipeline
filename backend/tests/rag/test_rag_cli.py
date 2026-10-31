@@ -75,3 +75,39 @@ def test_folder_ingest_skips_files_without_a_manifest_entry_and_reports_missing_
 def test_argument_errors(argv, message, capsys):
     assert cli.main(argv) == 2
     assert message in capsys.readouterr().err
+
+
+# --- index command ------------------------------------------------------------------------------------
+
+def test_index_status_create_and_drop(monkeypatch, capsys):
+    store = MemoryStore()
+    monkeypatch.setattr(cli, "SupabaseStore", lambda settings: store)
+    assert cli.main(["index"]) == 0
+    out = capsys.readouterr().out
+    assert "pgvector 0.8.0 (HNSW supported)" in out and "absent (exact scan)" in out and "chunks: 0" in out
+    assert cli.main(["index", "--create"]) == 0
+    out = capsys.readouterr().out
+    assert "was absent -> create" in out and "present, 1 MB" in out and store.index_exists
+    assert cli.main(["index", "--create"]) == 0 and "already existed -> create" in capsys.readouterr().out
+    assert cli.main(["index", "--drop"]) == 0
+    assert "was present -> drop" in capsys.readouterr().out and not store.index_exists
+
+
+def test_index_hints_follow_the_size_rule(monkeypatch, capsys):
+    store = MemoryStore()
+    store.index_exists = True
+    monkeypatch.setattr(cli, "SupabaseStore", lambda settings: store)
+    cli.main(["index", "--status"])
+    assert "only slows writes" in capsys.readouterr().out                      # index present on a small table
+    store.index_exists = False
+    store.chunks = {f"c{i}": {"embedding": "[1]"} for i in range(10_000)}
+    cli.main(["index", "--status"])
+    assert "would speed searches" in capsys.readouterr().out
+
+
+def test_old_pgvector_cannot_create_an_index(monkeypatch, capsys):
+    monkeypatch.setattr(cli, "SupabaseStore", lambda settings: MemoryStore(pgvector="0.7.4"))
+    assert cli.main(["index", "--create"]) == 2
+    assert "older than 0.8" in capsys.readouterr().err
+    with pytest.raises(SystemExit):                       # --create and --drop exclude each other
+        cli.main(["index", "--create", "--drop"])

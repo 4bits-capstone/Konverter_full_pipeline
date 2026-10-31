@@ -62,18 +62,51 @@ create index if not exists rag_chunks_doc      on rag_chunks (doc_id, version);
 create index if not exists rag_chunks_section  on rag_chunks (section_id);
 create index if not exists rag_chunks_meta     on rag_chunks using gin (metadata jsonb_path_ops);
 
--- Approximate nearest-neighbour index, only where it is safe. match_chunks() filters by document and
--- date; before pgvector 0.8 a filtered HNSW scan can return fewer than k rows, so older servers use an
--- exact scan instead (fine at this size: about 1.4k chunks).
-do $$
+-- The approximate nearest-neighbour (HNSW) index is NOT created here. At this size (a few thousand chunks) an exact
+-- scan is fast, and on a small hosted instance maintaining an HNSW index makes bulk upserts very slow (tens of seconds
+-- per 64 rows were seen on the Supabase free tier). Create or drop it deliberately:
+--     python -m app.rag index --status | --create | --drop
+-- Typical bulk ingest: --drop, ingest, --create. It is only worth having from roughly 10,000 chunks, and only on
+-- pgvector >= 0.8: before that a filtered HNSW scan (match_chunks filters by document and date) can return fewer than k rows.
+-- These functions exist because the REST API cannot run DDL; they are callable by the service role only.
+create or replace function rag_index_status() returns jsonb
+language plpgsql security definer set search_path = public, extensions
+as $$
+declare
+  v text := (select extversion from pg_extension where extname = 'vector');
+  present boolean := to_regclass('public.rag_chunks_embedding') is not null;
 begin
-  if string_to_array(split_part((select extversion from pg_extension where extname = 'vector'), '-', 1), '.')::int[]
-       >= array[0, 8, 0] then
-    create index if not exists rag_chunks_embedding on rag_chunks using hnsw (embedding vector_cosine_ops);
-  else
-    raise notice 'pgvector older than 0.8: no ANN index created; match_chunks() will scan exactly';
+  return jsonb_build_object(
+    'pgvector', v,
+    'hnsw_supported', string_to_array(split_part(v, '-', 1), '.')::int[] >= array[0, 8, 0],
+    'index_exists', present,
+    'index_size', case when present then pg_size_pretty(pg_relation_size('public.rag_chunks_embedding')) end,
+    'chunks', (select count(*) from rag_chunks),
+    'embedded_chunks', (select count(*) from rag_chunks where embedding is not null)
+  );
+end;
+$$;
+
+create or replace function rag_index_create() returns jsonb
+language plpgsql security definer set search_path = public, extensions
+as $$
+begin
+  if not (rag_index_status() ->> 'hnsw_supported')::boolean then
+    raise exception 'pgvector older than 0.8: no HNSW index created (filtered searches could return fewer than k rows); match_chunks() scans exactly';
   end if;
-end $$;
+  create index if not exists rag_chunks_embedding on rag_chunks using hnsw (embedding vector_cosine_ops);
+  return rag_index_status();
+end;
+$$;
+
+create or replace function rag_index_drop() returns jsonb
+language plpgsql security definer set search_path = public, extensions
+as $$
+begin
+  drop index if exists rag_chunks_embedding;
+  return rag_index_status();
+end;
+$$;
 
 -- Cross-references extracted from the text (one hop at retrieval time).
 create table if not exists rag_links (
@@ -93,8 +126,8 @@ create index if not exists rag_links_to   on rag_links (to_section);
 --   doc_ids       only these documents (null = all)
 --   as_of_date    only chunks in force on that date: effective_from <= date and (effective_to is null or date < effective_to)
 --   meta_filter   jsonb containment on rag_chunks.metadata, e.g. '{"review_status":"reviewed"}'
--- With pgvector >= 0.8, hnsw.iterative_scan keeps scanning until k filtered rows are found; older
--- servers have no such setting (the exception block ignores that) and have no ANN index either.
+-- If an HNSW index exists (see above) and pgvector >= 0.8, hnsw.iterative_scan keeps scanning until k filtered rows are found; older
+-- servers have no such setting (the exception block ignores that). Without an index this is an exact scan.
 create or replace function match_chunks(
   query_embedding vector({{EMBEDDING_DIM}}),
   k               int     default 5,
@@ -200,3 +233,5 @@ revoke all on function match_chunks(vector({{EMBEDDING_DIM}}), int, text[], date
 grant execute on function match_chunks(vector({{EMBEDDING_DIM}}), int, text[], date, jsonb) to service_role;
 revoke all on function expand_links(text[], text[], text[], date, jsonb, int) from public, anon, authenticated;
 grant execute on function expand_links(text[], text[], text[], date, jsonb, int) to service_role;
+revoke all on function rag_index_status(), rag_index_create(), rag_index_drop() from public, anon, authenticated;
+grant execute on function rag_index_status(), rag_index_create(), rag_index_drop() to service_role;

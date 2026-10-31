@@ -93,7 +93,7 @@ def test_upsert_merges_in_batches_with_the_key_in_headers_only():
 
     store = make_store(handler)
     store.upsert_chunks([{"chunk_id": f"c{i}"} for i in range(250)])
-    assert len(requests) == 5                                   # default RAG_DB_BATCH is 50
+    assert len(requests) == 8                                   # default RAG_DB_BATCH is 32 -> 7 x 32 + 26
     r = requests[0]
     assert r.method == "POST" and str(r.url) == "https://x.supabase.co/rest/v1/rag_chunks?on_conflict=chunk_id"
     assert r.headers["prefer"] == "resolution=merge-duplicates,return=minimal"
@@ -250,7 +250,7 @@ def test_a_batch_the_link_keeps_dropping_is_split_until_the_pieces_get_through()
         return httpx.Response(201)
 
     pauses = []
-    make_store(handler, pauses).upsert_chunks(rows_of(50))
+    make_store(handler, pauses, db_batch=50).upsert_chunks(rows_of(50))
     assert ok == [f"c{i:03}" for i in range(50)]               # every row written exactly once, in order
     assert sent[:4] == [50, 50, 25, 25]                        # two tries at full size, then halves
     assert max(n for n in sent if n > 12) == 50 and sum(1 for n in sent if n <= 12) >= 4
@@ -295,3 +295,39 @@ def test_server_errors_also_split():
 
     make_store(handler).upsert_chunks(rows_of(8))
     assert sent == [8, 8, 4, 4, 2, 2, 4, 4, 2, 2]
+
+
+# --- the optional HNSW index -----------------------------------------------------------------------------
+
+def test_the_default_upsert_batch_is_32():
+    assert RagSettings().db_batch == 32
+
+
+def test_index_commands_call_the_database_functions_without_retrying_a_running_build():
+    seen = []
+    status = {"pgvector": "0.8.0", "hnsw_supported": True, "index_exists": True, "index_size": "1 MB", "chunks": 5, "embedded_chunks": 5}
+
+    def handler(request):
+        seen.append((request.url.path, request.extensions.get("timeout")))
+        return httpx.Response(200, json=status)
+
+    store = make_store(handler)
+    assert store.index_status() == status and store.index_create() == status and store.index_drop() == status
+    assert [p for p, _ in seen] == ["/rest/v1/rpc/rag_index_status", "/rest/v1/rpc/rag_index_create", "/rest/v1/rpc/rag_index_drop"]
+    assert seen[1][1]["read"] == 600.0                          # an index build may take minutes
+
+    def boom(request):
+        raise httpx.ReadTimeout("slow", request=request)
+
+    calls = []
+    with pytest.raises(StoreError, match="after 1 attempts"):
+        make_store(lambda r: (calls.append(1), boom(r))[1]).index_create()
+    assert len(calls) == 1                                      # never started twice
+
+
+def test_memory_store_mirrors_the_index_rules():
+    store = MemoryStore()
+    assert store.index_status()["index_exists"] is False
+    assert store.index_create()["index_exists"] is True and store.index_drop()["index_exists"] is False
+    with pytest.raises(StoreError, match="older than 0.8"):
+        MemoryStore(pgvector="0.7.4").index_create()

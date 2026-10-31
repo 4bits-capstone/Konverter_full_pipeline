@@ -30,7 +30,7 @@ class RagSettings:
     embed_batch: int = 64
     embed_batch_tokens: int = 30_000
     embed_max_retries: int = 8
-    db_batch: int = 50
+    db_batch: int = 32
     db_timeout: float = 60.0
     max_chars: int = 2500
     voyage_api_key: str = field(default="", repr=False)
@@ -66,7 +66,7 @@ def load_rag_settings(env: Mapping[str, str] | None = None) -> RagSettings:
         top_k = int(get("RAG_TOP_K", "8"))
         batch_tokens = int(get("RAG_EMBED_BATCH_TOKENS", "30000"))
         max_retries = int(get("RAG_EMBED_MAX_RETRIES", "8"))
-        db_batch = int(get("RAG_DB_BATCH", "50"))
+        db_batch = int(get("RAG_DB_BATCH", "32"))
         db_timeout = float(get("RAG_DB_TIMEOUT", "60"))
         min_similarity = float(get("RAG_MIN_SIMILARITY", "0.3"))
         max_chars = int(get("RAG_CHUNK_MAX_CHARS", "2500"))

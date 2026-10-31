@@ -211,6 +211,19 @@ Cause: `ingest` embedded every chunk first and wrote afterwards, and each upsert
   component is now converted to float32 and sent as the shortest decimal that parses back to exactly that float32: 0 differences in 60,000 random components of mixed magnitude
   (test), 11.4 characters per component on average against 20.2 for `repr` (about 44% smaller). Rounding to a fixed width would have been smaller by only 6% and lossy.
 
+## The HNSW index is optional (after upserts took 40-60 s per 64 rows on the Supabase free tier)
+
+- `006_rag_chunks.sql` no longer creates the HNSW index. Three service-role-only functions manage it, because the REST API cannot run DDL:
+  `rag_index_status()` (pgvector version, whether HNSW is supported, index present and size, chunk counts), `rag_index_create()` (refuses on pgvector < 0.8, where a filtered HNSW
+  scan can return fewer than k rows) and `rag_index_drop()`.
+- `python -m app.rag index [--status | --create | --drop]`. `--status` adds a hint: under 10,000 chunks an existing index only slows writes (drop it); from 10,000 an index
+  would speed searches (create it). Bulk-ingest recipe: `index --drop`, ingest, then `index --create` only if the corpus is large. Without the index `match_chunks` is an exact scan
+  (fine at ~1.4k chunks) and returns exactly k filtered rows.
+- Re-running the migration does NOT drop an index that an earlier version of it created; use `index --drop` for that.
+- Default `RAG_DB_BATCH` is now 32.
+- Whether dropping the index fixed the slow upserts is not yet known to me: compare the `upload` timings in the batch log lines before and after.
+- The real-Postgres test gained assertions for the three functions (index absent after migration, create/drop on 0.8+, filtered k correct with and without the index). Not run here.
+
 ## Decisions on links and eval (after Phase 3 review)
 
 - **History notes are never read as links.** Margin notes such as "S. 6A inserted by No. 61/2009 s. 9." cite sections of the AMENDING Act. `links.py`

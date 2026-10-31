@@ -43,9 +43,25 @@ def test_iterative_scan_is_set_only_where_the_server_supports_it():
     sql = render_sql(1024)
     # inside match_chunks, guarded so pgvector < 0.8 (no such setting) keeps working
     assert re.search(r"begin\s+perform set_config\('hnsw\.iterative_scan', 'relaxed_order', true\);\s+exception when others then", sql)
-    # the ANN index is created only on pgvector >= 0.8; otherwise queries use an exact scan
-    guard = re.search(r"do \$\$.*?end \$\$;", sql, re.S).group(0)
-    assert "array[0, 8, 0]" in guard and "using hnsw (embedding vector_cosine_ops)" in guard and "raise notice" in guard
+
+
+def test_the_hnsw_index_is_not_created_by_the_migration():
+    sql = render_sql(1024)
+    # it slows bulk upserts badly on small hosted instances; it is created deliberately, by function
+    before_functions = sql[: sql.index("create or replace function rag_index_status")]
+    assert "using hnsw" not in before_functions and "create index if not exists rag_chunks_embedding" not in before_functions
+    assert "python -m app.rag index" in before_functions
+    create = sql[sql.index("function rag_index_create"): sql.index("function rag_index_drop")]
+    assert "using hnsw (embedding vector_cosine_ops)" in create and "hnsw_supported" in create and "raise exception" in create
+    assert "drop index if exists rag_chunks_embedding" in sql[sql.index("function rag_index_drop"):]
+    assert "array[0, 8, 0]" in sql[sql.index("function rag_index_status"): sql.index("function rag_index_create")]
+
+
+def test_index_functions_are_service_role_only():
+    sql = render_sql(1024)
+    assert "revoke all on function rag_index_status(), rag_index_create(), rag_index_drop() from public, anon, authenticated" in sql
+    assert "grant execute on function rag_index_status(), rag_index_create(), rag_index_drop() to service_role" in sql
+    assert sql.count("security definer set search_path = public, extensions") == 3
 
 
 def test_expand_links_has_the_agreed_signature_and_the_same_filters_as_match_chunks():
@@ -129,3 +145,16 @@ def test_match_chunks_in_a_real_postgres(tmp_path: Path):
     assert expand("array['a:s-0'], null, '2023-01-01', '{}'::jsonb, 10") == "b:p-0"            # a not yet in force
     assert expand("array['a:s-0','a:s-1'], null, null, '{}'::jsonb, 10") == "a:s-2,a:s-3,b:p-0"  # already retrieved: skipped
     assert expand("array['a:s-0'], null, null, '{}'::jsonb, 1") == "a:s-1"
+
+    # the optional HNSW index: absent after the migration, created and dropped on request, queries correct either way
+    import json as _json
+    status = lambda sql="select rag_index_status()": _json.loads(psql(sql))
+    assert status()["index_exists"] is False and status()["chunks"] == 20 and status()["hnsw_supported"] in (True, False)
+    if status()["hnsw_supported"]:
+        assert status("select rag_index_create()")["index_exists"] is True
+        assert psql(f"select count(*) from match_chunks({q}, 5, array['a'])") == "5"        # filtered k with the index present
+        assert psql(f"select count(*) from match_chunks({q}, 8, array['b'])") == "8"
+        assert status("select rag_index_drop()")["index_exists"] is False
+    else:
+        assert "older than 0.8" in subprocess.run(["psql", url, "-At", "-c", "select rag_index_create()"], capture_output=True, text=True).stderr
+    assert psql(f"select count(*) from match_chunks({q}, 5, array['a'])") == "5"            # and without it
