@@ -3105,15 +3105,13 @@ class KonverterPipeline:
                     # before any person has seen the item — distinct from a
                     # reviewer's own accept/edit/bulk-resolve action later
                     # (service.py sets "reviewer" the moment one happens).
-                    # Docling itself cannot preserve italics on PDF text
-                    # (verified directly: the DoclingDocument schema has a
-                    # formatting field, but the PDF backend never populates
-                    # it — see docs/audits/BACKEND_AUDIT.md), so an auto-accepted legal
-                    # citation with an italicised case name has already
-                    # silently lost that styling by the time it reaches
-                    # this queue; flagging it as system-validated rather
-                    # than indistinguishable from a human decision keeps
-                    # that gap visible instead of hidden.
+                    # Flagging it as system-validated rather than
+                    # indistinguishable from a human decision keeps "nobody
+                    # has looked at this yet" visible. (Docling itself drops
+                    # italics on PDF text, so italic/bold ranges are
+                    # recovered separately from the PDF's font data -- see
+                    # _attach_text_styles and text_styles.py -- and a
+                    # reviewer can edit them alongside the text.)
                     "reviewed_by": "system" if footnote_verified else None,
                     "extracted_text": None if kind == "table" else extracted_text,
                     "corrected_text": None,

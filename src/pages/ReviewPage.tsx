@@ -31,6 +31,12 @@ import { documentService, publicationService } from "../services";
 import { useKonverter } from "../state/KonverterContext";
 import { converterStagePath } from "../lib/converterRoutes";
 import {
+  footnotePayload,
+  fromMarkup,
+  toggleStyle,
+  toMarkup,
+} from "../lib/footnoteMarkup";
+import {
   openAuthenticatedDocument,
   useAuthenticatedObjectUrl,
 } from "../lib/useAuthenticatedObjectUrl";
@@ -1091,6 +1097,13 @@ function ListEditor({
   );
 }
 
+/** A footnote's text with its detected or reviewer-set italic/bold written
+ * inline (*italic*, **bold**), as the edit box shows and takes it. */
+function footnoteMarkupFor(item: ReviewItem): string {
+  const shown = item.correctedText ?? item.extractedText ?? "";
+  return toMarkup(shown.trim(), item.styles ?? []);
+}
+
 export function ReviewPage() {
   const navigate = useNavigate();
   const {
@@ -1144,6 +1157,7 @@ export function ReviewPage() {
   const [showDetailMobile, setShowDetailMobile] = useState(false);
   const previousFilteredIds = useRef<string[]>([]);
   const queueListRef = useRef<HTMLDivElement | null>(null);
+  const extractedTextRef = useRef<HTMLTextAreaElement | null>(null);
   const selectionAnchorRef = useRef("");
   const tabModifierHeldRef = useRef(false);
 
@@ -1365,7 +1379,12 @@ export function ReviewPage() {
     const table = cloneTable(
       item.correctedTable ?? item.tableData ?? emptyTable,
     );
-    setEditText(item.correctedText ?? item.extractedText ?? tableToText(table));
+    const shown = item.correctedText ?? item.extractedText ?? tableToText(table);
+    // A footnote is edited as text with its italic/bold written inline, so
+    // opening the editor never drops the styles already detected.
+    setEditText(
+      item.type === "footnote" ? footnoteMarkupFor(item) : shown,
+    );
     setEditType(item.type);
     setEditTable(table);
   };
@@ -1385,7 +1404,9 @@ export function ReviewPage() {
           ? {}
           : usesTableEditor(editType)
             ? { correctedTable: editTable }
-            : { correctedText: editText }),
+            : editType === "footnote"
+              ? footnotePayload(editText)
+              : { correctedText: editText }),
       });
       preserveQueueScroll();
       setEditing(false);
@@ -1412,23 +1433,43 @@ export function ReviewPage() {
   };
 
   const changeEditType = (nextType: ReviewType) => {
+    if (nextType === editType) return;
+    // Only the footnote editor shows italic/bold as inline markers; carry
+    // the plain text across to every other editor and escape it on the way in.
+    let text = editType === "footnote" ? fromMarkup(editText).text : editText;
     if (usesTableEditor(nextType) && !usesTableEditor(editType)) {
-      setEditTable(textToTable(editText));
+      setEditTable(textToTable(text));
     } else if (!usesTableEditor(nextType) && usesTableEditor(editType)) {
       const converted = tableToStructuredText(editTable, nextType);
-      setEditText(
-        singleLineTypes.includes(nextType)
-          ? toSingleLine(converted)
-          : converted,
-      );
+      text = singleLineTypes.includes(nextType)
+        ? toSingleLine(converted)
+        : converted;
     } else if (
       singleLineTypes.includes(nextType) &&
       !singleLineTypes.includes(editType)
     ) {
       // e.g. a list converted into a heading collapses to one clean line.
-      setEditText((current) => toSingleLine(current));
+      text = toSingleLine(text);
     }
+    setEditText(nextType === "footnote" ? toMarkup(text) : text);
     setEditType(nextType);
+  };
+
+  const styleSelection = (style: "italic" | "bold") => {
+    const box = extractedTextRef.current;
+    if (!box || box.selectionStart === box.selectionEnd) return;
+    const next = toggleStyle(
+      editText,
+      box.selectionStart,
+      box.selectionEnd,
+      style,
+    );
+    setEditText(next.markup);
+    // Put the selection back on the same words once React has re-rendered.
+    requestAnimationFrame(() => {
+      box.focus();
+      box.setSelectionRange(next.selectionStart, next.selectionEnd);
+    });
   };
 
   const restoreToOutput = async (item: ReviewItem) => {
@@ -2236,22 +2277,54 @@ export function ReviewPage() {
                       }
                     />
                   ) : (
-                    <textarea
-                      className="extract-box extract-input review-extracted-text"
-                      aria-label="Extracted text"
-                      aria-describedby="extracted-text-help"
-                      rows={6}
-                      readOnly={!editing}
-                      value={
-                        editing
-                          ? editText
-                          : (selected.correctedText ??
-                            selected.extractedText ??
-                            "")
-                      }
-                      onChange={(event) => setEditText(event.target.value)}
-                      placeholder="No text or image was extracted."
-                    />
+                    <>
+                      {editing && editType === "footnote" && (
+                        <div
+                          className="footnote-style-toolbar"
+                          role="toolbar"
+                          aria-label="Footnote text style"
+                        >
+                          <button
+                            type="button"
+                            className="btn btn-outline btn-sm"
+                            aria-label="Italic"
+                            onMouseDown={(event) => event.preventDefault()}
+                            onClick={() => styleSelection("italic")}
+                          >
+                            <em>I</em>
+                          </button>
+                          <button
+                            type="button"
+                            className="btn btn-outline btn-sm"
+                            aria-label="Bold"
+                            onMouseDown={(event) => event.preventDefault()}
+                            onClick={() => styleSelection("bold")}
+                          >
+                            <strong>B</strong>
+                          </button>
+                          <small>Select text, then choose a style.</small>
+                        </div>
+                      )}
+                      <textarea
+                        ref={extractedTextRef}
+                        className="extract-box extract-input review-extracted-text"
+                        aria-label="Extracted text"
+                        aria-describedby="extracted-text-help"
+                        rows={6}
+                        readOnly={!editing}
+                        value={
+                          editing
+                            ? editText
+                            : selected.type === "footnote"
+                              ? footnoteMarkupFor(selected)
+                              : (selected.correctedText ??
+                                selected.extractedText ??
+                                "")
+                        }
+                        onChange={(event) => setEditText(event.target.value)}
+                        placeholder="No text or image was extracted."
+                      />
+                    </>
                   )}
                   <div className="hint" id="extracted-text-help">
                     {editing
@@ -2261,7 +2334,9 @@ export function ReviewPage() {
                           ? "Edit each list item above."
                           : editType === "box_section"
                             ? "The Box Section remains a container in every generated output."
-                            : "Edit the extracted text above, then save your changes."
+                            : editType === "footnote"
+                              ? "Edit the footnote above. Italic is written *like this* and bold **like this**; use \\* for a literal asterisk."
+                              : "Edit the extracted text above, then save your changes."
                       : "Select Edit to change the extracted result."}
                   </div>
                 </div>

@@ -107,6 +107,16 @@ class ReviewTableData(ApiModel):
     rows: list[list[str]] = Field(default_factory=list)
 
 
+class StyleRun(ApiModel):
+    """An italic/bold range over a footnote's text (offsets into the
+    whitespace-trimmed text the item currently shows)."""
+
+    start: int = Field(ge=0)
+    end: int = Field(ge=0)
+    italic: bool = False
+    bold: bool = False
+
+
 class ReviewItem(ApiModel):
     id: str
     block_id: str
@@ -124,6 +134,8 @@ class ReviewItem(ApiModel):
     reviewed_by: Literal["system", "reviewer"] | None = None
     extracted_text: str | None = None
     corrected_text: str | None = None
+    # Footnotes only: the italic/bold ranges that go with the text above.
+    styles: list[StyleRun] | None = None
     note: str | None = None
     key_values: list[tuple[str, str]] | None = None
     table_data: ReviewTableData | None = None
@@ -136,6 +148,10 @@ class ReviewPatch(ApiModel):
     type: ReviewType | None = None
     label: str | None = Field(default=None, max_length=120)
     corrected_text: str | None = Field(default=None, max_length=200_000)
+    # Footnotes only. Sent with `corrected_text`; an empty list means the
+    # reviewer removed every style, while omitting it leaves styles to the
+    # usual rule (kept only while the text is unchanged).
+    corrected_styles: list[StyleRun] | None = Field(default=None, max_length=5_000)
     corrected_table: ReviewTableData | None = None
 
 
