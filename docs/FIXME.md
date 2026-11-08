@@ -10,3 +10,4 @@ Do a test of everything in the backend
 - Verify changing label structures works ie. Table -> Footnote is broken: it changes it to text
 - Adding more items to a list is broken
 - We should still render the pictures, tables, and headings despite their confidence score because they are very important and cannot be missed.
+- Manually edited footnotes lose style metadata and become plain text. Workaround: apply styles manually when editing. Agreed limitation, flagged to the client. Use the Review page "Validation" filter -> "Manually reviewed" to find them.

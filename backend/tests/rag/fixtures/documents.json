@@ -1,0 +1,38 @@
+{
+  "_comment": "The benchmark corpus: three linked documents. 'law_as_at' and 'version' drive the date/version filter in setup B. Raw PDFs are in data/raw/; the Konverter (Docling) markdown for each goes in data/markdown/<doc_id>.md.",
+  "documents": [
+    {
+      "doc_id": "paper",
+      "doc_type": "paper",
+      "title": "Funeral and Burial Instructions: Consultation Paper",
+      "publisher": "Victorian Law Reform Commission",
+      "published": "2015-11-01",
+      "law_as_at": "2015-10-08",
+      "version": null,
+      "file": "raw/consultation-paper-2015.pdf",
+      "source_url": "https://www.lawreform.vic.gov.au/wp-content/uploads/2021/07/VLRC_Funeral_and_Burial_Instructions_Consultation_Paper.pdf"
+    },
+    {
+      "doc_id": "report",
+      "doc_type": "report",
+      "title": "Funeral and Burial Instructions: Report",
+      "publisher": "Victorian Law Reform Commission",
+      "published": "2016-09-01",
+      "law_as_at": null,
+      "version": null,
+      "file": "raw/report-2016.pdf",
+      "source_url": "https://www.lawreform.vic.gov.au/sites/default/files/Funeral_and_Burial_Instructions_Report_for_web.pdf"
+    },
+    {
+      "doc_id": "act",
+      "doc_type": "act",
+      "title": "Cemeteries and Crematoria Act 2003 (Vic), Authorised Version No. 038",
+      "publisher": "Parliamentary Counsel Victoria",
+      "published": "2025-10-22",
+      "law_as_at": "2025-10-22",
+      "version": "038",
+      "file": "raw/cemeteries-crematoria-act-2003-v038.pdf",
+      "source_url": "https://content.legislation.vic.gov.au/sites/default/files/2025-10/03-80aa038-authorised.pdf"
+    }
+  ]
+}

@@ -13,3 +13,8 @@ __pycache__/
 coverage/
 .DS_Store
 CLAUDE.md
+docs/rag-inputs/samples/
+docs/rag-inputs/clme-rag-template.sanitized.json
+
+# n8n workflow export carrying local settings (python -m app.rag n8n-export --from-env)
+rag/n8n/*.local.json
