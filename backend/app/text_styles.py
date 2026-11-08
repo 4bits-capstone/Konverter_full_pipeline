@@ -201,6 +201,25 @@ def styles_for_text(block: dict[str, Any], text: str) -> list[dict[str, Any]]:
     return []
 
 
+def normalize_style_runs(runs: list[dict[str, Any]], length: int) -> list[dict[str, Any]]:
+    """Reviewer-supplied style ranges, made safe to store against a string of
+    `length` characters: clamped to it, unstyled or empty runs dropped, and
+    overlaps trimmed so `render_styled` (which skips a run that starts
+    before the previous one ended) never silently loses one."""
+    clean: list[dict[str, Any]] = []
+    cursor = 0
+    for run in sorted(runs, key=lambda r: (int(r["start"]), int(r["end"]))):
+        start = max(int(run["start"]), cursor, 0)
+        end = min(int(run["end"]), length)
+        italic = bool(run.get("italic"))
+        bold = bool(run.get("bold"))
+        if end <= start or not (italic or bold):
+            continue
+        clean.append({"start": start, "end": end, "italic": italic, "bold": bold})
+        cursor = end
+    return clean
+
+
 def render_styled(text: str, styles: list[dict[str, Any]], offset: int = 0) -> str:
     """HTML-escape `text[offset:]`, wrapping styled runs in <em>/<strong>.
     `styles` ranges index into the full string, so `offset` is how much was

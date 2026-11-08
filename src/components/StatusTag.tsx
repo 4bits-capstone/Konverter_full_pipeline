@@ -13,11 +13,10 @@ export function StatusTag({
   reviewedBy?: ReviewItem['reviewedBy']
 }) {
   // An "accepted" footnote the pipeline pre-accepted before anyone opened
-  // the review queue is not the same claim as a reviewer's own accept —
-  // Docling cannot preserve italics on PDF text (verified directly against
-  // this project's own Docling install; see BACKEND_AUDIT.md), so an
-  // auto-accepted legal citation may already have silently lost styling no
-  // one has checked for. Labelling it distinctly keeps that gap visible.
+  // the review queue is not the same claim as a reviewer's own accept: its
+  // text matched the PDF, but no one has looked at it, including the
+  // italic/bold recovered from the PDF's fonts. Labelling it distinctly
+  // keeps that visible.
   if (status === 'accepted' && reviewedBy === 'system') {
     return (
       <span

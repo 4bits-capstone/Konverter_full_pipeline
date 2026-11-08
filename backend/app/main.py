@@ -183,7 +183,7 @@ def _require_published_or_owner(record: dict, user: dict | None) -> None:
     _require_owner(record, user)
 
 
-_LARGE_REVIEW_FIELDS = {"corrected_text", "corrected_table"}
+_LARGE_REVIEW_FIELDS = {"corrected_text", "corrected_table", "corrected_styles"}
 
 
 def _safe_review_changes(changes: dict[str, Any]) -> dict[str, Any]:
@@ -550,7 +550,12 @@ def processing_state(document_id: str, user: CurrentUser) -> Response:
 def get_review_items(document_id: str, user: CurrentUser) -> list[ReviewItem]:
     _require_owner(_require_complete(document_id), user)
     try:
-        return [ReviewItem(**item) for item in workflow.get_review_items(document_id)]
+        return [
+            ReviewItem(**item)
+            for item in workflow.with_footnote_styles(
+                document_id, workflow.get_review_items(document_id)
+            )
+        ]
     except RuntimeError as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from exc
 
@@ -587,7 +592,7 @@ async def update_review_item(
             "after": after,
         },
     )
-    return ReviewItem(**item)
+    return ReviewItem(**workflow.with_footnote_styles(document_id, [item])[0])
 
 
 @app.post(
@@ -629,7 +634,7 @@ async def upload_review_item_image(
             "item": _review_item_label(item),
         },
     )
-    return ReviewItem(**item)
+    return ReviewItem(**workflow.with_footnote_styles(document_id, [item])[0])
 
 
 @app.post(
@@ -659,7 +664,10 @@ async def update_review_items_bulk(
             "changes": _safe_review_changes(changes),
         },
     )
-    return [ReviewItem(**item) for item in items]
+    return [
+        ReviewItem(**item)
+        for item in workflow.with_footnote_styles(document_id, items)
+    ]
 
 
 @app.post(
@@ -685,7 +693,10 @@ async def resolve_all(document_id: str, user: CurrentUser) -> list[ReviewItem]:
             "items": [_review_item_label(item) for item in changed_items],
         },
     )
-    return [ReviewItem(**item) for item in items]
+    return [
+        ReviewItem(**item)
+        for item in workflow.with_footnote_styles(document_id, items)
+    ]
 
 
 @app.get("/api/documents/{document_id}/metadata", response_model=MetadataPayload)

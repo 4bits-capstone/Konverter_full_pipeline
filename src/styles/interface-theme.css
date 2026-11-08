@@ -710,6 +710,15 @@ html:root {
   min-height: 160px;
   background: #fff;
 }
+.converter-app .footnote-style-toolbar {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 8px;
+}
+.converter-app .footnote-style-toolbar small {
+  color: var(--muted);
+}
 .converter-app .review-extracted-text[readonly] {
   border-color: var(--line);
   background: var(--surface-2);

@@ -157,6 +157,7 @@ export const reviewService: ReviewService = {
       }
     }
     if (changes.correctedText !== undefined) item.correctedText = changes.correctedText
+    if (changes.correctedStyles !== undefined) item.styles = changes.correctedStyles.length ? structuredClone(changes.correctedStyles) : null
     if (changes.correctedTable !== undefined) item.correctedTable = structuredClone(changes.correctedTable)
     item.status = changes.status ?? 'edited'
     item.reviewedBy = 'reviewer'
