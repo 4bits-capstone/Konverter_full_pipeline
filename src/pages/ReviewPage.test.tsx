@@ -117,6 +117,39 @@ describe('ReviewPage', () => {
     expect(screen.getByText('2 of 2 selected')).toBeInTheDocument()
   })
 
+  it('filters the queue by system-validated vs manually reviewed', async () => {
+    const footnote = (id: string, title: string, reviewedBy: 'system' | 'reviewer'): ReviewItem => ({
+      ...testOrphanedCaptionReviewItem,
+      id,
+      blockId: `#/texts/${id}`,
+      type: 'footnote',
+      label: 'Footnote',
+      title,
+      status: 'accepted',
+      reviewedBy,
+    })
+    addTestReviewItem(footnote('fn-system', 'Auto footnote', 'system'))
+    addTestReviewItem(footnote('fn-manual', 'Hand footnote', 'reviewer'))
+    renderReview()
+    await screen.findAllByText('Section heading needs confirmation')
+
+    fireEvent.click(screen.getByText('Filters').closest('summary')!)
+    const source = screen.getByLabelText('Validation')
+
+    fireEvent.change(source, { target: { value: 'system' } })
+    expect(screen.getByRole('button', { name: /Auto footnote/ })).toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: /Hand footnote/ })).not.toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: /Section heading needs confirmation/ })).not.toBeInTheDocument()
+
+    fireEvent.change(source, { target: { value: 'reviewer' } })
+    expect(screen.getByRole('button', { name: /Hand footnote/ })).toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: /Auto footnote/ })).not.toBeInTheDocument()
+
+    fireEvent.change(source, { target: { value: 'all' } })
+    expect(screen.getByRole('button', { name: /Auto footnote/ })).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: /Hand footnote/ })).toBeInTheDocument()
+  })
+
   it('locks text and structure controls until Edit is selected', async () => {
     renderReview()
     await screen.findAllByText('Section heading needs confirmation')

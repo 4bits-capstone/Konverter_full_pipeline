@@ -42,6 +42,7 @@ import type {
 } from "../types/konverter";
 
 type StatusFilter = "all" | ReviewStatus;
+type SourceFilter = "all" | "system" | "reviewer";
 type Sort = "highest" | "lowest" | "page";
 type BulkAction = "accept" | "remove" | "label";
 type PendingConfirmation =
@@ -1115,6 +1116,7 @@ export function ReviewPage() {
   });
   const processingSummary = processingSummaryQuery.data;
   const [statusFilter, setStatusFilter] = useState<StatusFilter>("all");
+  const [sourceFilter, setSourceFilter] = useState<SourceFilter>("all");
   // Tracked as exclusions rather than a positive selection so a label that
   // wasn't there before (a new document, or an item just edited into a new
   // type) is visible immediately, in the same render, with no effect
@@ -1204,12 +1206,16 @@ export function ReviewPage() {
   const allLabelsSelected =
     presentLabels.length > 0 && selectedLabels.size === presentLabels.length;
   const filtersActive =
-    statusFilter !== "all" || (presentLabels.length > 0 && !allLabelsSelected);
+    statusFilter !== "all" ||
+    sourceFilter !== "all" ||
+    (presentLabels.length > 0 && !allLabelsSelected);
 
   const filteredItems = useMemo(() => {
     let list = [...reviewItems];
     if (statusFilter !== "all")
       list = list.filter((item) => item.status === statusFilter);
+    if (sourceFilter !== "all")
+      list = list.filter((item) => item.reviewedBy === sourceFilter);
     list =
       selectedLabels.size === 0
         ? []
@@ -1245,7 +1251,7 @@ export function ReviewPage() {
           : (a, b) => a.page - b.page,
     );
     return list;
-  }, [query, reviewItems, selectedLabels, sort, statusFilter]);
+  }, [query, reviewItems, selectedLabels, sort, sourceFilter, statusFilter]);
 
   const selected = filteredItems.find((item) => item.id === selectedId);
   const selectedPosition = selected
@@ -1839,6 +1845,25 @@ export function ReviewPage() {
                   <option value="accepted">Accepted</option>
                   <option value="edited">Edited</option>
                   <option value="removed">Removed from output</option>
+                </select>
+                <ChevronDown aria-hidden="true" />
+              </span>
+            </div>
+            <div className="tb-control">
+              <label htmlFor="source-filter">Validation</label>
+              <span className="review-filter-select">
+                <select
+                  id="source-filter"
+                  className="sel"
+                  value={sourceFilter}
+                  onChange={(event) => {
+                    setSourceFilter(event.target.value as SourceFilter);
+                    setShowDetailMobile(false);
+                  }}
+                >
+                  <option value="all">All sources</option>
+                  <option value="system">System-validated</option>
+                  <option value="reviewer">Manually reviewed</option>
                 </select>
                 <ChevronDown aria-hidden="true" />
               </span>
