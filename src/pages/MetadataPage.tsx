@@ -8,8 +8,10 @@ import {
   LoaderCircle,
   Pencil,
   Plus,
+  RefreshCw,
   RotateCcw,
   Save,
+  SearchX,
   Trash2,
   TriangleAlert,
 } from "lucide-react";
@@ -25,6 +27,7 @@ import {
 import { emptyMetadata } from "../config/workflow";
 import { converterStagePath } from "../lib/converterRoutes";
 import { openAuthenticatedDocument } from "../lib/useAuthenticatedObjectUrl";
+import { ApiError } from "../services/httpClient";
 import {
   approvalService,
   metadataService,
@@ -99,6 +102,22 @@ const unavailableFieldInfo: MetadataFieldInfo = {
   source: "Source unavailable",
 };
 
+/** Plain-language reason the metadata request failed, with what to do next. */
+export function metadataLoadErrorMessage(error: unknown): string {
+  const status = error instanceof ApiError ? error.status : undefined;
+  if (status === 409)
+    return "This document is still processing, so its metadata isn't ready yet. Wait for processing to finish, then try again.";
+  if (status === 404)
+    return "This document could not be found, or you don't have access to it. Return to upload and select another document.";
+  if (status === 401) return "Your session has expired. Please sign in again.";
+  if (status === 408 || status === 0) return error instanceof Error ? error.message : "";
+  return "Metadata could not be loaded right now. Try again, or return to upload and confirm processing completed successfully.";
+}
+
+/** Fallback for documents processed before the backend sent a notice. */
+const allFieldsMissingNotice =
+  "No metadata matched the rules in pages 1–8. If the PDF is scanned or image-only, its text can't be read. Check the original pages and enter each detail using Edit.";
+
 export function normaliseMetadataFields(
   incoming?: Partial<Record<string, MetadataFieldInfo>>,
 ): Record<MetadataField, MetadataFieldInfo> {
@@ -147,6 +166,7 @@ export function MetadataPage() {
   >({});
   const [approvalModalOpen, setApprovalModalOpen] = useState(false);
   const [approving, setApproving] = useState(false);
+  const [saveError, setSaveError] = useState<string | null>(null);
   const [pendingApprovalMetadata, setPendingApprovalMetadata] =
     useState<DocumentMetadata | null>(null);
   const approvalButtonRef = useRef<HTMLButtonElement | null>(null);
@@ -200,10 +220,23 @@ export function MetadataPage() {
         .filter((value) => value.trim())
         .join("; "),
     };
-    const saved = await metadataService.save(
-      withMultipleValues,
-      activeDocumentId ?? undefined,
-    );
+    let saved: DocumentMetadata;
+    try {
+      setSaveError(null);
+      saved = await metadataService.save(
+        withMultipleValues,
+        activeDocumentId ?? undefined,
+      );
+    } catch (error) {
+      const message =
+        error instanceof Error && error.message
+          ? `Metadata was not saved. ${error.message}`
+          : "Metadata was not saved. Please try again.";
+      // Shown inline with role="alert" rather than as a toast: the toast
+      // always carries a success tick, which would contradict the failure.
+      setSaveError(message);
+      return;
+    }
     setMetadata(saved);
     setMetadataResolved(true);
     markDone("metadata");
@@ -385,6 +418,12 @@ export function MetadataPage() {
       (fieldInfo[field].reviewNeeded && !approvedFields.has(field)),
   );
   const reviewCount = fieldsNeedingReview.length;
+  const notice =
+    metadataQuery.data?.notice?.message ??
+    (metadataQuery.data &&
+    fieldOrder.every((field) => flagStatus(fieldInfo[field]) === "missing")
+      ? allFieldsMissingNotice
+      : null);
   const evidence = fieldInfo[activeEvidence];
   const evidenceLabel =
     fields.find((field) => field.name === activeEvidence)?.label ??
@@ -426,7 +465,7 @@ export function MetadataPage() {
       ? "alert"
       : approved || status === "clear"
         ? "ok"
-        : status === "conflict"
+        : status === "conflict" || status === "missing"
           ? "alert"
           : "warn";
 
@@ -645,14 +684,40 @@ export function MetadataPage() {
           Loading rule-based metadata and evidence…
         </div>
       ) : metadataQuery.isError ? (
-        <div className="banner banner-warn">
+        <div className="banner banner-warn" role="alert">
           <TriangleAlert />
           <div>
-            Metadata could not be loaded. Return to upload and confirm
-            processing completed successfully.
+            <p>{metadataLoadErrorMessage(metadataQuery.error)}</p>
+            <div className="banner-actions">
+              <button
+                className="btn btn-outline btn-sm"
+                type="button"
+                disabled={metadataQuery.isFetching}
+                onClick={() => void metadataQuery.refetch()}
+              >
+                <RefreshCw />
+                {metadataQuery.isFetching ? "Retrying…" : "Try again"}
+              </button>
+              <button
+                className="btn btn-ghost btn-sm"
+                type="button"
+                onClick={() => navigate(converterStagePath("upload"))}
+              >
+                Return to upload
+              </button>
+            </div>
           </div>
         </div>
       ) : (
+        <>
+        {notice && (
+          <div className="banner banner-warn metadata-notice" role="status">
+            <SearchX />
+            <div>
+              <b>No metadata found automatically.</b> {notice}
+            </div>
+          </div>
+        )}
         <div className="meta-grid">
           <form className="panel" onSubmit={handleSubmit(onSubmit)} noValidate>
             <div className="panel-head">
@@ -669,6 +734,12 @@ export function MetadataPage() {
               >
                 {fields.map(renderField)}
               </div>
+              {saveError && (
+                <div className="err-msg show" role="alert">
+                  <TriangleAlert />
+                  {saveError}
+                </div>
+              )}
               <div className="metadata-form-actions">
                 <button
                   className="btn btn-primary"
@@ -759,6 +830,7 @@ export function MetadataPage() {
             </div>
           </aside>
         </div>
+        </>
       )}
 
       {approvalModalOpen ? (
