@@ -117,9 +117,16 @@ export interface MetadataFieldInfo {
   source: string
 }
 
+/** A document-wide reason the metadata rules found nothing, e.g. a scanned PDF. */
+export interface MetadataNotice {
+  code: 'no_text' | 'extraction_failed' | (string & {})
+  message: string
+}
+
 export interface MetadataPayload {
   metadata: DocumentMetadata
   fields: Record<keyof DocumentMetadata, MetadataFieldInfo>
+  notice?: MetadataNotice | null
 }
 
 export interface DocumentConfidence {

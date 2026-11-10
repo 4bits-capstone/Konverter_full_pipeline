@@ -1,26 +1,47 @@
-import { Circle, Info, TriangleAlert } from 'lucide-react'
+import { Circle, Info, SearchX, TriangleAlert } from 'lucide-react'
 import type { MetadataFieldInfo } from '../types/konverter'
 
-type FlagStatus = 'conflict' | 'review' | 'clear'
+type FlagStatus = 'missing' | 'conflict' | 'review' | 'clear'
 
-// Missing values and disagreeing rules are the strongest reasons to look twice.
-const blockingCodes = new Set(['rule_conflict', 'missing'])
+const hasReviewFlag = (info: MetadataFieldInfo, code: string) =>
+  info.flags.some((flag) => flag.severity === 'review' && flag.code === code)
 
 export function flagStatus(info: MetadataFieldInfo): FlagStatus {
-  if (info.flags.some((flag) => flag.severity === 'review' && blockingCodes.has(flag.code))) return 'conflict'
+  // A field with no value has nothing to conflict with, so it gets its own
+  // status rather than borrowing "Rule conflict".
+  if (hasReviewFlag(info, 'missing')) return 'missing'
+  if (hasReviewFlag(info, 'rule_conflict')) return 'conflict'
   return info.reviewNeeded ? 'review' : 'clear'
 }
 
-const statusLabel: Record<Exclude<FlagStatus, 'clear'>, string> = { conflict: 'Rule conflict', review: 'Needs review' }
-const statusClass: Record<Exclude<FlagStatus, 'clear'>, string> = { conflict: 'conf--low', review: 'conf--med' }
+type ChipStatus = Exclude<FlagStatus, 'clear'> | 'required'
+
+const statusLabel: Record<ChipStatus, string> = {
+  missing: 'Not found',
+  conflict: 'Rule conflict',
+  review: 'Needs review',
+  required: 'Value required',
+}
+const statusClass: Record<ChipStatus, string> = {
+  missing: 'conf--low',
+  conflict: 'conf--low',
+  review: 'conf--med',
+  required: 'conf--low',
+}
+const statusIcon: Record<ChipStatus, typeof Circle> = {
+  missing: SearchX,
+  conflict: TriangleAlert,
+  review: Circle,
+  required: TriangleAlert,
+}
 
 /** Status chip shown beside a metadata field label, only when something needs a check. Colour + icon + text (WCAG: never colour alone). */
 export function FieldFlagStatus({ info, error = false }: { info: MetadataFieldInfo; error?: boolean }) {
-  const status = error ? 'conflict' : flagStatus(info)
-  if (status === 'clear') return null
-  const label = error ? 'Value required' : statusLabel[status]
-  const Icon = status === 'conflict' ? TriangleAlert : Circle
-  return <span className={`conf conf--lg ${statusClass[status]}`}><Icon className="ic" aria-hidden="true" />{label}</span>
+  const flag = flagStatus(info)
+  if (!error && flag === 'clear') return null
+  const status: ChipStatus = error ? 'required' : (flag as ChipStatus)
+  const Icon = statusIcon[status]
+  return <span className={`conf conf--lg ${statusClass[status]}`}><Icon className="ic" aria-hidden="true" />{statusLabel[status]}</span>
 }
 
 /** The rule notes behind the status, in plain language. Hidden when the field needs no review. */

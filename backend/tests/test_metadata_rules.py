@@ -5,6 +5,7 @@ from app.metadata_rules import (
     empty_metadata_payload,
     extract_citations,
     extract_date,
+    extract_metadata_from_docling,
     extract_jurisdiction,
     extract_publisher,
     extract_title,
@@ -29,6 +30,21 @@ def test_fields_carry_flags_instead_of_confidence_scores():
         assert "score" not in info and "band" not in info
         assert info["review_needed"] is True
         assert [flag["code"] for flag in info["flags"]] == ["missing"]
+    assert "notice" not in payload
+
+
+def test_document_without_readable_text_carries_a_scanned_pdf_notice():
+    # Docling read no text or table cells, as with a scanned, image-only PDF.
+    payload = extract_metadata_from_docling({"texts": [], "tables": []}, PDF)
+    assert payload["notice"]["code"] == "no_text"
+    assert "scanned" in payload["notice"]["message"]
+    assert all(info["review_needed"] for info in payload["fields"].values())
+
+
+def test_failed_extraction_notice_is_distinct_from_no_text():
+    payload = empty_metadata_payload("extraction_failed")
+    assert payload["notice"]["code"] == "extraction_failed"
+    assert "scanned" not in payload["notice"]["message"]
 
 
 def test_clean_cataloguing_title_needs_no_review():
