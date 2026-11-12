@@ -1,11 +1,22 @@
-import type { StyleRun } from "../types/konverter";
+import type { ReviewType, StyleRun } from "../types/konverter";
 
 /**
- * The footnote editor is a plain textarea, so italic and bold are written
+ * The text-style editor is a plain textarea, so italic and bold are written
  * inline: *italic*, **bold**, ***both***. A literal `*` or `\` is written
  * `\*` / `\\`. A marker with no partner stays literal text, so a stray
- * asterisk never silently styles the rest of the footnote.
+ * asterisk never silently styles the rest of the block.
  */
+
+/** Review types whose text can carry italic/bold ranges. Keep this in sync
+ * with backend/app/text_styles.py's STYLE_CAPABLE_LABELS. */
+export const STYLE_CAPABLE_TYPES: ReadonlySet<ReviewType> = new Set([
+  "footnote",
+  "text",
+]);
+
+export function supportsTextStyles(type: ReviewType): boolean {
+  return STYLE_CAPABLE_TYPES.has(type);
+}
 
 type Token =
   | { kind: "text"; value: string; sources: number[] }
@@ -165,9 +176,9 @@ export function fromMarkup(markup: string): { text: string; styles: StyleRun[] }
   return { text, styles };
 }
 
-/** What the API takes for a footnote: the text trimmed, and ranges relative
- * to that trimmed text. */
-export function footnotePayload(markup: string): {
+/** What the API takes for a style-capable block: the text trimmed, and
+ * ranges relative to that trimmed text. */
+export function styledTextPayload(markup: string): {
   correctedText: string;
   correctedStyles: StyleRun[];
 } {
@@ -182,6 +193,9 @@ export function footnotePayload(markup: string): {
   }
   return { correctedText: trimmed, correctedStyles };
 }
+
+/** Backwards-compatible name for the same payload helper. */
+export const footnotePayload = styledTextPayload;
 
 /** Toggle italic or bold over the selected part of the markup: removed if
  * the whole selection already has it, otherwise applied. Works on the parsed

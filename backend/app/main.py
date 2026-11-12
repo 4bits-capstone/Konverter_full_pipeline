@@ -552,7 +552,7 @@ def get_review_items(document_id: str, user: CurrentUser) -> list[ReviewItem]:
     try:
         return [
             ReviewItem(**item)
-            for item in workflow.with_footnote_styles(
+            for item in workflow.with_item_styles(
                 document_id, workflow.get_review_items(document_id)
             )
         ]
@@ -592,7 +592,7 @@ async def update_review_item(
             "after": after,
         },
     )
-    return ReviewItem(**workflow.with_footnote_styles(document_id, [item])[0])
+    return ReviewItem(**workflow.with_item_styles(document_id, [item])[0])
 
 
 @app.post(
@@ -634,7 +634,7 @@ async def upload_review_item_image(
             "item": _review_item_label(item),
         },
     )
-    return ReviewItem(**workflow.with_footnote_styles(document_id, [item])[0])
+    return ReviewItem(**workflow.with_item_styles(document_id, [item])[0])
 
 
 @app.post(
@@ -666,7 +666,7 @@ async def update_review_items_bulk(
     )
     return [
         ReviewItem(**item)
-        for item in workflow.with_footnote_styles(document_id, items)
+        for item in workflow.with_item_styles(document_id, items)
     ]
 
 
@@ -695,7 +695,7 @@ async def resolve_all(document_id: str, user: CurrentUser) -> list[ReviewItem]:
     )
     return [
         ReviewItem(**item)
-        for item in workflow.with_footnote_styles(document_id, items)
+        for item in workflow.with_item_styles(document_id, items)
     ]
 
 

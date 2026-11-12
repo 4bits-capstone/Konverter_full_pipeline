@@ -14,7 +14,7 @@ import pypdfium2 as pdfium
 from . import docling_runner, runpod_client, storage_bucket
 from .config import Settings
 from .metadata_rules import empty_metadata_payload, extract_metadata_from_docling
-from .text_styles import extract_style_ranges
+from .text_styles import STYLE_CAPABLE_LABELS, extract_style_ranges
 from .toc_hierarchy import _ALWAYS_TOP_LEVEL, TocHierarchyResolver
 from .visual_structure import (
     _block_in_region,
@@ -1672,10 +1672,10 @@ def _footnote_font_size_outlier(
 
 
 def _attach_text_styles(blocks: list[dict[str, Any]], pdf_path: Path) -> None:
-    """Recover italic/bold runs for footnote text from the PDF's own font
-    data (Docling drops them -- see text_styles.py) and attach them as
-    `styles`/`styles_text` on each footnote block. Best-effort: any failure
-    leaves blocks untouched and rendering falls back to plain text."""
+    """Recover italic/bold runs for text-bearing blocks from the PDF's own
+    font data (Docling drops them -- see text_styles.py) and attach them as
+    `styles`/`styles_text` on each block. Best-effort: any failure leaves
+    blocks untouched and rendering falls back to plain text."""
     try:
         import pymupdf
 
@@ -1687,7 +1687,7 @@ def _attach_text_styles(blocks: list[dict[str, Any]], pdf_path: Path) -> None:
         while stack:
             block = stack.pop()
             stack.extend(block.get("children") or [])
-            if block.get("label") != "footnote":
+            if block.get("label") not in STYLE_CAPABLE_LABELS:
                 continue
             bounds = block.get("source_bounds")
             text = str(block.get("text", "")).strip()

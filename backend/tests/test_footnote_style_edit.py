@@ -1,4 +1,4 @@
-"""A reviewer can set italic/bold on a footnote while editing it.
+"""A reviewer can set italic/bold on a style-capable block while editing it.
 
 Detected styles live on the block as `styles` + `styles_text` and are only
 honoured while the block text still equals `styles_text`, so a plain text
@@ -83,7 +83,7 @@ def test_ranges_are_relative_to_the_trimmed_text():
     assert styles_for_text(block, "Ibid 5.") == [_run(0, 4, italic=True)]
 
 
-def test_styles_are_ignored_for_non_footnote_targets():
+def test_styles_are_stored_for_text_targets():
     item, block = _footnote()
     item["type"] = "text"
     block["label"] = "text"
@@ -97,7 +97,8 @@ def test_styles_are_ignored_for_non_footnote_targets():
             "corrected_styles": [_run(0, 5, italic=True)],
         },
     )
-    assert "styles" not in block
+    assert block["styles"] == [_run(0, 5, italic=True)]
+    assert block["styles_text"] == "Plain."
 
 
 def test_normalize_clamps_trims_overlaps_and_drops_unstyled():
@@ -128,26 +129,47 @@ def _service(blocks):
     return service
 
 
-def test_served_footnotes_carry_styles_that_match_their_shown_text():
+def test_served_style_capable_items_carry_styles_that_match_their_shown_text():
     text = "See Smith v Jones (1990) 12 CLR 3."
     item, block = _footnote(text, styles=[_run(4, 17, italic=True)], styles_text=text)
     other = {"id": "r2", "block_id": "b2", "type": "text", "extracted_text": "x"}
-    served = _service([block]).with_footnote_styles("doc", [item, other])
+    served = _service([block]).with_item_styles("doc", [item, other])
     assert served[0]["styles"] == [_run(4, 17, italic=True)]
-    assert "styles" not in served[1]
+    assert served[1]["styles"] is None
     assert "styles" not in item  # never mutates what gets persisted
+
+
+def test_served_text_items_carry_their_detected_styles():
+    text = "Principles of Criminal Law."
+    block = {
+        "id": "b2",
+        "label": "text",
+        "text": text,
+        "styles": [_run(0, 10, italic=True)],
+        "styles_text": text,
+    }
+    item = {
+        "id": "r2",
+        "block_id": "b2",
+        "type": "text",
+        "label": "Text",
+        "extracted_text": text,
+        "corrected_text": None,
+    }
+    served = _service([block]).with_item_styles("doc", [item])
+    assert served[0]["styles"] == [_run(0, 10, italic=True)]
 
 
 def test_served_footnote_ignores_styles_for_a_stale_text():
     item, block = _footnote(
         styles=[_run(4, 17, italic=True)], styles_text="the text before an edit"
     )
-    served = _service([block]).with_footnote_styles("doc", [item])
+    served = _service([block]).with_item_styles("doc", [item])
     assert served[0]["styles"] is None
 
 
 def test_served_footnote_matches_despite_surrounding_whitespace():
     text = "Ibid 5."
     item, block = _footnote(f"{text}\n", styles=[_run(0, 4, italic=True)], styles_text=text)
-    served = _service([block]).with_footnote_styles("doc", [item])
+    served = _service([block]).with_item_styles("doc", [item])
     assert served[0]["styles"] == [_run(0, 4, italic=True)]

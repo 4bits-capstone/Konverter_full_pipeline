@@ -56,7 +56,7 @@ export interface ReviewTableData {
   rows: string[][]
 }
 
-/** An italic/bold range over a footnote's trimmed text. */
+/** An italic/bold range over a style-capable block's trimmed text. */
 export interface StyleRun {
   start: number
   end: number
@@ -81,7 +81,7 @@ export interface ReviewItem {
   reviewedBy?: 'system' | 'reviewer'
   extractedText?: string
   correctedText?: string
-  /** Footnotes only: italic/bold ranges matching the text currently shown. */
+  /** Style-capable text blocks: italic/bold ranges matching the text shown. */
   styles?: StyleRun[] | null
   note?: string
   keyValues?: Array<[string, string]>
@@ -161,7 +161,7 @@ export interface ReviewUpdate {
   type?: ReviewType
   label?: string
   correctedText?: string
-  /** Footnotes only, sent with correctedText. [] removes every style. */
+  /** Style-capable text blocks, sent with correctedText. [] removes every style. */
   correctedStyles?: StyleRun[]
   correctedTable?: ReviewTableData
 }

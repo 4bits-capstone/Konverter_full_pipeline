@@ -1281,3 +1281,54 @@ def test_source_name_prefers_the_confirmed_record_title_over_a_misdetected_title
     )
 
     assert publication["sourceName"] == "Review of the Bail Act"
+
+
+def test_paragraph_styles_reach_publication_and_accessible_html():
+    text = "See Smith v Jones (1990)."
+    publication = build_publication(
+        [
+            {"id": "title", "label": "title", "text": "Report", "order": 0},
+            {"id": "section", "label": "section_header_1", "text": "Findings", "order": 1},
+            {
+                "id": "para",
+                "label": "text",
+                "text": text,
+                "order": 2,
+                "styles": [{"start": 4, "end": 17, "italic": True, "bold": False}],
+                "styles_text": text,
+            },
+        ],
+        {"title": "Report", "pages": 1, "file_name": "report.pdf"},
+    )
+
+    paragraph = publication["sections"][0]["blocks"][0]
+    assert paragraph["styles"] == [
+        {"start": 4, "end": 17, "italic": True, "bold": False}
+    ]
+    assert "<em>Smith v Jones</em>" in _render(paragraph)
+
+
+def test_numbered_paragraph_styles_are_shifted_past_the_number():
+    text = "2.39 See Smith v Jones (1990)."
+    publication = build_publication(
+        [
+            {"id": "title", "label": "title", "text": "Report", "order": 0},
+            {"id": "section", "label": "section_header_1", "text": "Findings", "order": 1},
+            {
+                "id": "para",
+                "label": "text",
+                "text": text,
+                "order": 2,
+                "styles": [{"start": 9, "end": 22, "italic": True, "bold": False}],
+                "styles_text": text,
+            },
+        ],
+        {"title": "Report", "pages": 1, "file_name": "report.pdf"},
+    )
+
+    paragraph = publication["sections"][0]["blocks"][0]
+    assert paragraph["number"] == "2.39"
+    assert paragraph["text"] == "See Smith v Jones (1990)."
+    assert paragraph["styles"] == [
+        {"start": 4, "end": 17, "italic": True, "bold": False}
+    ]

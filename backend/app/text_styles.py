@@ -29,6 +29,11 @@ _BOLD_FONT_HINTS = ("bold", "black", "heavy")
 _PYMUPDF_ITALIC = 2
 _PYMUPDF_BOLD = 16
 
+# Block labels / review types whose text can carry recovered or
+# reviewer-supplied italic/bold runs. Kept here so the pipeline, the
+# service layer and the exporter all agree on the same scope.
+STYLE_CAPABLE_LABELS = frozenset({"footnote", "text"})
+
 
 def _span_style(span: dict[str, Any]) -> tuple[bool, bool]:
     font = str(span.get("font", "")).lower()
@@ -224,23 +229,39 @@ def render_styled(text: str, styles: list[dict[str, Any]], offset: int = 0) -> s
     """HTML-escape `text[offset:]`, wrapping styled runs in <em>/<strong>.
     `styles` ranges index into the full string, so `offset` is how much was
     trimmed from its front (e.g. a footnote's leading number)."""
-    visible = text[offset:]
+    return render_styled_range(text, styles, offset, len(text))
+
+
+def render_styled_range(
+    text: str,
+    styles: list[dict[str, Any]],
+    start: int,
+    end: int,
+) -> str:
+    """HTML-escape `text[start:end]`, wrapping the parts of `styles` that
+    fall inside it in <em>/<strong>. Used when other markup (footnote
+    reference links) has to be interleaved with the styled text, so the
+    caller can style each plain-text slice between markers."""
+    start = max(0, start)
+    end = min(len(text), end)
+    if end <= start:
+        return ""
     if not styles:
-        return html.escape(visible)
+        return html.escape(text[start:end])
     parts: list[str] = []
-    cursor = 0
-    for run in sorted(styles, key=lambda r: r["start"]):
-        start = max(int(run["start"]) - offset, 0)
-        end = min(int(run["end"]) - offset, len(visible))
-        if end <= start or start < cursor:
+    cursor = start
+    for run in sorted(styles, key=lambda r: int(r["start"])):
+        run_start = max(int(run["start"]), start)
+        run_end = min(int(run["end"]), end)
+        if run_end <= run_start or run_start < cursor:
             continue
-        parts.append(html.escape(visible[cursor:start]))
-        inner = html.escape(visible[start:end])
+        parts.append(html.escape(text[cursor:run_start]))
+        inner = html.escape(text[run_start:run_end])
         if run.get("italic"):
             inner = f"<em>{inner}</em>"
         if run.get("bold"):
             inner = f"<strong>{inner}</strong>"
         parts.append(inner)
-        cursor = end
-    parts.append(html.escape(visible[cursor:]))
+        cursor = run_end
+    parts.append(html.escape(text[cursor:end]))
     return "".join(parts)

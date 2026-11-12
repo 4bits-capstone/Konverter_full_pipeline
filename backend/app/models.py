@@ -134,7 +134,8 @@ class ReviewItem(ApiModel):
     reviewed_by: Literal["system", "reviewer"] | None = None
     extracted_text: str | None = None
     corrected_text: str | None = None
-    # Footnotes only: the italic/bold ranges that go with the text above.
+    # Style-capable text blocks (footnotes and body text): the italic/bold
+    # ranges that go with the text above.
     styles: list[StyleRun] | None = None
     note: str | None = None
     key_values: list[tuple[str, str]] | None = None
@@ -148,9 +149,10 @@ class ReviewPatch(ApiModel):
     type: ReviewType | None = None
     label: str | None = Field(default=None, max_length=120)
     corrected_text: str | None = Field(default=None, max_length=200_000)
-    # Footnotes only. Sent with `corrected_text`; an empty list means the
-    # reviewer removed every style, while omitting it leaves styles to the
-    # usual rule (kept only while the text is unchanged).
+    # Style-capable text blocks (footnotes and body text). Sent with
+    # `corrected_text`; an empty list means the reviewer removed every style,
+    # while omitting it leaves styles to the usual rule (kept only while the
+    # text is unchanged).
     corrected_styles: list[StyleRun] | None = Field(default=None, max_length=5_000)
     corrected_table: ReviewTableData | None = None
 

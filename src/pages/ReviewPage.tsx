@@ -31,8 +31,9 @@ import { documentService, publicationService } from "../services";
 import { useKonverter } from "../state/KonverterContext";
 import { converterStagePath } from "../lib/converterRoutes";
 import {
-  footnotePayload,
   fromMarkup,
+  styledTextPayload,
+  supportsTextStyles,
   toggleStyle,
   toMarkup,
 } from "../lib/footnoteMarkup";
@@ -1097,9 +1098,10 @@ function ListEditor({
   );
 }
 
-/** A footnote's text with its detected or reviewer-set italic/bold written
- * inline (*italic*, **bold**), as the edit box shows and takes it. */
-function footnoteMarkupFor(item: ReviewItem): string {
+/** A style-capable item's text with its detected or reviewer-set
+ * italic/bold written inline (*italic*, **bold**), as the edit box shows
+ * and takes it. */
+function styledMarkupFor(item: ReviewItem): string {
   const shown = item.correctedText ?? item.extractedText ?? "";
   return toMarkup(shown.trim(), item.styles ?? []);
 }
@@ -1380,10 +1382,10 @@ export function ReviewPage() {
       item.correctedTable ?? item.tableData ?? emptyTable,
     );
     const shown = item.correctedText ?? item.extractedText ?? tableToText(table);
-    // A footnote is edited as text with its italic/bold written inline, so
-    // opening the editor never drops the styles already detected.
+    // A style-capable item is edited as text with its italic/bold written
+    // inline, so opening the editor never drops the styles already detected.
     setEditText(
-      item.type === "footnote" ? footnoteMarkupFor(item) : shown,
+      supportsTextStyles(item.type) ? styledMarkupFor(item) : shown,
     );
     setEditType(item.type);
     setEditTable(table);
@@ -1404,8 +1406,8 @@ export function ReviewPage() {
           ? {}
           : usesTableEditor(editType)
             ? { correctedTable: editTable }
-            : editType === "footnote"
-              ? footnotePayload(editText)
+            : supportsTextStyles(editType)
+              ? styledTextPayload(editText)
               : { correctedText: editText }),
       });
       preserveQueueScroll();
@@ -1434,9 +1436,13 @@ export function ReviewPage() {
 
   const changeEditType = (nextType: ReviewType) => {
     if (nextType === editType) return;
-    // Only the footnote editor shows italic/bold as inline markers; carry
-    // the plain text across to every other editor and escape it on the way in.
-    let text = editType === "footnote" ? fromMarkup(editText).text : editText;
+    // Style-capable editors show italic/bold as inline markers; every other
+    // editor takes plain text. Carry the styles across when moving between
+    // two style-capable labels, and strip the markers when leaving one.
+    const wasStyled = supportsTextStyles(editType);
+    const willBeStyled = supportsTextStyles(nextType);
+    const parsed = wasStyled ? fromMarkup(editText) : { text: editText, styles: [] };
+    let text = parsed.text;
     if (usesTableEditor(nextType) && !usesTableEditor(editType)) {
       setEditTable(textToTable(text));
     } else if (!usesTableEditor(nextType) && usesTableEditor(editType)) {
@@ -1451,7 +1457,11 @@ export function ReviewPage() {
       // e.g. a list converted into a heading collapses to one clean line.
       text = toSingleLine(text);
     }
-    setEditText(nextType === "footnote" ? toMarkup(text) : text);
+    setEditText(
+      willBeStyled
+        ? toMarkup(text, wasStyled ? parsed.styles : [])
+        : text,
+    );
     setEditType(nextType);
   };
 
@@ -2278,11 +2288,11 @@ export function ReviewPage() {
                     />
                   ) : (
                     <>
-                      {editing && editType === "footnote" && (
+                      {editing && supportsTextStyles(editType) && (
                         <div
                           className="footnote-style-toolbar"
                           role="toolbar"
-                          aria-label="Footnote text style"
+                          aria-label="Text style"
                         >
                           <button
                             type="button"
@@ -2315,8 +2325,8 @@ export function ReviewPage() {
                         value={
                           editing
                             ? editText
-                            : selected.type === "footnote"
-                              ? footnoteMarkupFor(selected)
+                            : supportsTextStyles(selected.type)
+                              ? styledMarkupFor(selected)
                               : (selected.correctedText ??
                                 selected.extractedText ??
                                 "")
@@ -2334,8 +2344,8 @@ export function ReviewPage() {
                           ? "Edit each list item above."
                           : editType === "box_section"
                             ? "The Box Section remains a container in every generated output."
-                            : editType === "footnote"
-                              ? "Edit the footnote above. Italic is written *like this* and bold **like this**; use \\* for a literal asterisk."
+                            : supportsTextStyles(editType)
+                              ? "Edit the text above. Italic is written *like this* and bold **like this**; use \\* for a literal asterisk."
                               : "Edit the extracted text above, then save your changes."
                       : "Select Edit to change the extracted result."}
                   </div>

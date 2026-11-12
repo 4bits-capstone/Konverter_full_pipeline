@@ -17,7 +17,7 @@ from pathlib import Path
 from typing import Any
 
 from .footnote_numbering import resolve_footnote_number
-from .text_styles import render_styled
+from .text_styles import render_styled, render_styled_range
 
 # A footnote number that Docling split off from its own citation text, and
 # that the pipeline's own repair pass (pipeline.py's
@@ -357,19 +357,83 @@ def _footnote_targets(footnotes: list[dict[str, Any]]) -> dict[str, str]:
     return targets
 
 
-def _render_inline_text(value: Any, footnote_targets: dict[str, str]) -> str:
-    """Escape text and restore Docling's flattened footnote-reference links."""
+def _dedupe_markers_with_styles(
+    text: str,
+    numbers: list[str],
+    styles: list[dict[str, Any]],
+) -> tuple[str, list[dict[str, Any]]]:
+    """Collapse Docling's doubled footnote markers ("95 95" -> "95") while
+    keeping style ranges aligned to the surviving text. Returns the new
+    text and the rebuilt ranges."""
+    ordered = sorted(
+        {str(number) for number in numbers if str(number)}, key=len, reverse=True
+    )
+    if not ordered:
+        return text, styles
+    pattern = re.compile(
+        r"(?<!\d)("
+        + "|".join(re.escape(number) for number in ordered)
+        + r")(?!\d)[ \t]+\1(?!\d)"
+    )
+    italic = [False] * len(text)
+    bold = [False] * len(text)
+    for run in styles:
+        for index in range(max(0, int(run["start"])), min(len(text), int(run["end"]))):
+            italic[index] = italic[index] or bool(run.get("italic"))
+            bold[index] = bold[index] or bool(run.get("bold"))
+    while True:
+        match = pattern.search(text)
+        if not match:
+            break
+        keep_end = match.start() + len(match.group(1))
+        text = text[:keep_end] + text[match.end() :]
+        del italic[keep_end : match.end()]
+        del bold[keep_end : match.end()]
+    rebuilt: list[dict[str, Any]] = []
+    run_start = 0
+    for index in range(1, len(text) + 1):
+        if index == len(text) or (italic[index], bold[index]) != (
+            italic[run_start],
+            bold[run_start],
+        ):
+            if italic[run_start] or bold[run_start]:
+                rebuilt.append(
+                    {
+                        "start": run_start,
+                        "end": index,
+                        "italic": italic[run_start],
+                        "bold": bold[run_start],
+                    }
+                )
+            run_start = index
+    return text, rebuilt
+
+
+def _render_inline_text(
+    value: Any,
+    footnote_targets: dict[str, str],
+    styles: list[dict[str, Any]] | None = None,
+) -> str:
+    """Escape text, restore Docling's flattened footnote-reference links,
+    and apply any recovered/reviewer-set italic/bold runs."""
 
     text = str(value or "")
-    if not text or not footnote_targets:
-        return html.escape(text)
-
-    for number in footnote_targets:
-        text = re.sub(
-            rf"(?<!\d){re.escape(number)}[ \t]+{re.escape(number)}(?!\d)",
-            number,
-            text,
+    styles = styles or []
+    if not text:
+        return ""
+    if not footnote_targets:
+        return render_styled(text, styles)
+    if styles:
+        text, styles = _dedupe_markers_with_styles(
+            text, list(footnote_targets), styles
         )
+    else:
+        for number in footnote_targets:
+            text = re.sub(
+                rf"(?<!\d){re.escape(number)}[ \t]+{re.escape(number)}(?!\d)",
+                number,
+                text,
+            )
 
     parts: list[str] = []
     cursor = 0
@@ -397,18 +461,19 @@ def _render_inline_text(value: Any, footnote_targets: dict[str, str]) -> str:
         if previous_word and previous_word.group(1).casefold() in _FOOTNOTE_CONTEXT_WORDS:
             continue
 
-        prefix = text[cursor : match.start()]
         # A citation marker belongs to the preceding word or punctuation, so do
         # not preserve extraction whitespace immediately before the superscript.
-        prefix = re.sub(r"[ \t]+$", "", prefix)
-        parts.append(html.escape(prefix))
+        prefix_end = match.start()
+        while prefix_end > cursor and text[prefix_end - 1] in " \t":
+            prefix_end -= 1
+        parts.append(render_styled_range(text, styles, cursor, prefix_end))
         safe_id = html.escape(note_id, quote=True)
         parts.append(
             f'<sup class="footnote-reference"><a href="#{safe_id}" '
             f'role="doc-noteref" aria-label="Footnote {number}">{number}</a></sup>'
         )
         cursor = match.end()
-    parts.append(html.escape(text[cursor:]))
+    parts.append(render_styled_range(text, styles, cursor, len(text)))
     return "".join(parts)
 
 
@@ -514,13 +579,14 @@ def _render_numbered_paragraph(
     number: Any,
     text: Any,
     footnote_targets: dict[str, str],
+    styles: list[dict[str, Any]] | None = None,
 ) -> str:
     safe_number = html.escape(str(number or ""))
     return (
         '<div class="reader-numbered-paragraph">'
         f'<span class="reader-paragraph-number" aria-hidden="true">{safe_number}</span>'
         f'<p><span class="sr-only">Paragraph {safe_number}. </span>'
-        f"{_render_inline_text(text, footnote_targets)}</p></div>"
+        f"{_render_inline_text(text, footnote_targets, styles)}</p></div>"
     )
 
 
@@ -539,14 +605,15 @@ def _render_block(
             f'{html.escape(str(block.get("text", "")))}</h{level}>'
         )
     if block_type == "paragraph":
+        styles = block.get("styles") or []
         if block.get("number"):
             return _render_numbered_paragraph(
-                block.get("number"), block.get("text"), footnote_targets
+                block.get("number"), block.get("text"), footnote_targets, styles
             )
         text = str(block.get("text", ""))
         if _ISOLATED_FOOTNOTE_MARKER_RE.match(text.strip()):
             return f'<p class="docling-paragraph docling-orphan-marker">{html.escape(text)}</p>'
-        return f'<p class="docling-paragraph">{_render_inline_text(text, footnote_targets)}</p>'
+        return f'<p class="docling-paragraph">{_render_inline_text(text, footnote_targets, styles)}</p>'
     if block_type == "quote":
         paragraphs = re.split(r"\n\s*\n", str(block.get("text", "")))
         content = "".join(

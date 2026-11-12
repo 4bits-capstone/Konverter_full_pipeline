@@ -2,8 +2,13 @@ from __future__ import annotations
 
 import pymupdf
 
-from app.preview_html import _render_footnotes_list
-from app.text_styles import extract_style_ranges, render_styled, styles_for_text
+from app.preview_html import _render_footnotes_list, _render_inline_text
+from app.text_styles import (
+    extract_style_ranges,
+    render_styled,
+    render_styled_range,
+    styles_for_text,
+)
 
 BOUNDS = {"left": 40, "top": 90, "right": 560, "bottom": 130}
 
@@ -80,6 +85,38 @@ def test_render_styled_escapes_and_wraps():
         [{"start": 2, "end": 5, "italic": True, "bold": False}],
     )
     assert html_out == "A <em>&lt;b&gt;</em> Case"
+
+
+def test_render_styled_range_only_styles_inside_the_slice():
+    html_out = render_styled_range(
+        "A <b> Case",
+        [{"start": 2, "end": 5, "italic": True, "bold": False}],
+        0,
+        5,
+    )
+    assert html_out == "A <em>&lt;b&gt;</em>"
+
+
+def test_inline_text_applies_styles_and_footnote_links():
+    text = "See Smith v Jones.95"
+    out = _render_inline_text(
+        text,
+        {"95": "footnote-1"},
+        [{"start": 4, "end": 17, "italic": True, "bold": False}],
+    )
+    assert "<em>Smith v Jones</em>" in out
+    assert 'aria-label="Footnote 95"' in out
+
+
+def test_inline_text_keeps_styles_aligned_when_a_doubled_marker_is_collapsed():
+    text = "See Smith v Jones 95 95."
+    out = _render_inline_text(
+        text,
+        {"95": "footnote-1"},
+        [{"start": 4, "end": 17, "italic": True, "bold": False}],
+    )
+    assert "<em>Smith v Jones</em>" in out
+    assert out.count('aria-label="Footnote 95"') == 1
 
 
 def test_footnote_list_applies_styles_after_number_is_stripped():

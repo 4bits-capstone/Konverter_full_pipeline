@@ -372,6 +372,47 @@ describe('ReviewPage', () => {
     expect(box.value).toBe('See *Smith v Jones* **(1990)**.')
   })
 
+  it('keeps a text item\'s detected italics when editing and saves styles added by hand', async () => {
+    addTestReviewItem({
+      ...testOrphanedCaptionReviewItem,
+      id: 'text-styled',
+      blockId: '#/texts/text-styled',
+      type: 'text',
+      label: 'Text',
+      title: 'Styled body text',
+      kind: 'text',
+      status: 'accepted',
+      reviewedBy: 'reviewer',
+      extractedText: 'See Smith v Jones (1990).',
+      styles: [{ start: 4, end: 17, italic: true, bold: false }],
+    })
+    const save = vi.spyOn(reviewService, 'saveItem')
+    renderReview()
+    await screen.findAllByText('Section heading needs confirmation')
+
+    fireEvent.click(screen.getByRole('button', { name: /Styled body text/ }))
+    const box = screen.getByRole('textbox', { name: 'Extracted text' }) as HTMLTextAreaElement
+    expect(box.value).toBe('See *Smith v Jones* (1990).')
+
+    fireEvent.click(screen.getByRole('button', { name: 'Edit flagged item' }))
+    expect(box.value).toBe('See *Smith v Jones* (1990).')
+    const start = box.value.indexOf('(1990)')
+    box.setSelectionRange(start, start + '(1990)'.length)
+    fireEvent.click(screen.getByRole('button', { name: 'Bold' }))
+    expect(box.value).toBe('See *Smith v Jones* **(1990)**.')
+
+    fireEvent.click(screen.getByRole('button', { name: 'Save changes' }))
+    await waitFor(() => expect(save).toHaveBeenCalled())
+    expect(save.mock.calls[0][1]).toMatchObject({
+      type: 'text',
+      correctedText: 'See Smith v Jones (1990).',
+      correctedStyles: [
+        { start: 4, end: 17, italic: true, bold: false },
+        { start: 18, end: 24, italic: false, bold: true },
+      ],
+    })
+  })
+
   it('converts a table directly into footnote prose without table delimiters', async () => {
     renderReview()
     await screen.findAllByText('Definitions table needs confirmation')
