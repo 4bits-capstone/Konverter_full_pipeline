@@ -726,6 +726,43 @@ html:root {
 .converter-app .review-extracted-text:not([readonly]) {
   border-color: var(--komosion-steel);
 }
+/* Rich-text variant of the same field (style-capable labels). */
+.converter-app .review-rich-text-input {
+  cursor: text;
+}
+.converter-app .review-rich-text-input .ProseMirror {
+  min-height: 136px;
+  outline: none;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+.converter-app .review-rich-text-input .ProseMirror p {
+  margin: 0 0 0.9em;
+}
+.converter-app .review-rich-text-input .ProseMirror p:last-child {
+  margin-bottom: 0;
+}
+.converter-app
+  .review-rich-text-input
+  .ProseMirror
+  p.is-editor-empty:first-child::before {
+  color: var(--muted);
+  content: attr(data-placeholder);
+  float: left;
+  height: 0;
+  pointer-events: none;
+}
+.converter-app .review-rich-text-input.is-readonly {
+  border-color: var(--line);
+  background: var(--surface-2);
+}
+.converter-app .review-rich-text-input:not(.is-readonly) {
+  border-color: var(--komosion-steel);
+}
+.converter-app .footnote-style-toolbar .btn[aria-pressed="true"] {
+  background: var(--surface-2);
+  border-color: var(--komosion-steel);
+}
 @media (max-width: 620px) {
   .converter-app .modal.approval-popup {
     padding: 20px;

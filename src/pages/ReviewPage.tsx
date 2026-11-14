@@ -27,16 +27,14 @@ import { useQuery } from "@tanstack/react-query";
 import { useNavigate } from "react-router-dom";
 import { ConfidenceBadge } from "../components/ConfidenceBadge";
 import { StatusTag } from "../components/StatusTag";
+import { StyledTextEditor } from "../components/StyledTextEditor";
 import { documentService, publicationService } from "../services";
 import { useKonverter } from "../state/KonverterContext";
 import { converterStagePath } from "../lib/converterRoutes";
 import {
-  fromMarkup,
   styledTextPayload,
   supportsTextStyles,
-  toggleStyle,
-  toMarkup,
-} from "../lib/footnoteMarkup";
+} from "../lib/styledText";
 import {
   openAuthenticatedDocument,
   useAuthenticatedObjectUrl,
@@ -46,6 +44,7 @@ import type {
   ReviewStatus,
   ReviewTableData,
   ReviewType,
+  StyleRun,
 } from "../types/konverter";
 
 type StatusFilter = "all" | ReviewStatus;
@@ -1098,12 +1097,9 @@ function ListEditor({
   );
 }
 
-/** A style-capable item's text with its detected or reviewer-set
- * italic/bold written inline (*italic*, **bold**), as the edit box shows
- * and takes it. */
-function styledMarkupFor(item: ReviewItem): string {
-  const shown = item.correctedText ?? item.extractedText ?? "";
-  return toMarkup(shown.trim(), item.styles ?? []);
+/** The text a review item shows, before any editing starts. */
+function shownTextFor(item: ReviewItem): string {
+  return item.correctedText ?? item.extractedText ?? "";
 }
 
 export function ReviewPage() {
@@ -1154,12 +1150,12 @@ export function ReviewPage() {
   const [editing, setEditing] = useState(false);
   const [actingItemId, setActingItemId] = useState<string | null>(null);
   const [editText, setEditText] = useState("");
+  const [editStyles, setEditStyles] = useState<StyleRun[]>([]);
   const [editType, setEditType] = useState<ReviewType>("text");
   const [editTable, setEditTable] = useState<ReviewTableData>(emptyTable);
   const [showDetailMobile, setShowDetailMobile] = useState(false);
   const previousFilteredIds = useRef<string[]>([]);
   const queueListRef = useRef<HTMLDivElement | null>(null);
-  const extractedTextRef = useRef<HTMLTextAreaElement | null>(null);
   const selectionAnchorRef = useRef("");
   const tabModifierHeldRef = useRef(false);
 
@@ -1382,11 +1378,12 @@ export function ReviewPage() {
       item.correctedTable ?? item.tableData ?? emptyTable,
     );
     const shown = item.correctedText ?? item.extractedText ?? tableToText(table);
-    // A style-capable item is edited as text with its italic/bold written
-    // inline, so opening the editor never drops the styles already detected.
-    setEditText(
-      supportsTextStyles(item.type) ? styledMarkupFor(item) : shown,
-    );
+    // A style-capable item is edited in the rich-text field, so opening the
+    // editor never drops the styles already detected. Ranges are relative to
+    // the trimmed text, which is also what the API stores.
+    const styled = supportsTextStyles(item.type);
+    setEditText(styled ? shown.trim() : shown);
+    setEditStyles(styled ? (item.styles ?? []) : []);
     setEditType(item.type);
     setEditTable(table);
   };
@@ -1407,7 +1404,7 @@ export function ReviewPage() {
           : usesTableEditor(editType)
             ? { correctedTable: editTable }
             : supportsTextStyles(editType)
-              ? styledTextPayload(editText)
+              ? styledTextPayload({ text: editText, styles: editStyles })
               : { correctedText: editText }),
       });
       preserveQueueScroll();
@@ -1436,13 +1433,13 @@ export function ReviewPage() {
 
   const changeEditType = (nextType: ReviewType) => {
     if (nextType === editType) return;
-    // Style-capable editors show italic/bold as inline markers; every other
-    // editor takes plain text. Carry the styles across when moving between
-    // two style-capable labels, and strip the markers when leaving one.
+    // Style-capable labels edit the same plain text with ranges attached;
+    // every other editor takes plain text only. Carry the ranges across when
+    // moving between two style-capable labels, and drop them when leaving one.
     const wasStyled = supportsTextStyles(editType);
     const willBeStyled = supportsTextStyles(nextType);
-    const parsed = wasStyled ? fromMarkup(editText) : { text: editText, styles: [] };
-    let text = parsed.text;
+    const carriedStyles = wasStyled ? editStyles : [];
+    let text = editText;
     if (usesTableEditor(nextType) && !usesTableEditor(editType)) {
       setEditTable(textToTable(text));
     } else if (!usesTableEditor(nextType) && usesTableEditor(editType)) {
@@ -1457,29 +1454,9 @@ export function ReviewPage() {
       // e.g. a list converted into a heading collapses to one clean line.
       text = toSingleLine(text);
     }
-    setEditText(
-      willBeStyled
-        ? toMarkup(text, wasStyled ? parsed.styles : [])
-        : text,
-    );
+    setEditText(text);
+    setEditStyles(willBeStyled ? carriedStyles : []);
     setEditType(nextType);
-  };
-
-  const styleSelection = (style: "italic" | "bold") => {
-    const box = extractedTextRef.current;
-    if (!box || box.selectionStart === box.selectionEnd) return;
-    const next = toggleStyle(
-      editText,
-      box.selectionStart,
-      box.selectionEnd,
-      style,
-    );
-    setEditText(next.markup);
-    // Put the selection back on the same words once React has re-rendered.
-    requestAnimationFrame(() => {
-      box.focus();
-      box.setSelectionRange(next.selectionStart, next.selectionEnd);
-    });
   };
 
   const restoreToOutput = async (item: ReviewItem) => {
@@ -2286,55 +2263,35 @@ export function ReviewPage() {
                         selected.correctedText ?? selected.extractedText ?? ""
                       }
                     />
+                  ) : editing && supportsTextStyles(editType) ? (
+                    <StyledTextEditor
+                      value={{ text: editText, styles: editStyles }}
+                      editable
+                      onChange={(next) => {
+                        setEditText(next.text);
+                        setEditStyles(next.styles);
+                      }}
+                    />
+                  ) : !editing && supportsTextStyles(selected.type) ? (
+                    <StyledTextEditor
+                      value={{
+                        text: shownTextFor(selected).trim(),
+                        styles: selected.styles ?? [],
+                      }}
+                      editable={false}
+                      onChange={() => {}}
+                    />
                   ) : (
-                    <>
-                      {editing && supportsTextStyles(editType) && (
-                        <div
-                          className="footnote-style-toolbar"
-                          role="toolbar"
-                          aria-label="Text style"
-                        >
-                          <button
-                            type="button"
-                            className="btn btn-outline btn-sm"
-                            aria-label="Italic"
-                            onMouseDown={(event) => event.preventDefault()}
-                            onClick={() => styleSelection("italic")}
-                          >
-                            <em>I</em>
-                          </button>
-                          <button
-                            type="button"
-                            className="btn btn-outline btn-sm"
-                            aria-label="Bold"
-                            onMouseDown={(event) => event.preventDefault()}
-                            onClick={() => styleSelection("bold")}
-                          >
-                            <strong>B</strong>
-                          </button>
-                          <small>Select text, then choose a style.</small>
-                        </div>
-                      )}
-                      <textarea
-                        ref={extractedTextRef}
-                        className="extract-box extract-input review-extracted-text"
-                        aria-label="Extracted text"
-                        aria-describedby="extracted-text-help"
-                        rows={6}
-                        readOnly={!editing}
-                        value={
-                          editing
-                            ? editText
-                            : supportsTextStyles(selected.type)
-                              ? styledMarkupFor(selected)
-                              : (selected.correctedText ??
-                                selected.extractedText ??
-                                "")
-                        }
-                        onChange={(event) => setEditText(event.target.value)}
-                        placeholder="No text or image was extracted."
-                      />
-                    </>
+                    <textarea
+                      className="extract-box extract-input review-extracted-text"
+                      aria-label="Extracted text"
+                      aria-describedby="extracted-text-help"
+                      rows={6}
+                      readOnly={!editing}
+                      value={editing ? editText : shownTextFor(selected)}
+                      onChange={(event) => setEditText(event.target.value)}
+                      placeholder="No text or image was extracted."
+                    />
                   )}
                   <div className="hint" id="extracted-text-help">
                     {editing
@@ -2345,7 +2302,7 @@ export function ReviewPage() {
                           : editType === "box_section"
                             ? "The Box Section remains a container in every generated output."
                             : supportsTextStyles(editType)
-                              ? "Edit the text above. Italic is written *like this* and bold **like this**; use \\* for a literal asterisk."
+                              ? "Edit the text above. Select words and use Italic or Bold (Ctrl+I / Ctrl+B) to style them."
                               : "Edit the extracted text above, then save your changes."
                       : "Select Edit to change the extracted result."}
                   </div>

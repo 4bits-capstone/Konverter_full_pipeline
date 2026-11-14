@@ -1332,3 +1332,27 @@ def test_numbered_paragraph_styles_are_shifted_past_the_number():
     assert paragraph["styles"] == [
         {"start": 4, "end": 17, "italic": True, "bold": False}
     ]
+
+
+def test_paragraph_text_splits_on_blank_lines_and_keeps_styles():
+    text = "First paragraph.\n\nSee Smith v Jones (1990)."
+    publication = build_publication(
+        [
+            {"id": "title", "label": "title", "text": "Report", "order": 0},
+            {"id": "section", "label": "section_header_1", "text": "Findings", "order": 1},
+            {
+                "id": "para",
+                "label": "text",
+                "text": text,
+                "order": 2,
+                "styles": [{"start": 22, "end": 35, "italic": True, "bold": False}],
+                "styles_text": text,
+            },
+        ],
+        {"title": "Report", "pages": 1, "file_name": "report.pdf"},
+    )
+
+    rendered = _render(publication["sections"][0]["blocks"][0])
+    assert rendered.count('<p class="docling-paragraph">') == 2
+    assert "First paragraph." in rendered
+    assert "<em>Smith v Jones</em>" in rendered

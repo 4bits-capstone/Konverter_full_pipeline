@@ -590,6 +590,43 @@ def _render_numbered_paragraph(
     )
 
 
+def _paragraph_spans(text: str) -> list[tuple[int, int]]:
+    """Blank-line separated paragraph spans into `text`.
+
+    The review editor lets a reviewer start a new paragraph, which is stored
+    as `\\n\\n` in the block text. Each span is trimmed so the rendered
+    paragraphs don't inherit the separator's whitespace.
+    """
+    spans: list[tuple[int, int]] = []
+    cursor = 0
+    for match in re.finditer(r"\n\s*\n", text):
+        spans.append((cursor, match.start()))
+        cursor = match.end()
+    spans.append((cursor, len(text)))
+    trimmed: list[tuple[int, int]] = []
+    for start, end in spans:
+        paragraph = text[start:end]
+        lead = len(paragraph) - len(paragraph.lstrip())
+        trail = len(paragraph) - len(paragraph.rstrip())
+        if end - trail > start + lead:
+            trimmed.append((start + lead, end - trail))
+    return trimmed
+
+
+def _styles_within(
+    styles: list[dict[str, Any]], start: int, end: int
+) -> list[dict[str, Any]]:
+    """Style runs clipped to `text[start:end]` and re-based to 0."""
+    shifted: list[dict[str, Any]] = []
+    for run in styles:
+        run_start = max(int(run["start"]), start)
+        run_end = min(int(run["end"]), end)
+        if run_end <= run_start:
+            continue
+        shifted.append({**run, "start": run_start - start, "end": run_end - start})
+    return shifted
+
+
 def _render_block(
     block: dict[str, Any],
     figure_directory: Path | None,
@@ -611,9 +648,25 @@ def _render_block(
                 block.get("number"), block.get("text"), footnote_targets, styles
             )
         text = str(block.get("text", ""))
-        if _ISOLATED_FOOTNOTE_MARKER_RE.match(text.strip()):
-            return f'<p class="docling-paragraph docling-orphan-marker">{html.escape(text)}</p>'
-        return f'<p class="docling-paragraph">{_render_inline_text(text, footnote_targets, styles)}</p>'
+        spans = _paragraph_spans(text)
+        if len(spans) <= 1:
+            if _ISOLATED_FOOTNOTE_MARKER_RE.match(text.strip()):
+                return f'<p class="docling-paragraph docling-orphan-marker">{html.escape(text)}</p>'
+            return f'<p class="docling-paragraph">{_render_inline_text(text, footnote_targets, styles)}</p>'
+        output: list[str] = []
+        for start, end in spans:
+            paragraph = text[start:end]
+            if _ISOLATED_FOOTNOTE_MARKER_RE.match(paragraph.strip()):
+                output.append(
+                    f'<p class="docling-paragraph docling-orphan-marker">{html.escape(paragraph)}</p>'
+                )
+                continue
+            output.append(
+                '<p class="docling-paragraph">'
+                f"{_render_inline_text(paragraph, footnote_targets, _styles_within(styles, start, end))}"
+                "</p>"
+            )
+        return "".join(output)
     if block_type == "quote":
         paragraphs = re.split(r"\n\s*\n", str(block.get("text", "")))
         content = "".join(

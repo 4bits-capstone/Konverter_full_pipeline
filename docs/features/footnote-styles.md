@@ -21,7 +21,17 @@ Other labels (headings, captions, quotes, lists, tables) are not styled yet; the
    - `styles`: `[{start, end, italic, bold}, ...]` — offsets into the text
    - `styles_text`: the exact string the offsets were computed against
 4. **Export** — `exporter.py` copies `styles` onto each footnote and body-text paragraph in `structured.json` via `styles_for_text`.
-5. **Render** — `preview_html.py` calls `render_styled` / `render_styled_range`, which HTML-escapes the text and wraps ranges in `<em>` / `<strong>`.
+5. **Render** — `preview_html.py` calls `render_styled` / `render_styled_range`, which HTML-escapes the text and wraps ranges in `<em>` / `<strong>`. Body text split on blank lines renders as separate paragraphs, with each paragraph's ranges sliced to it.
+
+## Review pane
+
+Style-capable items are edited in a small rich-text editor (`src/components/StyledTextEditor.tsx`, TipTap/ProseMirror) instead of a textarea, so italic and bold look the way they will be published. The toolbar and `Ctrl+B` / `Ctrl+I` toggle marks; input rules are off, so a literal `*` in a citation is never converted into formatting.
+
+The editor is a view over the same API contract, not a new source of truth:
+
+- `src/lib/styledText.ts` converts between the ProseMirror document and `{ text, styles }`. Paragraphs are `\n\n`, single newlines are hard breaks.
+- Saving sends `correctedText` (trimmed) plus `correctedStyles` (ranges rebased to the trimmed text), so `styles_text` still guards against stale offsets.
+- Non-style-capable labels keep the plain textarea.
 
 ## Safety rules
 
