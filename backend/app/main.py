@@ -212,6 +212,33 @@ def _snippet(value: Any) -> Any:
     return text
 
 
+def _describe_styles(text: str, runs: list[dict[str, Any]]) -> str | None:
+    """Reviewer-readable form of style runs, e.g. 'italic: "Smith v Jones"',
+    instead of raw character offsets."""
+    parts = []
+    for run in runs:
+        kinds = [kind for kind in ("bold", "italic") if run.get(kind)]
+        words = text[int(run.get("start", 0)) : int(run.get("end", 0))]
+        if kinds and words.strip():
+            parts.append(f'{" + ".join(kinds)}: "{words}"')
+    return "; ".join(parts) or None
+
+
+def _shown_text(item: dict[str, Any]) -> str | None:
+    """The text a review item currently shows the reviewer."""
+    text = item.get("corrected_text")
+    return item.get("extracted_text") if text is None else text
+
+
+def _audit_styles(document_id: str, item: dict[str, Any]) -> str | None:
+    """The italic/bold a footnote item currently shows, for audit logging."""
+    if item.get("type") != "footnote":
+        return None
+    styled = workflow.with_footnote_styles(document_id, [item])[0]
+    shown = _shown_text(styled) or ""
+    return _describe_styles(str(shown).strip(), styled.get("styles") or [])
+
+
 def _review_item_label(item: dict[str, Any]) -> str:
     title = item.get("title") or item.get("label") or item.get("id", "item")
     page = item.get("page")
@@ -573,12 +600,31 @@ async def update_review_item(
         (i for i in workflow.get_review_items(document_id) if i.get("id") == item_id),
         {},
     )
-    before = {k: _snippet(existing.get(k)) for k in changes}
+    raw_before = {k: existing.get(k) for k in changes}
+    if "corrected_text" in changes:
+        # Until someone edits it, an item shows its extracted text.
+        raw_before["corrected_text"] = _shown_text(existing)
+    if "corrected_styles" in changes:
+        # Styles live on the block, not the item, so the item has no
+        # "corrected_styles" key to read -- describe what the reviewer saw.
+        raw_before["corrected_styles"] = _audit_styles(document_id, existing)
     try:
         item = workflow.update_review_item(document_id, item_id, changes)
     except KeyError as exc:
         raise HTTPException(status_code=404, detail="Review item not found") from exc
-    after = {k: _snippet(v) for k, v in changes.items()}
+    raw_after = dict(changes)
+    # Record what was actually stored: text is trimmed/normalised and style
+    # runs are clipped and merged on save.
+    if "corrected_text" in changes:
+        raw_after["corrected_text"] = item.get("corrected_text")
+    if "corrected_styles" in changes:
+        raw_after["corrected_styles"] = _audit_styles(document_id, item)
+    # The editor resends every field on save, so log only real changes (a
+    # bold-only edit is a styling change, not a text change). Compare full
+    # values, not the truncated snippets, so a late edit in long text counts.
+    changed = [k for k in raw_after if raw_after[k] != raw_before.get(k)]
+    before = {k: _snippet(raw_before.get(k)) for k in changed}
+    after = {k: _snippet(raw_after[k]) for k in changed}
     await audit.record_audit(
         "edit_review_item",
         document_id=document_id,

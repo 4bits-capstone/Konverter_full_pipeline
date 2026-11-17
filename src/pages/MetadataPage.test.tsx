@@ -6,8 +6,10 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { DocumentBar } from '../components/DocumentBar'
 import { KonverterProvider, useKonverter } from '../state/KonverterContext'
 import { testDocument, testReviewItems } from '../test/fixtures'
-import { resetTestServices } from '../test/serviceMocks'
-import { MetadataPage, normaliseMetadataFields } from './MetadataPage'
+import { metadataService, resetTestServices } from '../test/serviceMocks'
+import { ApiError } from '../services/httpClient'
+import type { MetadataFieldInfo } from '../types/konverter'
+import { MetadataPage, metadataLoadErrorMessage, normaliseMetadataFields } from './MetadataPage'
 
 vi.mock('../services', () => import('../test/serviceMocks'))
 vi.mock('../services/httpClient', async (importOriginal) => {
@@ -51,7 +53,10 @@ function approveMetadataFields() {
   screen.getAllByRole('button', { name: /Approve/ }).forEach((button) => fireEvent.click(button))
 }
 
-afterEach(cleanup)
+afterEach(() => {
+  cleanup()
+  vi.restoreAllMocks()
+})
 beforeEach(resetTestServices)
 
 describe('MetadataPage', () => {
@@ -220,5 +225,81 @@ describe('MetadataPage', () => {
     expect(screen.getByRole('dialog')).toHaveAccessibleDescription(/Review the completed checks/)
     fireEvent.click(within(screen.getByRole('dialog')).getByRole('button', { name: 'Cancel' }))
     expect(screen.queryByRole('dialog')).not.toBeInTheDocument()
+  })
+
+  it('labels a field with no value as "Not found", not as a rule conflict', async () => {
+    const original = await metadataService.get('doc')
+    const missing: MetadataFieldInfo = {
+      flags: [{ code: 'missing', severity: 'review', message: 'No value matched the metadata rules in pages 1–8.' }],
+      reviewNeeded: true,
+      page: 1,
+      location: 'None found in pages 1–8',
+      evidence: 'No value matched the configured metadata rules.',
+      source: 'None found in pages 1–8',
+    }
+    vi.spyOn(metadataService, 'get').mockResolvedValue({
+      ...original,
+      metadata: { ...original.metadata, jurisdiction: '' },
+      fields: { ...original.fields, jurisdiction: missing },
+    })
+    renderMetadata()
+
+    expect(await screen.findByText('Not found')).toBeInTheDocument()
+    expect(screen.getAllByText('Rule conflict')).toHaveLength(1)
+    expect(screen.queryByText(/No metadata found automatically/)).not.toBeInTheDocument()
+  })
+
+  it('explains a scanned PDF once when the backend finds no readable text', async () => {
+    const original = await metadataService.get('doc')
+    const missing = normaliseMetadataFields({}).title
+    const message = 'No readable text was found in pages 1–8 of this PDF. It may be a scanned or image-only document.'
+    vi.spyOn(metadataService, 'get').mockResolvedValue({
+      metadata: { title: '', publisher: '', publishedDate: '', jurisdiction: '', citations: '' },
+      fields: Object.fromEntries(Object.keys(original.fields).map((key) => [key, {
+        ...missing,
+        flags: [{ code: 'missing', severity: 'review', message: 'No value matched.' }],
+      }])) as typeof original.fields,
+      notice: { code: 'no_text', message },
+    })
+    renderMetadata()
+
+    const banner = (await screen.findByText(/No metadata found automatically/)).closest('.metadata-notice')
+    expect(banner).toHaveTextContent(message)
+    // An empty published date is also checked as required, so it reads "Value required".
+    expect(screen.getAllByText('Not found')).toHaveLength(4)
+    expect(screen.getByText('Value required')).toBeInTheDocument()
+  })
+
+  it('shows the failed save inline and keeps the reviewer on the page', async () => {
+    vi.spyOn(metadataService, 'save').mockRejectedValue(new ApiError('The connection was interrupted.', 0))
+    renderMetadata()
+    await screen.findByRole('heading', { name: 'Document metadata' })
+    approveMetadataFields()
+    fireEvent.click(screen.getByRole('button', { name: /Run final system checks/ }))
+
+    expect(await screen.findByRole('alert')).toHaveTextContent('Metadata was not saved. The connection was interrupted.')
+    expect(screen.queryByRole('dialog')).not.toBeInTheDocument()
+    expect(screen.getByRole('button', { name: /Run final system checks/ })).toBeEnabled()
+  })
+
+  it('gives the reason a load failed and lets the reviewer retry', async () => {
+    const original = await metadataService.get('doc')
+    const get = vi.spyOn(metadataService, 'get')
+      .mockRejectedValueOnce(new ApiError('Metadata is not ready yet', 409))
+      .mockResolvedValue(original)
+    renderMetadata()
+
+    expect(await screen.findByRole('alert')).toHaveTextContent(/still processing/)
+    expect(screen.getByRole('button', { name: 'Return to upload' })).toBeInTheDocument()
+    fireEvent.click(screen.getByRole('button', { name: /Try again/ }))
+
+    expect(await screen.findByRole('heading', { name: 'Document metadata' })).toBeInTheDocument()
+    expect(get).toHaveBeenCalledTimes(2)
+  })
+
+  it('maps load failures to plain-language reasons', () => {
+    expect(metadataLoadErrorMessage(new ApiError('Not found', 404))).toMatch(/could not be found/)
+    expect(metadataLoadErrorMessage(new ApiError('Took too long', 408))).toBe('Took too long')
+    expect(metadataLoadErrorMessage(new Error('boom'))).toMatch(/could not be loaded right now/)
   })
 })
