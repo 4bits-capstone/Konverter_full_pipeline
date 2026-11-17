@@ -50,6 +50,7 @@ from .models import (
     WordPressPublishRequest,
 )
 from .service import ProcessingManager, WorkflowService
+from .text_styles import STYLE_CAPABLE_LABELS
 from .rate_limit import SlidingWindowLimiter, client_ip
 from .storage import DocumentNotFoundError, LocalDocumentStore
 from .wordpress import (
@@ -231,10 +232,10 @@ def _shown_text(item: dict[str, Any]) -> str | None:
 
 
 def _audit_styles(document_id: str, item: dict[str, Any]) -> str | None:
-    """The italic/bold a footnote item currently shows, for audit logging."""
-    if item.get("type") != "footnote":
+    """The italic/bold a style-capable item currently shows, for audit logging."""
+    if item.get("type") not in STYLE_CAPABLE_LABELS:
         return None
-    styled = workflow.with_footnote_styles(document_id, [item])[0]
+    styled = workflow.with_item_styles(document_id, [item])[0]
     shown = _shown_text(styled) or ""
     return _describe_styles(str(shown).strip(), styled.get("styles") or [])
 
