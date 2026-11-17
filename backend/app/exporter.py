@@ -1208,14 +1208,32 @@ def build_publication(
             continue
 
         numbered = re.match(r"^(\d+(?:\.\d+)+)\s+(.+)$", text, re.DOTALL)
-        current["blocks"].append(
-            {
-                "type": "paragraph",
-                "text": numbered.group(2) if numbered else text,
-                "number": numbered.group(1) if numbered else None,
-                "page": page,
-            }
-        )
+        paragraph_text = numbered.group(2) if numbered else text
+        paragraph = {
+            "type": "paragraph",
+            "text": paragraph_text,
+            "number": numbered.group(1) if numbered else None,
+            "page": page,
+        }
+        # Style ranges index into the whole block text. A numbered paragraph
+        # drops its leading "1.2" prefix in the published text, so shift the
+        # ranges by that prefix length; without that they would style the
+        # wrong words (or fall outside the shorter string entirely).
+        styles = styles_for_text(block, text)
+        if styles:
+            offset = numbered.start(2) if numbered else 0
+            shifted = [
+                {
+                    **run,
+                    "start": max(0, int(run["start"]) - offset),
+                    "end": min(len(paragraph_text), int(run["end"]) - offset),
+                }
+                for run in styles
+            ]
+            shifted = [run for run in shifted if int(run["end"]) > int(run["start"])]
+            if shifted:
+                paragraph["styles"] = shifted
+        current["blocks"].append(paragraph)
 
     finish_current()
     reader_sections = _ordered_reader_sections(_reader_sections(sections))

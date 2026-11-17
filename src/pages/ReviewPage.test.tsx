@@ -9,6 +9,28 @@ import { addTestReviewItem, resetTestServices, reviewService } from '../test/ser
 import type { ReviewItem } from '../types/konverter'
 import { ReviewPage } from './ReviewPage'
 
+/** Select `needle` inside a contenteditable field the way a reviewer would. */
+function selectTextIn(field: HTMLElement, needle: string) {
+  field.focus()
+  const walker = document.createTreeWalker(field, NodeFilter.SHOW_TEXT)
+  let node = walker.nextNode()
+  while (node) {
+    const index = node.textContent?.indexOf(needle) ?? -1
+    if (index >= 0) {
+      const range = document.createRange()
+      range.setStart(node, index)
+      range.setEnd(node, index + needle.length)
+      const selection = window.getSelection()!
+      selection.removeAllRanges()
+      selection.addRange(range)
+      document.dispatchEvent(new Event('selectionchange'))
+      return
+    }
+    node = walker.nextNode()
+  }
+  throw new Error(`Could not find "${needle}" in the editor`)
+}
+
 vi.mock('../services', () => import('../test/serviceMocks'))
 vi.mock('../services/httpClient', async (importOriginal) => {
   const actual = await importOriginal<typeof import('../services/httpClient')>()
@@ -348,15 +370,16 @@ describe('ReviewPage', () => {
     await screen.findAllByText('Section heading needs confirmation')
 
     fireEvent.click(screen.getByRole('button', { name: /Styled footnote/ }))
-    const box = screen.getByRole('textbox', { name: 'Extracted text' }) as HTMLTextAreaElement
-    expect(box.value).toBe('See *Smith v Jones* (1990).')
+    const box = screen.getByRole('textbox', { name: 'Extracted text' })
+    expect(box).toHaveTextContent('See Smith v Jones (1990).')
+    expect(box.querySelector('em')).toHaveTextContent('Smith v Jones')
 
     fireEvent.click(screen.getByRole('button', { name: 'Edit flagged item' }))
-    expect(box.value).toBe('See *Smith v Jones* (1990).')
-    const start = box.value.indexOf('(1990)')
-    box.setSelectionRange(start, start + '(1990)'.length)
+    expect(screen.getByRole('textbox', { name: 'Extracted text' })).toBe(box)
+    expect(box.querySelector('em')).toHaveTextContent('Smith v Jones')
+    selectTextIn(box, '(1990)')
     fireEvent.click(screen.getByRole('button', { name: 'Bold' }))
-    expect(box.value).toBe('See *Smith v Jones* **(1990)**.')
+    expect(box.querySelector('strong')).toHaveTextContent('(1990)')
 
     fireEvent.click(screen.getByRole('button', { name: 'Save changes' }))
     await waitFor(() => expect(save).toHaveBeenCalled())
@@ -368,8 +391,51 @@ describe('ReviewPage', () => {
         { start: 18, end: 24, italic: false, bold: true },
       ],
     })
-    await waitFor(() => expect(box).toHaveAttribute('readonly'))
-    expect(box.value).toBe('See *Smith v Jones* **(1990)**.')
+    await waitFor(() => expect(box).toHaveAttribute('aria-readonly', 'true'))
+    expect(box.querySelector('em')).toHaveTextContent('Smith v Jones')
+    expect(box.querySelector('strong')).toHaveTextContent('(1990)')
+  })
+
+  it('keeps a text item\'s detected italics when editing and saves styles added by hand', async () => {
+    addTestReviewItem({
+      ...testOrphanedCaptionReviewItem,
+      id: 'text-styled',
+      blockId: '#/texts/text-styled',
+      type: 'text',
+      label: 'Text',
+      title: 'Styled body text',
+      kind: 'text',
+      status: 'accepted',
+      reviewedBy: 'reviewer',
+      extractedText: 'See Smith v Jones (1990).',
+      styles: [{ start: 4, end: 17, italic: true, bold: false }],
+    })
+    const save = vi.spyOn(reviewService, 'saveItem')
+    renderReview()
+    await screen.findAllByText('Section heading needs confirmation')
+
+    fireEvent.click(screen.getByRole('button', { name: /Styled body text/ }))
+    const box = screen.getByRole('textbox', { name: 'Extracted text' })
+    expect(box).toHaveTextContent('See Smith v Jones (1990).')
+    expect(box.querySelector('em')).toHaveTextContent('Smith v Jones')
+
+    fireEvent.click(screen.getByRole('button', { name: 'Edit flagged item' }))
+    expect(screen.getByRole('textbox', { name: 'Extracted text' })).toBe(box)
+    expect(box.querySelector('em')).toHaveTextContent('Smith v Jones')
+    selectTextIn(box, '(1990)')
+    fireEvent.click(screen.getByRole('button', { name: 'Bold' }))
+    expect(box.querySelector('strong')).toHaveTextContent('(1990)')
+
+    fireEvent.click(screen.getByRole('button', { name: 'Save changes' }))
+    await waitFor(() => expect(save).toHaveBeenCalled())
+    expect(save.mock.calls[0][1]).toMatchObject({
+      type: 'text',
+      correctedText: 'See Smith v Jones (1990).',
+      correctedStyles: [
+        { start: 4, end: 17, italic: true, bold: false },
+        { start: 18, end: 24, italic: false, bold: true },
+      ],
+    })
   })
 
   it('converts a table directly into footnote prose without table delimiters', async () => {
@@ -381,12 +447,12 @@ describe('ReviewPage', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Structure label: Table' }))
     fireEvent.click(within(screen.getByRole('listbox', { name: 'Structure label' })).getByRole('option', { name: 'Footnote' }))
 
-    const correction = screen.getByRole('textbox', { name: 'Extracted text' }) as HTMLTextAreaElement
-    await waitFor(() => expect(correction.value).toContain('Term: Accessible format; Definition: Content that people can perceive'))
-    expect(correction.value).not.toContain('|')
+    const correction = screen.getByRole('textbox', { name: 'Extracted text' })
+    await waitFor(() => expect(correction).toHaveTextContent('Term: Accessible format; Definition: Content that people can perceive'))
+    expect(correction).not.toHaveTextContent('|')
     fireEvent.click(screen.getByRole('button', { name: 'Save changes' }))
 
-    await waitFor(() => expect(screen.getByRole('textbox', { name: 'Extracted text' })).toHaveAttribute('readonly'))
+    await waitFor(() => expect(screen.getByRole('textbox', { name: 'Extracted text' })).toHaveAttribute('aria-readonly', 'true'))
     expect(screen.getByRole('button', { name: 'Structure label: Footnote' })).toBeDisabled()
   })
 

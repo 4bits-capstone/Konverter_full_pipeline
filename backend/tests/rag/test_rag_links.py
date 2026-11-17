@@ -33,7 +33,7 @@ def test_report_paragraph_links_to_the_recommendation_it_cites():
 
 
 def test_real_act_text_links_to_acts_own_sections_but_not_other_statutes():
-    chunks = chunk_document(MANIFEST["act@038"], json.loads((FIXTURES / "act_front.json").read_text())).chunks
+    chunks = chunk_document(MANIFEST["act@038"], json.loads((FIXTURES / "act_front.json").read_text(encoding="utf-8"))).chunks
     known = {f"act:s-{n}" for n in ("4", "35", "39", "40", "40A", "84A", "84C")} | {c.section_id for c in chunks}
     found = {(f, t) for f, t, _ in kinds(extract_links(chunks, known))}
     assert ("act:s-3", "act:s-40A") in found and ("act:s-3", "act:s-84C") in found
@@ -129,7 +129,7 @@ def test_notes_held_in_metadata_are_not_read_either():
 
 def test_real_act_chunks_with_leftover_note_fragments_do_not_link_to_the_amending_acts_sections():
     for name in ("act_front", "act_end"):
-        chunks = chunk_document(MANIFEST["act@038"], json.loads((FIXTURES / f"{name}.json").read_text())).chunks
+        chunks = chunk_document(MANIFEST["act@038"], json.loads((FIXTURES / f"{name}.json").read_text(encoding="utf-8"))).chunks
         known = {f"act:s-{n}" for n in range(1, 200)} | {c.section_id for c in chunks}
         for link in extract_links(chunks, known):
             assert not re.search(r"No\.?s? ?\d+/\d{4}", link.evidence), link

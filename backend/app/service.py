@@ -23,7 +23,7 @@ from .logging_utils import document_logger, sanitize_for_log
 from .media import render_pdf_region, render_pdf_regions
 from .pipeline import LABEL_DISPLAY, KonverterPipeline, _plain_text_from_table
 from .storage import LocalDocumentStore
-from .text_styles import normalize_style_runs, styles_for_text
+from .text_styles import STYLE_CAPABLE_LABELS, normalize_style_runs, styles_for_text
 
 
 def _table_from_text(value: str) -> dict[str, Any]:
@@ -1084,8 +1084,8 @@ class WorkflowService:
             if target_type in SINGLE_LINE_TYPES:
                 text = _single_line(text)
             new_styles = changes.get("corrected_styles")
-            if target_type == "footnote" and new_styles is not None:
-                # The reviewer styled this footnote themselves. Ranges are
+            if target_type in STYLE_CAPABLE_LABELS and new_styles is not None:
+                # The reviewer styled this block themselves. Ranges are
                 # relative to the trimmed text, so store that exact string
                 # as `styles_text` -- styles_for_text only honours ranges
                 # while the text still equals it.
@@ -1135,19 +1135,19 @@ class WorkflowService:
             self._discard_generated(document_id)
             return items
 
-    def with_footnote_styles(
+    def with_item_styles(
         self, document_id: str, items: list[dict[str, Any]]
     ) -> list[dict[str, Any]]:
-        """Copies of `items` where each footnote carries the italic/bold
-        ranges that still match the text it currently shows -- whether the
-        pipeline detected them in the PDF or a reviewer set them. Derived
-        from the block on every read, never stored on the item, so it can't
-        go stale when the text changes."""
+        """Copies of `items` where each style-capable item carries the
+        italic/bold ranges that still match the text it currently shows --
+        whether the pipeline detected them in the PDF or a reviewer set
+        them. Derived from the block on every read, never stored on the
+        item, so it can't go stale when the text changes."""
         blocks = self.store.read_artifact(document_id, "blocks.json", [])
         by_id = {block.get("id"): block for block in blocks}
         result: list[dict[str, Any]] = []
         for item in items:
-            if item.get("type") == "footnote":
+            if item.get("type") in STYLE_CAPABLE_LABELS:
                 block = by_id.get(item.get("block_id"))
                 shown = item.get("corrected_text")
                 if shown is None:

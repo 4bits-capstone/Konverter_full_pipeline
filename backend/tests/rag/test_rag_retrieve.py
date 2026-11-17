@@ -196,7 +196,7 @@ def test_eval_lines_are_what_score_py_reads(tmp_path):
     rows = list(run_eval(questions, embedder, store, llm, RagSettings(min_similarity=0.5), RetrievalOptions(k=3), "vector"))
     out = tmp_path / "results.jsonl"
     assert write_results(rows, out) == 2
-    lines = [json.loads(l) for l in out.read_text().splitlines()]
+    lines = [json.loads(l) for l in out.read_text(encoding="utf-8").splitlines()]
     assert {"question_id", "setup", "retrieved", "answer", "abstained", "latency_ms"} <= set(lines[0])
     assert lines[0]["retrieved"][0] == "act:s-2" and lines[0]["setup"] == "vector"
     assert lines[0]["model"] == "deepseek-chat"                                  # so runs on different models are never mixed up
@@ -247,6 +247,6 @@ def test_cli_eval_writes_results(wired, tmp_path, capsys):
     csv_path.write_text("id,category,question,gold_sections,gold_answer,notes\nQ1,single,plaque monument headstone,act:s-2,,\n")
     out = tmp_path / "r.jsonl"
     assert cli.main(["eval", "--questions", str(csv_path), "--out", str(out), "--links"]) == 0
-    line = json.loads(out.read_text().splitlines()[0])
+    line = json.loads(out.read_text(encoding="utf-8").splitlines()[0])
     assert line["setup"] == "vector+links" and line["question_id"] == "Q1" and line["retrieved"][0] == "act:s-2"
     assert "1 results" in capsys.readouterr().out

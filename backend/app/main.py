@@ -50,6 +50,7 @@ from .models import (
     WordPressPublishRequest,
 )
 from .service import ProcessingManager, WorkflowService
+from .text_styles import STYLE_CAPABLE_LABELS
 from .rate_limit import SlidingWindowLimiter, client_ip
 from .storage import DocumentNotFoundError, LocalDocumentStore
 from .wordpress import (
@@ -231,10 +232,10 @@ def _shown_text(item: dict[str, Any]) -> str | None:
 
 
 def _audit_styles(document_id: str, item: dict[str, Any]) -> str | None:
-    """The italic/bold a footnote item currently shows, for audit logging."""
-    if item.get("type") != "footnote":
+    """The italic/bold a style-capable item currently shows, for audit logging."""
+    if item.get("type") not in STYLE_CAPABLE_LABELS:
         return None
-    styled = workflow.with_footnote_styles(document_id, [item])[0]
+    styled = workflow.with_item_styles(document_id, [item])[0]
     shown = _shown_text(styled) or ""
     return _describe_styles(str(shown).strip(), styled.get("styles") or [])
 
@@ -579,7 +580,7 @@ def get_review_items(document_id: str, user: CurrentUser) -> list[ReviewItem]:
     try:
         return [
             ReviewItem(**item)
-            for item in workflow.with_footnote_styles(
+            for item in workflow.with_item_styles(
                 document_id, workflow.get_review_items(document_id)
             )
         ]
@@ -638,7 +639,7 @@ async def update_review_item(
             "after": after,
         },
     )
-    return ReviewItem(**workflow.with_footnote_styles(document_id, [item])[0])
+    return ReviewItem(**workflow.with_item_styles(document_id, [item])[0])
 
 
 @app.post(
@@ -680,7 +681,7 @@ async def upload_review_item_image(
             "item": _review_item_label(item),
         },
     )
-    return ReviewItem(**workflow.with_footnote_styles(document_id, [item])[0])
+    return ReviewItem(**workflow.with_item_styles(document_id, [item])[0])
 
 
 @app.post(
@@ -712,7 +713,7 @@ async def update_review_items_bulk(
     )
     return [
         ReviewItem(**item)
-        for item in workflow.with_footnote_styles(document_id, items)
+        for item in workflow.with_item_styles(document_id, items)
     ]
 
 
@@ -741,7 +742,7 @@ async def resolve_all(document_id: str, user: CurrentUser) -> list[ReviewItem]:
     )
     return [
         ReviewItem(**item)
-        for item in workflow.with_footnote_styles(document_id, items)
+        for item in workflow.with_item_styles(document_id, items)
     ]
 
 
