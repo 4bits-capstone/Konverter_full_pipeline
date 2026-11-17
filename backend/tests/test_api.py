@@ -563,8 +563,8 @@ def _inject_orphaned_caption(tmp_path, document_id: str) -> str:
     document_dir = Path(os.environ["KONVERTER_DATA_DIR"]) / "documents" / document_id
     blocks_path = document_dir / "blocks.json"
     review_path = document_dir / "review_items.json"
-    blocks = json.loads(blocks_path.read_text())
-    items = json.loads(review_path.read_text())
+    blocks = json.loads(blocks_path.read_text(encoding="utf-8"))
+    items = json.loads(review_path.read_text(encoding="utf-8"))
 
     block_id = "#/texts/orphaned-caption-test"
     blocks.append(
@@ -633,7 +633,7 @@ def test_uploading_an_image_resolves_an_orphaned_caption_review_item(tmp_path):
                 / "documents"
                 / document_id
                 / "blocks.json"
-            ).read_text()
+            ).read_text(encoding="utf-8")
         )
         block = next(b for b in blocks if b["id"] == "#/texts/orphaned-caption-test")
         assert block["label"] == "picture"
@@ -676,7 +676,7 @@ def test_uploading_a_transparent_image_composites_onto_white_not_black(tmp_path)
                 / "documents"
                 / document_id
                 / "blocks.json"
-            ).read_text()
+            ).read_text(encoding="utf-8")
         )
         block = next(b for b in blocks if b["id"] == "#/texts/orphaned-caption-test")
         saved = Image.open(

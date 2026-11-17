@@ -147,7 +147,7 @@ needs_node = pytest.mark.skipif(shutil.which("node") is None, reason="node is no
 
 def run_js(code: str, nodes: dict, items: list) -> list:
     done = subprocess.run(["node", "-e", RUNNER], input=json.dumps({"code": code, "nodes": nodes, "items": items}),
-                          capture_output=True, text=True, timeout=30)
+                          capture_output=True, text=True, encoding="utf-8", timeout=30)
     assert done.returncode == 0, done.stderr
     return json.loads(done.stdout)
 

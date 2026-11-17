@@ -19,7 +19,7 @@ def test_the_dimension_is_rendered_everywhere_and_nothing_is_left_over():
 
 
 def test_provider_and_model_names_never_appear_in_sql():
-    template = TEMPLATE.read_text().lower()
+    template = TEMPLATE.read_text(encoding="utf-8").lower()
     for word in ("voyage", "openai", "text-embedding", "deepseek", "1536", "1024"):
         assert word not in template, word
 
