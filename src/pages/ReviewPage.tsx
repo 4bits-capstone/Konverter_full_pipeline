@@ -14,7 +14,9 @@ import {
   TriangleAlert,
 } from "lucide-react";
 import {
+  Fragment,
   type MouseEvent as ReactMouseEvent,
+  type ReactNode,
   useEffect,
   useId,
   useLayoutEffect,
@@ -1097,11 +1099,48 @@ function ListEditor({
   );
 }
 
-/** A footnote's text with its detected or reviewer-set italic/bold written
+/** Types whose text carries italic/bold. Lists and tables are edited per
+ * item or cell, and the document title is metadata, so they stay plain. */
+const styledTypes: ReviewType[] = [
+  "footnote",
+  "text",
+  "quote",
+  "caption",
+  "section_header_1",
+  "section_header_2",
+  "section_header_3",
+  "section_header_4",
+  "section_header_5",
+];
+const isStyledType = (type: ReviewType) => styledTypes.includes(type);
+
+/** An item's text with its detected or reviewer-set italic/bold written
  * inline (*italic*, **bold**), as the edit box shows and takes it. */
-function footnoteMarkupFor(item: ReviewItem): string {
+function styledMarkupFor(item: ReviewItem): string {
   const shown = item.correctedText ?? item.extractedText ?? "";
   return toMarkup(shown.trim(), item.styles ?? []);
+}
+
+/** Renders inline markup as real italic/bold, so the reviewer sees the
+ * styling as they type instead of raw *markers*. */
+function StyledText({ markup }: { markup: string }) {
+  const { text, styles } = fromMarkup(markup);
+  const cuts = new Set<number>([0, text.length]);
+  for (const run of styles) {
+    cuts.add(Math.max(run.start, 0));
+    cuts.add(Math.min(run.end, text.length));
+  }
+  const points = [...cuts].sort((a, b) => a - b);
+  const parts = [];
+  for (let i = 0; i < points.length - 1; i += 1) {
+    const [start, end] = [points[i], points[i + 1]];
+    const covering = styles.filter((r) => r.start <= start && r.end >= end);
+    let node: ReactNode = text.slice(start, end);
+    if (covering.some((r) => r.italic)) node = <em>{node}</em>;
+    if (covering.some((r) => r.bold)) node = <strong>{node}</strong>;
+    parts.push(<Fragment key={start}>{node}</Fragment>);
+  }
+  return <>{parts}</>;
 }
 
 export function ReviewPage() {
@@ -1380,11 +1419,9 @@ export function ReviewPage() {
       item.correctedTable ?? item.tableData ?? emptyTable,
     );
     const shown = item.correctedText ?? item.extractedText ?? tableToText(table);
-    // A footnote is edited as text with its italic/bold written inline, so
+    // Styleable text is edited with its italic/bold written inline, so
     // opening the editor never drops the styles already detected.
-    setEditText(
-      item.type === "footnote" ? footnoteMarkupFor(item) : shown,
-    );
+    setEditText(isStyledType(item.type) ? styledMarkupFor(item) : shown);
     setEditType(item.type);
     setEditTable(table);
   };
@@ -1404,7 +1441,7 @@ export function ReviewPage() {
           ? {}
           : usesTableEditor(editType)
             ? { correctedTable: editTable }
-            : editType === "footnote"
+            : isStyledType(editType)
               ? footnotePayload(editText)
               : { correctedText: editText }),
       });
@@ -1434,9 +1471,14 @@ export function ReviewPage() {
 
   const changeEditType = (nextType: ReviewType) => {
     if (nextType === editType) return;
-    // Only the footnote editor shows italic/bold as inline markers; carry
-    // the plain text across to every other editor and escape it on the way in.
-    let text = editType === "footnote" ? fromMarkup(editText).text : editText;
+    // Styleable editors show italic/bold as inline markers; carry the plain
+    // text across to every other editor and escape it on the way in.
+    let text = isStyledType(editType) ? fromMarkup(editText).text : editText;
+    const keepsMarkup =
+      isStyledType(editType) &&
+      isStyledType(nextType) &&
+      (singleLineTypes.includes(editType) ||
+        !singleLineTypes.includes(nextType));
     if (usesTableEditor(nextType) && !usesTableEditor(editType)) {
       setEditTable(textToTable(text));
     } else if (!usesTableEditor(nextType) && usesTableEditor(editType)) {
@@ -1451,7 +1493,9 @@ export function ReviewPage() {
       // e.g. a list converted into a heading collapses to one clean line.
       text = toSingleLine(text);
     }
-    setEditText(nextType === "footnote" ? toMarkup(text) : text);
+    setEditText(
+      keepsMarkup ? editText : isStyledType(nextType) ? toMarkup(text) : text,
+    );
     setEditType(nextType);
   };
 
@@ -2278,11 +2322,11 @@ export function ReviewPage() {
                     />
                   ) : (
                     <>
-                      {editing && editType === "footnote" && (
+                      {editing && isStyledType(editType) && (
                         <div
                           className="footnote-style-toolbar"
                           role="toolbar"
-                          aria-label="Footnote text style"
+                          aria-label="Text style"
                         >
                           <button
                             type="button"
@@ -2305,6 +2349,15 @@ export function ReviewPage() {
                           <small>Select text, then choose a style.</small>
                         </div>
                       )}
+                      {!editing && isStyledType(selected.type) ? (
+                        <div
+                          className="extract-box review-extracted-text footnote-rendered"
+                          aria-label="Extracted text"
+                          aria-describedby="extracted-text-help"
+                        >
+                          <StyledText markup={styledMarkupFor(selected)} />
+                        </div>
+                      ) : (
                       <textarea
                         ref={extractedTextRef}
                         className="extract-box extract-input review-extracted-text"
@@ -2315,8 +2368,8 @@ export function ReviewPage() {
                         value={
                           editing
                             ? editText
-                            : selected.type === "footnote"
-                              ? footnoteMarkupFor(selected)
+                            : isStyledType(selected.type)
+                              ? styledMarkupFor(selected)
                               : (selected.correctedText ??
                                 selected.extractedText ??
                                 "")
@@ -2324,6 +2377,19 @@ export function ReviewPage() {
                         onChange={(event) => setEditText(event.target.value)}
                         placeholder="No text or image was extracted."
                       />
+                      )}
+                      {editing && isStyledType(editType) && (
+                        <div
+                          className="footnote-live-preview"
+                          aria-live="polite"
+                          aria-label="Live preview"
+                        >
+                          <small>Live preview</small>
+                          <p>
+                            <StyledText markup={editText} />
+                          </p>
+                        </div>
+                      )}
                     </>
                   )}
                   <div className="hint" id="extracted-text-help">
@@ -2334,8 +2400,8 @@ export function ReviewPage() {
                           ? "Edit each list item above."
                           : editType === "box_section"
                             ? "The Box Section remains a container in every generated output."
-                            : editType === "footnote"
-                              ? "Edit the footnote above. Italic is written *like this* and bold **like this**; use \\* for a literal asterisk."
+                            : isStyledType(editType)
+                              ? "Edit the text above. Italic is written *like this* and bold **like this**; use \\* for a literal asterisk."
                               : "Edit the extracted text above, then save your changes."
                       : "Select Edit to change the extracted result."}
                   </div>

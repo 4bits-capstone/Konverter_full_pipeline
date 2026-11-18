@@ -8,7 +8,7 @@ from datetime import datetime
 from typing import Any
 
 from .footnote_numbering import FOOTNOTE_LEADING_NUMBER_RE
-from .text_styles import styles_for_text
+from .text_styles import shift_styles, styles_for_text
 from .preview_html import build_accessible_html
 
 __all__ = ["build_accessible_html", "build_json_ld", "build_publication"]
@@ -1114,6 +1114,8 @@ def build_publication(
                 "page": page,
                 "tocSequence": block.get("toc_sequence"),
             }
+            if styles := styles_for_text(block, text):
+                heading["styles"] = styles
             current["blocks"].append(heading)
             continue
 
@@ -1173,7 +1175,10 @@ def build_publication(
             continue
 
         if label == "caption":
-            current["blocks"].append({"type": "caption", "text": text, "page": page})
+            caption = {"type": "caption", "text": text, "page": page}
+            if styles := styles_for_text(block, text):
+                caption["styles"] = styles
+            current["blocks"].append(caption)
             continue
 
         if label == "quote":
@@ -1183,6 +1188,10 @@ def build_publication(
             if attribution and text.rstrip().endswith(attribution):
                 quote["text"] = text.rstrip()[:-len(attribution)].rstrip(" \n—–")
                 quote["attribution"] = attribution
+            if styles := shift_styles(
+                styles_for_text(block, text), 0, len(quote["text"])
+            ):
+                quote["styles"] = styles
             current["blocks"].append(quote)
             continue
 
@@ -1208,14 +1217,21 @@ def build_publication(
             continue
 
         numbered = re.match(r"^(\d+(?:\.\d+)+)\s+(.+)$", text, re.DOTALL)
-        current["blocks"].append(
-            {
-                "type": "paragraph",
-                "text": numbered.group(2) if numbered else text,
-                "number": numbered.group(1) if numbered else None,
-                "page": page,
-            }
-        )
+        paragraph = {
+            "type": "paragraph",
+            "text": numbered.group(2) if numbered else text,
+            "number": numbered.group(1) if numbered else None,
+            "page": page,
+        }
+        # Ranges index into the whole block's text, so re-base them past a
+        # paragraph number that was split off the front.
+        if styles := shift_styles(
+            styles_for_text(block, text),
+            numbered.start(2) if numbered else 0,
+            len(paragraph["text"]),
+        ):
+            paragraph["styles"] = styles
+        current["blocks"].append(paragraph)
 
     finish_current()
     reader_sections = _ordered_reader_sections(_reader_sections(sections))

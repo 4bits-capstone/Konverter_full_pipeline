@@ -212,6 +212,15 @@ def _snippet(value: Any) -> Any:
     return text
 
 
+def _style_summary(styles: Any) -> str:
+    """Readable audit text for italic/bold ranges (e.g. "2 italic, 1 bold"),
+    instead of logging the raw offsets."""
+    italic = sum(1 for run in styles or [] if run.get("italic"))
+    bold = sum(1 for run in styles or [] if run.get("bold"))
+    parts = [f"{count} {name}" for count, name in ((italic, "italic"), (bold, "bold")) if count]
+    return ", ".join(parts) or "none"
+
+
 def _review_item_label(item: dict[str, Any]) -> str:
     title = item.get("title") or item.get("label") or item.get("id", "item")
     page = item.get("page")
@@ -552,7 +561,7 @@ def get_review_items(document_id: str, user: CurrentUser) -> list[ReviewItem]:
     try:
         return [
             ReviewItem(**item)
-            for item in workflow.with_footnote_styles(
+            for item in workflow.with_text_styles(
                 document_id, workflow.get_review_items(document_id)
             )
         ]
@@ -573,12 +582,22 @@ async def update_review_item(
         (i for i in workflow.get_review_items(document_id) if i.get("id") == item_id),
         {},
     )
-    before = {k: _snippet(existing.get(k)) for k in changes}
+    before = {k: _snippet(existing.get(k)) for k in changes if k != "corrected_styles"}
+    if "corrected_styles" in changes and existing:
+        old_styles = workflow.with_text_styles(document_id, [existing])[0].get("styles")
+    else:
+        old_styles = None
     try:
         item = workflow.update_review_item(document_id, item_id, changes)
     except KeyError as exc:
         raise HTTPException(status_code=404, detail="Review item not found") from exc
-    after = {k: _snippet(v) for k, v in changes.items()}
+    after = {k: _snippet(v) for k, v in changes.items() if k != "corrected_styles"}
+    if "corrected_styles" in changes:
+        # What the item now carries, after the server cleaned the ranges.
+        new_styles = workflow.with_text_styles(document_id, [item])[0].get("styles")
+        if _style_summary(old_styles) != _style_summary(new_styles):
+            before["styles"] = _style_summary(old_styles)
+            after["styles"] = _style_summary(new_styles)
     await audit.record_audit(
         "edit_review_item",
         document_id=document_id,
@@ -592,7 +611,7 @@ async def update_review_item(
             "after": after,
         },
     )
-    return ReviewItem(**workflow.with_footnote_styles(document_id, [item])[0])
+    return ReviewItem(**workflow.with_text_styles(document_id, [item])[0])
 
 
 @app.post(
@@ -634,7 +653,7 @@ async def upload_review_item_image(
             "item": _review_item_label(item),
         },
     )
-    return ReviewItem(**workflow.with_footnote_styles(document_id, [item])[0])
+    return ReviewItem(**workflow.with_text_styles(document_id, [item])[0])
 
 
 @app.post(
@@ -666,7 +685,7 @@ async def update_review_items_bulk(
     )
     return [
         ReviewItem(**item)
-        for item in workflow.with_footnote_styles(document_id, items)
+        for item in workflow.with_text_styles(document_id, items)
     ]
 
 
@@ -695,7 +714,7 @@ async def resolve_all(document_id: str, user: CurrentUser) -> list[ReviewItem]:
     )
     return [
         ReviewItem(**item)
-        for item in workflow.with_footnote_styles(document_id, items)
+        for item in workflow.with_text_styles(document_id, items)
     ]
 
 

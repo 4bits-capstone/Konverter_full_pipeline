@@ -771,3 +771,44 @@ def test_job_left_running_by_a_restart_is_marked_failed_and_can_rerun(
 
         assert client.post(f"/api/documents/{document_id}/process").status_code == 200
         assert wait_until_complete(client, document_id)["state"] == "complete"
+
+
+def test_styled_edit_is_audited_readably_and_served_back(tmp_path, monkeypatch):
+    """The audit log keeps text snippets plus a readable style summary, never
+    raw offsets; the admin audit view renders whatever is in before/after."""
+    import app.audit
+
+    events = []
+
+    async def fake_record_audit(action, **kwargs):
+        events.append((action, kwargs["detail"]))
+
+    monkeypatch.setattr(app.audit, "record_audit", fake_record_audit)
+
+    with load_client(tmp_path) as client:
+        document_id = upload_and_process(client)
+        item = client.get(f"/api/documents/{document_id}/review-items").json()[0]
+        text = "The court applied Donoghue v Stevenson."
+        response = client.patch(
+            f"/api/documents/{document_id}/review-items/{item['id']}",
+            json={
+                "type": "text",
+                "label": "Text",
+                "correctedText": text,
+                "correctedStyles": [
+                    {"start": 18, "end": 38, "italic": True, "bold": False}
+                ],
+            },
+        )
+        assert response.status_code == 200
+        assert response.json()["styles"] == [
+            {"start": 18, "end": 38, "italic": True, "bold": False}
+        ]
+
+    action, detail = [event for event in events if event[0] == "edit_review_item"][-1]
+    assert detail["changes"]["corrected_styles"] == "updated"
+    assert detail["after"]["corrected_text"] == text
+    assert "corrected_styles" not in detail["after"]
+    assert "corrected_styles" not in detail["before"]
+    assert detail["before"]["styles"] == "none"
+    assert detail["after"]["styles"] == "1 italic"

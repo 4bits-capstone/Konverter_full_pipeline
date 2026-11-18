@@ -192,6 +192,23 @@ def extract_style_ranges(page: Any, bounds: dict[str, Any], text: str) -> list[d
     return ranges
 
 
+# Block labels whose text can carry italic/bold. Lists and tables are edited
+# per cell/item and the title is metadata, so they stay plain.
+STYLED_LABELS = frozenset(
+    {
+        "footnote",
+        "text",
+        "quote",
+        "caption",
+        "section_header_1",
+        "section_header_2",
+        "section_header_3",
+        "section_header_4",
+        "section_header_5",
+    }
+)
+
+
 def styles_for_text(block: dict[str, Any], text: str) -> list[dict[str, Any]]:
     """The block's style ranges, but only while `text` is still exactly the
     string they were computed against."""
@@ -243,4 +260,53 @@ def render_styled(text: str, styles: list[dict[str, Any]], offset: int = 0) -> s
         parts.append(inner)
         cursor = end
     parts.append(html.escape(visible[cursor:]))
+    return "".join(parts)
+
+
+def shift_styles(
+    styles: list[dict[str, Any]], offset: int, length: int
+) -> list[dict[str, Any]]:
+    """Ranges re-based onto `text[offset:]` (e.g. after a paragraph number was
+    split off the front), clamped to its `length` and dropping any left empty."""
+    shifted: list[dict[str, Any]] = []
+    for run in styles:
+        start = max(int(run["start"]) - offset, 0)
+        end = min(int(run["end"]) - offset, length)
+        if end > start:
+            shifted.append({**run, "start": start, "end": end})
+    return shifted
+
+
+def style_flags(
+    styles: list[dict[str, Any]], length: int
+) -> list[tuple[bool, bool]]:
+    """Per-character (italic, bold) for a string of `length` characters."""
+    flags = [(False, False)] * length
+    for run in styles:
+        for index in range(max(int(run["start"]), 0), min(int(run["end"]), length)):
+            italic, bold = flags[index]
+            flags[index] = (
+                italic or bool(run.get("italic")),
+                bold or bool(run.get("bold")),
+            )
+    return flags
+
+
+def render_flagged(text: str, flags: list[tuple[bool, bool]]) -> str:
+    """HTML-escape `text`, wrapping each run of identically flagged characters
+    in <em>/<strong>. `flags` has one entry per character of `text`."""
+    parts: list[str] = []
+    index = 0
+    while index < len(text):
+        end = index + 1
+        while end < len(text) and flags[end] == flags[index]:
+            end += 1
+        chunk = html.escape(text[index:end])
+        italic, bold = flags[index]
+        if italic:
+            chunk = f"<em>{chunk}</em>"
+        if bold:
+            chunk = f"<strong>{chunk}</strong>"
+        parts.append(chunk)
+        index = end
     return "".join(parts)

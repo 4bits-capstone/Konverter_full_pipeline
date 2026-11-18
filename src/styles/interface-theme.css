@@ -719,6 +719,27 @@ html:root {
 .converter-app .footnote-style-toolbar small {
   color: var(--muted);
 }
+.converter-app .footnote-rendered {
+  min-height: 7.5em;
+  padding: 10px 12px;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: var(--surface-2);
+  white-space: pre-wrap;
+}
+.converter-app .footnote-live-preview {
+  margin-top: 8px;
+  padding: 8px 12px;
+  border: 1px dashed var(--line);
+  border-radius: 6px;
+}
+.converter-app .footnote-live-preview small {
+  color: var(--muted);
+}
+.converter-app .footnote-live-preview p {
+  margin: 4px 0 0;
+  white-space: pre-wrap;
+}
 .converter-app .review-extracted-text[readonly] {
   border-color: var(--line);
   background: var(--surface-2);
