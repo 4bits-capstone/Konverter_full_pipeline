@@ -816,9 +816,24 @@ def _payload(fields: dict[str, dict[str, Any]]) -> dict[str, Any]:
     return {"metadata": metadata, "fields": field_info}
 
 
-def empty_metadata_payload() -> dict[str, Any]:
+# Document-wide reasons why every field came back empty, shown once above
+# the form instead of leaving the reviewer to guess from five missing fields.
+METADATA_NOTICES = {
+    "no_text": (
+        f"No readable text was found in pages {FIRST_PAGE}–{LAST_PAGE} of this PDF. "
+        "It may be a scanned or image-only document. Check the original pages "
+        "and enter each detail using Edit."
+    ),
+    "extraction_failed": (
+        "Metadata could not be extracted automatically for this document. "
+        "Check the original pages and enter each detail using Edit."
+    ),
+}
+
+
+def empty_metadata_payload(reason: str | None = None) -> dict[str, Any]:
     missing = metadata_field(None, None, "not_found")
-    return _payload(
+    payload = _payload(
         {
             "title": missing,
             "publisher": missing,
@@ -827,6 +842,9 @@ def empty_metadata_payload() -> dict[str, Any]:
             "citations": missing,
         }
     )
+    if reason in METADATA_NOTICES:
+        payload["notice"] = {"code": reason, "message": METADATA_NOTICES[reason]}
+    return payload
 
 
 def extract_metadata_from_docling(
@@ -835,7 +853,7 @@ def extract_metadata_from_docling(
 ) -> dict[str, Any]:
     pages = pages_from_docling(document)
     if not pages:
-        return empty_metadata_payload()
+        return empty_metadata_payload("no_text")
     return _payload(
         {
             "title": extract_title(pages, pdf_path),

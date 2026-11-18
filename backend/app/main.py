@@ -23,6 +23,7 @@ from .config import load_settings  # noqa: I001 (must import first: loads .env
 # time, so a variable already exported blank in the shell doesn't shadow it)
 
 from . import audit, wordpress_registry
+from .text_styles import STYLED_LABELS
 from .auth import get_current_user, get_current_user_optional, require_admin
 from .chat import (
     OpenAINotConfiguredError,
@@ -212,13 +213,31 @@ def _snippet(value: Any) -> Any:
     return text
 
 
-def _style_summary(styles: Any) -> str:
-    """Readable audit text for italic/bold ranges (e.g. "2 italic, 1 bold"),
-    instead of logging the raw offsets."""
-    italic = sum(1 for run in styles or [] if run.get("italic"))
-    bold = sum(1 for run in styles or [] if run.get("bold"))
-    parts = [f"{count} {name}" for count, name in ((italic, "italic"), (bold, "bold")) if count]
-    return ", ".join(parts) or "none"
+def _describe_styles(text: str, runs: list[dict[str, Any]]) -> str | None:
+    """Reviewer-readable form of style runs, e.g. 'italic: "Smith v Jones"',
+    instead of raw character offsets."""
+    parts = []
+    for run in runs:
+        kinds = [kind for kind in ("bold", "italic") if run.get(kind)]
+        words = text[int(run.get("start", 0)) : int(run.get("end", 0))]
+        if kinds and words.strip():
+            parts.append(f'{" + ".join(kinds)}: "{words}"')
+    return "; ".join(parts) or None
+
+
+def _shown_text(item: dict[str, Any]) -> str | None:
+    """The text a review item currently shows the reviewer."""
+    text = item.get("corrected_text")
+    return item.get("extracted_text") if text is None else text
+
+
+def _audit_styles(document_id: str, item: dict[str, Any]) -> str | None:
+    """The italic/bold a styleable item currently shows, for audit logging."""
+    if item.get("type") not in STYLED_LABELS:
+        return None
+    styled = workflow.with_text_styles(document_id, [item])[0]
+    shown = _shown_text(styled) or ""
+    return _describe_styles(str(shown).strip(), styled.get("styles") or [])
 
 
 def _review_item_label(item: dict[str, Any]) -> str:
@@ -582,22 +601,31 @@ async def update_review_item(
         (i for i in workflow.get_review_items(document_id) if i.get("id") == item_id),
         {},
     )
-    before = {k: _snippet(existing.get(k)) for k in changes if k != "corrected_styles"}
-    if "corrected_styles" in changes and existing:
-        old_styles = workflow.with_text_styles(document_id, [existing])[0].get("styles")
-    else:
-        old_styles = None
+    raw_before = {k: existing.get(k) for k in changes}
+    if "corrected_text" in changes:
+        # Until someone edits it, an item shows its extracted text.
+        raw_before["corrected_text"] = _shown_text(existing)
+    if "corrected_styles" in changes:
+        # Styles live on the block, not the item, so the item has no
+        # "corrected_styles" key to read -- describe what the reviewer saw.
+        raw_before["corrected_styles"] = _audit_styles(document_id, existing)
     try:
         item = workflow.update_review_item(document_id, item_id, changes)
     except KeyError as exc:
         raise HTTPException(status_code=404, detail="Review item not found") from exc
-    after = {k: _snippet(v) for k, v in changes.items() if k != "corrected_styles"}
+    raw_after = dict(changes)
+    # Record what was actually stored: text is trimmed/normalised and style
+    # runs are clipped and merged on save.
+    if "corrected_text" in changes:
+        raw_after["corrected_text"] = item.get("corrected_text")
     if "corrected_styles" in changes:
-        # What the item now carries, after the server cleaned the ranges.
-        new_styles = workflow.with_text_styles(document_id, [item])[0].get("styles")
-        if _style_summary(old_styles) != _style_summary(new_styles):
-            before["styles"] = _style_summary(old_styles)
-            after["styles"] = _style_summary(new_styles)
+        raw_after["corrected_styles"] = _audit_styles(document_id, item)
+    # The editor resends every field on save, so log only real changes (a
+    # bold-only edit is a styling change, not a text change). Compare full
+    # values, not the truncated snippets, so a late edit in long text counts.
+    changed = [k for k in raw_after if raw_after[k] != raw_before.get(k)]
+    before = {k: _snippet(raw_before.get(k)) for k in changed}
+    after = {k: _snippet(raw_after[k]) for k in changed}
     await audit.record_audit(
         "edit_review_item",
         document_id=document_id,

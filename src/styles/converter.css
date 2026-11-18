@@ -1885,6 +1885,27 @@
   font-weight: 800;
 }
 
+.converter-app .banner p {
+  margin: 0;
+}
+
+.converter-app .banner .banner-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: 10px;
+}
+
+.converter-app .banner .banner-actions svg {
+  width: 14px;
+  height: 14px;
+  margin-top: 0;
+}
+
+.converter-app .metadata-notice {
+  margin-bottom: 16px;
+}
+
 /* ============ REVIEW SCREEN ============ */
 /* toolbar: two plain dropdowns */
 .converter-app .toolbar {

@@ -184,9 +184,17 @@ class MetadataFieldInfo(ApiModel):
     source: str = "Docling text, pages 1–8"
 
 
+class MetadataNotice(ApiModel):
+    """A document-wide reason the rules found nothing, e.g. no readable text."""
+
+    code: str
+    message: str
+
+
 class MetadataPayload(ApiModel):
     metadata: DocumentMetadata
     fields: dict[str, MetadataFieldInfo]
+    notice: MetadataNotice | None = None
 
 
 class DocumentConfidence(ApiModel):

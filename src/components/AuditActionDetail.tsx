@@ -127,6 +127,20 @@ function SnippetText({ value }: { value: unknown }) {
   return <>{typeof value === 'string' ? value : JSON.stringify(value)}</>
 }
 
+/** Plain names for the backend field keys a reviewer edit can change. */
+const CHANGE_FIELD_LABELS: Record<string, string> = {
+  corrected_text: 'Text',
+  corrected_styles: 'Bold / italic',
+  corrected_table: 'Table',
+  status: 'Status',
+  type: 'Type',
+  label: 'Label',
+  published_date: 'Published date',
+}
+
+export const changeFieldLabel = (field: string) =>
+  CHANGE_FIELD_LABELS[field] ?? field.replace(/_/g, ' ')
+
 /** Renders detail.before/detail.after (short snippets captured on
  * review-item and metadata edits) as a compact previous/updated comparison,
  * one row per changed field. Bulk edits and non-edit actions don't carry
@@ -139,7 +153,7 @@ export function AuditChangePreview({ before, after }: { before: Record<string, u
       <span>What changed</span>
       {fields.map((field) => (
         <div key={field} className="audit-change-row">
-          <span className="audit-change-field">{field}</span>
+          <span className="audit-change-field">{changeFieldLabel(field)}</span>
           <div className="audit-change-values">
             <div className="audit-change-block audit-change-block--before">
               <span className="audit-change-label">Previous value</span>
