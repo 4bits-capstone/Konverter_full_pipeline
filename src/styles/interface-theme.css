@@ -727,18 +727,23 @@ html:root {
   background: var(--surface-2);
   white-space: pre-wrap;
 }
-.converter-app .footnote-live-preview {
-  margin-top: 8px;
-  padding: 8px 12px;
-  border: 1px dashed var(--line);
+.converter-app .styled-text-editor {
+  min-height: 7.5em;
+  padding: 10px 12px;
+  border: 1px solid var(--komosion-steel);
   border-radius: 6px;
-}
-.converter-app .footnote-live-preview small {
-  color: var(--muted);
-}
-.converter-app .footnote-live-preview p {
-  margin: 4px 0 0;
+  background: var(--surface, #fff);
   white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  cursor: text;
+}
+.converter-app .styled-text-editor:focus-visible {
+  outline: 2px solid var(--komosion-steel);
+  outline-offset: 2px;
+}
+.converter-app .footnote-style-toolbar .btn[aria-pressed="true"] {
+  background: var(--komosion-steel);
+  color: #fff;
 }
 .converter-app .review-extracted-text[readonly] {
   border-color: var(--line);

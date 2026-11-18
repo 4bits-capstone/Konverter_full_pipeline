@@ -32,12 +32,8 @@ import { StatusTag } from "../components/StatusTag";
 import { documentService, publicationService } from "../services";
 import { useKonverter } from "../state/KonverterContext";
 import { converterStagePath } from "../lib/converterRoutes";
-import {
-  footnotePayload,
-  fromMarkup,
-  toggleStyle,
-  toMarkup,
-} from "../lib/footnoteMarkup";
+import { StyledTextEditor } from "../components/StyledTextEditor";
+import { richPayload, richValue, type RichValue } from "../lib/richText";
 import {
   openAuthenticatedDocument,
   useAuthenticatedObjectUrl,
@@ -47,6 +43,7 @@ import type {
   ReviewStatus,
   ReviewTableData,
   ReviewType,
+  StyleRun,
 } from "../types/konverter";
 
 type StatusFilter = "all" | ReviewStatus;
@@ -1114,17 +1111,15 @@ const styledTypes: ReviewType[] = [
 ];
 const isStyledType = (type: ReviewType) => styledTypes.includes(type);
 
-/** An item's text with its detected or reviewer-set italic/bold written
- * inline (*italic*, **bold**), as the edit box shows and takes it. */
-function styledMarkupFor(item: ReviewItem): string {
+/** An item's text with its detected or reviewer-set italic/bold ranges. */
+function styledValueFor(item: ReviewItem): RichValue {
   const shown = item.correctedText ?? item.extractedText ?? "";
-  return toMarkup(shown.trim(), item.styles ?? []);
+  return richValue(shown, item.styles ?? []);
 }
 
-/** Renders inline markup as real italic/bold, so the reviewer sees the
- * styling as they type instead of raw *markers*. */
-function StyledText({ markup }: { markup: string }) {
-  const { text, styles } = fromMarkup(markup);
+/** Renders text with its italic/bold ranges as real formatting. */
+function StyledText({ value }: { value: RichValue }) {
+  const { text, styles } = value;
   const cuts = new Set<number>([0, text.length]);
   for (const run of styles) {
     cuts.add(Math.max(run.start, 0));
@@ -1191,12 +1186,16 @@ export function ReviewPage() {
   const [editing, setEditing] = useState(false);
   const [actingItemId, setActingItemId] = useState<string | null>(null);
   const [editText, setEditText] = useState("");
+  // Italic/bold ranges over `editText`, for the styleable types.
+  const [editStyles, setEditStyles] = useState<StyleRun[]>([]);
+  // Bumped whenever the editor must be refilled from state (opening an edit,
+  // changing the type); while typing, the editor itself holds the text.
+  const [editorKey, setEditorKey] = useState(0);
   const [editType, setEditType] = useState<ReviewType>("text");
   const [editTable, setEditTable] = useState<ReviewTableData>(emptyTable);
   const [showDetailMobile, setShowDetailMobile] = useState(false);
   const previousFilteredIds = useRef<string[]>([]);
   const queueListRef = useRef<HTMLDivElement | null>(null);
-  const extractedTextRef = useRef<HTMLTextAreaElement | null>(null);
   const selectionAnchorRef = useRef("");
   const tabModifierHeldRef = useRef(false);
 
@@ -1419,9 +1418,11 @@ export function ReviewPage() {
       item.correctedTable ?? item.tableData ?? emptyTable,
     );
     const shown = item.correctedText ?? item.extractedText ?? tableToText(table);
-    // Styleable text is edited with its italic/bold written inline, so
-    // opening the editor never drops the styles already detected.
-    setEditText(isStyledType(item.type) ? styledMarkupFor(item) : shown);
+    // Opening the editor never drops the styles already detected.
+    const styled = isStyledType(item.type) ? styledValueFor(item) : null;
+    setEditText(styled ? styled.text : shown);
+    setEditStyles(styled ? styled.styles : []);
+    setEditorKey((key) => key + 1);
     setEditType(item.type);
     setEditTable(table);
   };
@@ -1442,7 +1443,7 @@ export function ReviewPage() {
           : usesTableEditor(editType)
             ? { correctedTable: editTable }
             : isStyledType(editType)
-              ? footnotePayload(editText)
+              ? richPayload({ text: editText, styles: editStyles })
               : { correctedText: editText }),
       });
       preserveQueueScroll();
@@ -1471,14 +1472,7 @@ export function ReviewPage() {
 
   const changeEditType = (nextType: ReviewType) => {
     if (nextType === editType) return;
-    // Styleable editors show italic/bold as inline markers; carry the plain
-    // text across to every other editor and escape it on the way in.
-    let text = isStyledType(editType) ? fromMarkup(editText).text : editText;
-    const keepsMarkup =
-      isStyledType(editType) &&
-      isStyledType(nextType) &&
-      (singleLineTypes.includes(editType) ||
-        !singleLineTypes.includes(nextType));
+    let text = editText;
     if (usesTableEditor(nextType) && !usesTableEditor(editType)) {
       setEditTable(textToTable(text));
     } else if (!usesTableEditor(nextType) && usesTableEditor(editType)) {
@@ -1493,27 +1487,13 @@ export function ReviewPage() {
       // e.g. a list converted into a heading collapses to one clean line.
       text = toSingleLine(text);
     }
-    setEditText(
-      keepsMarkup ? editText : isStyledType(nextType) ? toMarkup(text) : text,
-    );
+    // Styles only carry over while the text is exactly what they point at.
+    const keepsStyles =
+      isStyledType(editType) && isStyledType(nextType) && text === editText;
+    setEditText(text);
+    setEditStyles(keepsStyles ? editStyles : []);
+    setEditorKey((key) => key + 1);
     setEditType(nextType);
-  };
-
-  const styleSelection = (style: "italic" | "bold") => {
-    const box = extractedTextRef.current;
-    if (!box || box.selectionStart === box.selectionEnd) return;
-    const next = toggleStyle(
-      editText,
-      box.selectionStart,
-      box.selectionEnd,
-      style,
-    );
-    setEditText(next.markup);
-    // Put the selection back on the same words once React has re-rendered.
-    requestAnimationFrame(() => {
-      box.focus();
-      box.setSelectionRange(next.selectionStart, next.selectionEnd);
-    });
   };
 
   const restoreToOutput = async (item: ReviewItem) => {
@@ -2322,73 +2302,43 @@ export function ReviewPage() {
                     />
                   ) : (
                     <>
-                      {editing && isStyledType(editType) && (
-                        <div
-                          className="footnote-style-toolbar"
-                          role="toolbar"
-                          aria-label="Text style"
-                        >
-                          <button
-                            type="button"
-                            className="btn btn-outline btn-sm"
-                            aria-label="Italic"
-                            onMouseDown={(event) => event.preventDefault()}
-                            onClick={() => styleSelection("italic")}
-                          >
-                            <em>I</em>
-                          </button>
-                          <button
-                            type="button"
-                            className="btn btn-outline btn-sm"
-                            aria-label="Bold"
-                            onMouseDown={(event) => event.preventDefault()}
-                            onClick={() => styleSelection("bold")}
-                          >
-                            <strong>B</strong>
-                          </button>
-                          <small>Select text, then choose a style.</small>
-                        </div>
-                      )}
-                      {!editing && isStyledType(selected.type) ? (
+                      {editing && isStyledType(editType) ? (
+                        <StyledTextEditor
+                          value={{ text: editText, styles: editStyles }}
+                          resetKey={`${selected.id}:${editorKey}`}
+                          onChange={(next) => {
+                            setEditText(next.text);
+                            setEditStyles(next.styles);
+                          }}
+                          ariaLabel="Extracted text"
+                          ariaDescribedBy="extracted-text-help"
+                          singleLine={singleLineTypes.includes(editType)}
+                        />
+                      ) : !editing && isStyledType(selected.type) ? (
                         <div
                           className="extract-box review-extracted-text footnote-rendered"
                           aria-label="Extracted text"
                           aria-describedby="extracted-text-help"
                         >
-                          <StyledText markup={styledMarkupFor(selected)} />
+                          <StyledText value={styledValueFor(selected)} />
                         </div>
                       ) : (
-                      <textarea
-                        ref={extractedTextRef}
-                        className="extract-box extract-input review-extracted-text"
-                        aria-label="Extracted text"
-                        aria-describedby="extracted-text-help"
-                        rows={6}
-                        readOnly={!editing}
-                        value={
-                          editing
-                            ? editText
-                            : isStyledType(selected.type)
-                              ? styledMarkupFor(selected)
+                        <textarea
+                          className="extract-box extract-input review-extracted-text"
+                          aria-label="Extracted text"
+                          aria-describedby="extracted-text-help"
+                          rows={6}
+                          readOnly={!editing}
+                          value={
+                            editing
+                              ? editText
                               : (selected.correctedText ??
                                 selected.extractedText ??
                                 "")
-                        }
-                        onChange={(event) => setEditText(event.target.value)}
-                        placeholder="No text or image was extracted."
-                      />
-                      )}
-                      {editing && isStyledType(editType) && (
-                        <div
-                          className="footnote-live-preview"
-                          aria-live="polite"
-                          aria-label="Live preview"
-                        >
-                          <small>Live preview</small>
-                          <p>
-                            <StyledText markup={editText} />
-                          </p>
-                        </div>
+                          }
+                          onChange={(event) => setEditText(event.target.value)}
+                          placeholder="No text or image was extracted."
+                        />
                       )}
                     </>
                   )}
@@ -2401,7 +2351,7 @@ export function ReviewPage() {
                           : editType === "box_section"
                             ? "The Box Section remains a container in every generated output."
                             : isStyledType(editType)
-                              ? "Edit the text above. Italic is written *like this* and bold **like this**; use \\* for a literal asterisk."
+                              ? "Edit the text above. Use the I and B buttons, or Ctrl/⌘+I and Ctrl/⌘+B, to style the selected words."
                               : "Edit the extracted text above, then save your changes."
                       : "Select Edit to change the extracted result."}
                   </div>
