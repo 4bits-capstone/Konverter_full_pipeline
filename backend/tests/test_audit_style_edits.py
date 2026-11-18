@@ -171,3 +171,63 @@ def test_late_change_in_long_text_is_still_logged(tmp_path, monkeypatch):
     detail = events[0][1]["detail"]
     assert "corrected_text" in detail["after"]
     assert detail["after"]["corrected_text"]["truncated"] is True
+
+
+PARAGRAPH = "The court applied Donoghue v Stevenson."
+
+
+def _make_paragraph(document_id: str) -> str:
+    """Turn the document's first review item into a plain body paragraph."""
+    import app.main
+
+    store = app.main.store
+    items = store.read_artifact(document_id, "review_items.json", [])
+    blocks = store.read_artifact(document_id, "blocks.json", [])
+    item = items[0]
+    item.update(
+        type="text",
+        label="Text",
+        extracted_text=PARAGRAPH,
+        corrected_text=None,
+        status="pending",
+    )
+    for block in blocks:
+        if block["id"] == item["block_id"]:
+            block.update(label="text", text=PARAGRAPH)
+            block.pop("styles", None)
+            block.pop("styles_text", None)
+    store.write_artifact(document_id, "review_items.json", items)
+    store.write_artifact(document_id, "blocks.json", blocks)
+    return item["id"]
+
+
+def test_paragraph_style_edit_is_logged_with_readable_before_and_after(
+    tmp_path, monkeypatch
+):
+    # Styles aren't footnote-only: body text gets the same readable audit
+    # entry, not an empty "before" and raw offsets.
+    with load_client(tmp_path) as client:
+        document_id = upload_and_process(client)
+        item_id = _make_paragraph(document_id)
+        events = _capture_audit(monkeypatch)
+
+        for styles in ([_run(18, 38, italic=True)], [_run(18, 38, italic=True, bold=True)]):
+            response = client.patch(
+                f"/api/documents/{document_id}/review-items/{item_id}",
+                json={
+                    "type": "text",
+                    "label": "Text",
+                    "status": "edited",
+                    "correctedText": PARAGRAPH[:-1] + ".",
+                    "correctedStyles": styles,
+                },
+            )
+            assert response.status_code == 200
+        assert response.json()["styles"] == [_run(18, 38, italic=True, bold=True)]
+
+    first, second = (kwargs["detail"] for _, kwargs in events)
+    assert first["before"]["corrected_styles"] is None
+    assert first["after"]["corrected_styles"] == 'italic: "Donoghue v Stevenson"'
+    assert second["before"]["corrected_styles"] == 'italic: "Donoghue v Stevenson"'
+    assert second["after"]["corrected_styles"] == 'bold + italic: "Donoghue v Stevenson"'
+    assert "corrected_text" not in second["after"]
