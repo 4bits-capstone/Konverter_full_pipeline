@@ -57,6 +57,13 @@ afterEach(() => {
   vi.restoreAllMocks()
 })
 
+// The styled editor is a contenteditable, so tests "type" by replacing its
+// content and firing the input event the browser would.
+function typeInto(editor: HTMLElement, html: string) {
+  editor.innerHTML = html
+  fireEvent.input(editor)
+}
+
 describe('ReviewPage', () => {
   it('explains structure confidence and provides the requested queue controls', async () => {
     renderReview()
@@ -157,15 +164,16 @@ describe('ReviewPage', () => {
 
     expect(screen.getByText('Extracted result')).toBeInTheDocument()
     expect(screen.getByRole('button', { name: 'Structure label: H2' })).toBeDisabled()
-    expect(screen.getByRole('textbox', { name: 'Extracted text' })).toHaveAttribute('readonly')
+    // Read mode shows the rendered text; only Edit opens a textbox.
+    expect(screen.queryByRole('textbox', { name: 'Extracted text' })).toBeNull()
+    expect(screen.getByLabelText('Extracted text')).toHaveTextContent('Purpose')
 
-    const extracted = screen.getByRole('textbox', { name: 'Extracted text' })
     fireEvent.click(screen.getByRole('button', { name: 'Edit flagged item' }))
-    expect(screen.getByRole('textbox', { name: 'Extracted text' })).toBe(extracted)
-    expect(extracted).not.toHaveAttribute('readonly')
+    const extracted = screen.getByRole('textbox', { name: 'Extracted text' })
+    expect(extracted).toHaveAttribute('contenteditable', 'true')
     expect(screen.getByRole('button', { name: 'Structure label: H2' })).toBeEnabled()
     expect(screen.getByText('Section within the current H1.')).toBeInTheDocument()
-    expect(screen.getByRole('textbox', { name: 'Extracted text' })).toHaveValue('Purpose')
+    expect(screen.getByRole('textbox', { name: 'Extracted text' })).toHaveTextContent('Purpose')
     expect(screen.getByRole('button', { name: /Open original page/ })).toBeInTheDocument()
     expect(screen.getByRole('button', { name: 'Save changes' })).toHaveClass('btn-primary')
     expect(screen.queryByRole('button', { name: 'Accept' })).not.toBeInTheDocument()
@@ -176,22 +184,21 @@ describe('ReviewPage', () => {
     renderReview()
     await screen.findAllByText('Section heading needs confirmation')
     fireEvent.click(screen.getByRole('button', { name: /Section heading needs confirmation/ }))
-    const field = screen.getByRole('textbox', { name: 'Extracted text' })
     fireEvent.click(screen.getByRole('button', { name: 'Edit flagged item' }))
-    fireEvent.change(field, { target: { value: 'Updated purpose' } })
+    const field = screen.getByRole('textbox', { name: 'Extracted text' })
+    typeInto(field, 'Updated purpose')
     fireEvent.click(screen.getByRole('button', { name: 'Save changes' }))
-    await waitFor(() => expect(field).toHaveAttribute('readonly'))
-    expect(field).toHaveValue('Updated purpose')
+    await waitFor(() => expect(screen.queryByRole('textbox', { name: 'Extracted text' })).toBeNull())
+    expect(screen.getByLabelText('Extracted text')).toHaveTextContent('Updated purpose')
     const stored = (await reviewService.getReviewItems(testDocument.id)).find(item => item.id === 'review-heading')!
     expect(stored.correctedText).toBe('Updated purpose')
     expect(stored.extractedText).toBe('Purpose')
     save.mockClear()
     fireEvent.click(screen.getByRole('button', { name: 'Edit flagged item' }))
-    expect(screen.getByRole('textbox', { name: 'Extracted text' })).toBe(field)
-    fireEvent.change(field, { target: { value: 'Discard this draft' } })
+    typeInto(screen.getByRole('textbox', { name: 'Extracted text' }), 'Discard this draft')
     fireEvent.click(screen.getByRole('button', { name: 'Cancel' }))
-    expect(field).toHaveValue('Updated purpose')
-    expect(field).toHaveAttribute('readonly')
+    expect(screen.queryByRole('textbox', { name: 'Extracted text' })).toBeNull()
+    expect(screen.getByLabelText('Extracted text')).toHaveTextContent('Updated purpose')
     expect(save).not.toHaveBeenCalled()
   })
 
@@ -203,15 +210,15 @@ describe('ReviewPage', () => {
     renderReview()
     await screen.findAllByText('Section heading needs confirmation')
     fireEvent.click(screen.getByRole('button', { name: /Section heading needs confirmation/ }))
-    const field = screen.getByRole('textbox', { name: 'Extracted text' })
     fireEvent.click(screen.getByRole('button', { name: 'Edit flagged item' }))
-    fireEvent.change(field, { target: { value: 'Updated purpose' } })
+    const field = screen.getByRole('textbox', { name: 'Extracted text' })
+    typeInto(field, 'Updated purpose')
     const button = screen.getByRole('button', { name: 'Save changes' })
     fireEvent.click(button)
     await waitFor(() => expect(button).toBeDisabled())
     fireEvent.click(button)
     resolveSave({ ...testReviewItems[0], correctedText: 'Updated purpose', status: 'edited' })
-    await waitFor(() => expect(field).toHaveAttribute('readonly'))
+    await waitFor(() => expect(screen.queryByRole('textbox', { name: 'Extracted text' })).toBeNull())
     expect(save).toHaveBeenCalledTimes(1)
   })
 
@@ -220,9 +227,9 @@ describe('ReviewPage', () => {
     renderReview()
     await screen.findAllByText('Section heading needs confirmation')
     fireEvent.click(screen.getByRole('button', { name: /Section heading needs confirmation/ }))
-    const field = screen.getByRole('textbox', { name: 'Extracted text' })
     fireEvent.click(screen.getByRole('button', { name: 'Edit flagged item' }))
-    fireEvent.change(field, { target: { value: 'Updated purpose' } })
+    const field = screen.getByRole('textbox', { name: 'Extracted text' })
+    typeInto(field, 'Updated purpose')
     fireEvent.click(screen.getByRole('button', { name: 'Save changes' }))
 
     await waitFor(() =>
@@ -232,8 +239,8 @@ describe('ReviewPage', () => {
     )
     // The edit was not silently discarded — the field stays open and
     // editable with the reviewer's in-progress change still there.
-    expect(field).not.toHaveAttribute('readonly')
-    expect(field).toHaveValue('Updated purpose')
+    expect(screen.getByRole('textbox', { name: 'Extracted text' })).toHaveAttribute('contenteditable', 'true')
+    expect(field).toHaveTextContent('Updated purpose')
   })
 
   it('does not fire a second save request while one is already in flight', async () => {
@@ -246,9 +253,7 @@ describe('ReviewPage', () => {
     fireEvent.click(saveButton)
     fireEvent.click(saveButton)
     await waitFor(() =>
-      expect(screen.getByRole('textbox', { name: 'Extracted text' })).toHaveAttribute(
-        'readonly',
-      ),
+      expect(screen.queryByRole('textbox', { name: 'Extracted text' })).toBeNull(),
     )
     expect(save).toHaveBeenCalledTimes(1)
   })
@@ -344,19 +349,25 @@ describe('ReviewPage', () => {
       styles: [{ start: 4, end: 17, italic: true, bold: false }],
     })
     const save = vi.spyOn(reviewService, 'saveItem')
+    // jsdom has no execCommand; the browser's reply is simulated with typeInto.
+    const execCommand = vi.fn(() => true)
+    Object.defineProperty(document, 'execCommand', { value: execCommand, configurable: true })
     renderReview()
     await screen.findAllByText('Section heading needs confirmation')
 
     fireEvent.click(screen.getByRole('button', { name: /Styled footnote/ }))
-    const box = screen.getByRole('textbox', { name: 'Extracted text' }) as HTMLTextAreaElement
-    expect(box.value).toBe('See *Smith v Jones* (1990).')
+    // Read mode renders the styling.
+    expect(screen.queryByRole('textbox', { name: 'Extracted text' })).toBeNull()
+    expect(screen.getByText('Smith v Jones').tagName).toBe('EM')
 
+    // The editor shows the same formatting, not markers.
     fireEvent.click(screen.getByRole('button', { name: 'Edit flagged item' }))
-    expect(box.value).toBe('See *Smith v Jones* (1990).')
-    const start = box.value.indexOf('(1990)')
-    box.setSelectionRange(start, start + '(1990)'.length)
+    const box = screen.getByRole('textbox', { name: 'Extracted text' })
+    expect(box.innerHTML).toBe('See <em>Smith v Jones</em> (1990).')
+
     fireEvent.click(screen.getByRole('button', { name: 'Bold' }))
-    expect(box.value).toBe('See *Smith v Jones* **(1990)**.')
+    expect(execCommand).toHaveBeenCalledWith('bold')
+    typeInto(box, 'See <em>Smith v Jones</em> <b>(1990)</b>.')
 
     fireEvent.click(screen.getByRole('button', { name: 'Save changes' }))
     await waitFor(() => expect(save).toHaveBeenCalled())
@@ -368,8 +379,56 @@ describe('ReviewPage', () => {
         { start: 18, end: 24, italic: false, bold: true },
       ],
     })
-    await waitFor(() => expect(box).toHaveAttribute('readonly'))
-    expect(box.value).toBe('See *Smith v Jones* **(1990)**.')
+    await waitFor(() => expect(screen.queryByRole('textbox', { name: 'Extracted text' })).toBeNull())
+    expect(screen.getByText('(1990)').tagName).toBe('STRONG')
+  })
+
+  it('keeps detected styles when a reviewer saves without touching the formatting', async () => {
+    addTestReviewItem({
+      ...testOrphanedCaptionReviewItem,
+      id: 'para-keep',
+      blockId: '#/texts/para-keep',
+      type: 'text',
+      label: 'Text',
+      title: 'Kept styles',
+      status: 'accepted',
+      reviewedBy: 'system',
+      extractedText: 'The court applied Donoghue v Stevenson.',
+      styles: [{ start: 18, end: 38, italic: true, bold: false }],
+    })
+    const save = vi.spyOn(reviewService, 'saveItem')
+    renderReview()
+    await screen.findAllByText('Section heading needs confirmation')
+
+    fireEvent.click(screen.getByRole('button', { name: /Kept styles/ }))
+    expect(screen.getByText('Donoghue v Stevenson').tagName).toBe('EM')
+    fireEvent.click(screen.getByRole('button', { name: 'Edit flagged item' }))
+    const box = screen.getByRole('textbox', { name: 'Extracted text' })
+    // Typing after the styled words must not disturb them.
+    typeInto(box, 'The court applied <em>Donoghue v Stevenson</em>, again.')
+    fireEvent.click(screen.getByRole('button', { name: 'Save changes' }))
+    await waitFor(() => expect(save).toHaveBeenCalled())
+    expect(save.mock.calls[0][1]).toMatchObject({
+      type: 'text',
+      correctedText: 'The court applied Donoghue v Stevenson, again.',
+      correctedStyles: [{ start: 18, end: 38, italic: true, bold: false }],
+    })
+  })
+
+  it('paste into the editor is inserted as plain text', async () => {
+    const execCommand = vi.fn(() => true)
+    Object.defineProperty(document, 'execCommand', { value: execCommand, configurable: true })
+    renderReview()
+    await screen.findAllByText('Section heading needs confirmation')
+    fireEvent.click(screen.getByRole('button', { name: /Section heading needs confirmation/ }))
+    fireEvent.click(screen.getByRole('button', { name: 'Edit flagged item' }))
+    const box = screen.getByRole('textbox', { name: 'Extracted text' })
+
+    fireEvent.paste(box, {
+      clipboardData: { getData: () => '<b>Bold</b> line\nsecond line' },
+    })
+    // A heading is single-line, so the line break is flattened.
+    expect(execCommand).toHaveBeenCalledWith('insertText', false, '<b>Bold</b> line second line')
   })
 
   it('converts a table directly into footnote prose without table delimiters', async () => {
@@ -381,12 +440,12 @@ describe('ReviewPage', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Structure label: Table' }))
     fireEvent.click(within(screen.getByRole('listbox', { name: 'Structure label' })).getByRole('option', { name: 'Footnote' }))
 
-    const correction = screen.getByRole('textbox', { name: 'Extracted text' }) as HTMLTextAreaElement
-    await waitFor(() => expect(correction.value).toContain('Term: Accessible format; Definition: Content that people can perceive'))
-    expect(correction.value).not.toContain('|')
+    const correction = screen.getByRole('textbox', { name: 'Extracted text' })
+    await waitFor(() => expect(correction.textContent).toContain('Term: Accessible format; Definition: Content that people can perceive'))
+    expect(correction.textContent).not.toContain('|')
     fireEvent.click(screen.getByRole('button', { name: 'Save changes' }))
 
-    await waitFor(() => expect(screen.getByRole('textbox', { name: 'Extracted text' })).toHaveAttribute('readonly'))
+    await waitFor(() => expect(screen.queryByRole('textbox', { name: 'Extracted text' })).toBeNull())
     expect(screen.getByRole('button', { name: 'Structure label: Footnote' })).toBeDisabled()
   })
 

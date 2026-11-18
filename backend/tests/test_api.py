@@ -771,3 +771,4 @@ def test_job_left_running_by_a_restart_is_marked_failed_and_can_rerun(
 
         assert client.post(f"/api/documents/{document_id}/process").status_code == 200
         assert wait_until_complete(client, document_id)["state"] == "complete"
+

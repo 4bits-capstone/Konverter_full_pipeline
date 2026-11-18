@@ -1,4 +1,4 @@
-import { render, screen } from '@testing-library/react'
+import { cleanup, render, screen } from '@testing-library/react'
 import { MemoryRouter, Route, Routes } from 'react-router-dom'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { RequireAdmin } from './RequireAdmin'
@@ -28,6 +28,10 @@ function renderGuarded(initialPath = '/admin/audit-log') {
 }
 
 afterEach(() => {
+  // Vitest has no globals here, so Testing Library won't unmount for us; a
+  // tree left mounted lets React's scheduler fire after jsdom is torn down
+  // ("window is not defined" on slower CI machines).
+  cleanup()
   vi.clearAllMocks()
 })
 
