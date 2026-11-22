@@ -1434,12 +1434,22 @@ class TocHierarchyResolver:
         self.outline = extract_toc_outline(pdf_path)
         self.labels_by_ref: dict[str, str] = {}
         self.text_by_ref: dict[str, str] = {}
+        self._fallback_labels: dict[str, set[str]] = defaultdict(set)
         self._match_entries()
         self._classify_body_headings(pdf_path)
 
     @property
     def warnings(self) -> list[str]:
-        return list(self.outline.warnings)
+        items = list(self.outline.warnings)
+        if self._fallback_labels:
+            summary = ", ".join(
+                f"{label} ({len(refs)}x)"
+                for label, refs in sorted(self._fallback_labels.items())
+            )
+            items.append(
+                f"Unrecognised Docling label(s) fell back to 'text': {summary}."
+            )
+        return items
 
     def _raw_label(self, item: dict[str, Any]) -> str:
         return str(item.get("label", "unspecified")).lower()
@@ -1756,12 +1766,13 @@ class TocHierarchyResolver:
         # instead, since that's exactly how it already renders (a plain
         # paragraph) and is a real, reviewable structure label rather than
         # a dead-end category with no assignable meaning.
-        return {
+        label_map = {
             "box_section": "box_section",
             "caption": "caption",
             "callout": "box_section",
-            "checkbox_selected": "form",
-            "checkbox_unselected": "form",
+            "checkbox": "checkbox",
+            "checkbox_selected": "checkbox",
+            "checkbox_unselected": "checkbox",
             "document_index": "document_index",
             "footnote": "footnote",
             "formula": "formula",
@@ -1772,7 +1783,13 @@ class TocHierarchyResolver:
             "picture": "picture",
             "table": "table",
             "text": "text",
-        }.get(raw, "text")
+        }
+        mapped = label_map.get(raw)
+        if mapped is not None:
+            return mapped
+        item_key = reference or f"anon:{raw}:{_item_page(item)}"
+        self._fallback_labels[raw].add(item_key)
+        return "text"
 
     def output_text(self, item: dict[str, Any]) -> str:
         reference = str(item.get("self_ref", ""))

@@ -1,11 +1,14 @@
 from __future__ import annotations
 
+import copy
 import html
+import math
 import re
 import time
+import uuid
 from collections import Counter
 from collections.abc import Callable
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
@@ -13,6 +16,8 @@ import pypdfium2 as pdfium
 
 from . import docling_runner, runpod_client, storage_bucket
 from .config import Settings
+from .logging_utils import document_logger, sanitize_for_log
+from .media import pdfium_lock
 from .metadata_rules import empty_metadata_payload, extract_metadata_from_docling
 from .text_styles import STYLED_LABELS, extract_style_ranges
 from .toc_hierarchy import _ALWAYS_TOP_LEVEL, TocHierarchyResolver
@@ -31,6 +36,7 @@ StageCallback = Callable[[int, str], None]
 LABEL_DISPLAY = {
     "box_section": "Box Section",
     "caption": "Caption",
+    "checkbox": "Checkbox",
     "document_index": "Document index",
     "footnote": "Footnote",
     "footer": "Footer",
@@ -488,6 +494,9 @@ def _recover_page_number_pictures(
 
 
 _CHAPTER_DIVIDER_TEXT_RE = re.compile(r"^\s*chapter\s+\d+\s*$", re.IGNORECASE)
+_CHAPTER_DIVIDER_PART_RE = re.compile(
+    r"^\s*(?:chapter(?:\s+\d+)?|\d+)\s*$", re.IGNORECASE
+)
 _DECORATIVE_PICTURE_POSITION_TOLERANCE_POINTS = 20.0
 
 
@@ -523,13 +532,37 @@ def _exclude_repeating_chapter_divider_pictures(document: dict[str, Any]) -> Non
     if not pictures:
         return
     picture_refs = {str(picture.get("self_ref", "")) for picture in pictures}
-    confirming_labels: dict[str, list[dict[str, Any]]] = {}
+    children_by_picture: dict[str, list[dict[str, Any]]] = {}
     for item in document.get("texts", []):
-        if not _CHAPTER_DIVIDER_TEXT_RE.match(str(item.get("text", "")).strip()):
-            continue
         parent_ref = str((item.get("parent") or {}).get("$ref", ""))
         if parent_ref in picture_refs:
-            confirming_labels.setdefault(parent_ref, []).append(item)
+            children_by_picture.setdefault(parent_ref, []).append(item)
+
+    confirming_labels: dict[str, list[dict[str, Any]]] = {}
+    for parent_ref, child_items in children_by_picture.items():
+        single_matches = [
+            item
+            for item in child_items
+            if _CHAPTER_DIVIDER_TEXT_RE.match(str(item.get("text", "")).strip())
+        ]
+        if single_matches:
+            confirming_labels[parent_ref] = single_matches
+            continue
+        # Docling sometimes splits the divider's printed "CHAPTER 01" into
+        # two separate child items ("CHAPTER" and "01") under the same
+        # picture (found across all 5 chapter dividers in VLRC_Stalking_Interim
+        # and 14 of 19 in VLRC_Inclusive-Juries).
+        part_items = [
+            item
+            for item in child_items
+            if _CHAPTER_DIVIDER_PART_RE.match(str(item.get("text", "")).strip())
+        ]
+        combined_text = " ".join(
+            str(item.get("text", "")).strip() for item in part_items
+        )
+        if part_items and _CHAPTER_DIVIDER_TEXT_RE.match(combined_text):
+            confirming_labels[parent_ref] = part_items
+
     confirmed_refs = set(confirming_labels)
     if not confirmed_refs:
         return
@@ -568,12 +601,18 @@ def _exclude_repeating_chapter_divider_pictures(document: dict[str, Any]) -> Non
         for picture, *_ in cluster:
             picture.setdefault("meta", {})["konverter_exclude_from_output"] = True
             picture_ref = str(picture.get("self_ref", ""))
-            # A "CHAPTER N" label nested under an excluded divider graphic
-            # is now an orphan -- the chapter's real title is already
-            # extracted separately as its own heading elsewhere, so this
-            # copy has no purpose left but to float as a stray, meaningless
-            # one-word paragraph once its own picture stops anchoring it.
-            for label_item in confirming_labels.get(picture_ref, []):
+            # A "CHAPTER N" label (or split "CHAPTER" / "N" fragments) nested
+            # under an excluded divider graphic is now an orphan -- the
+            # chapter's real title is already extracted separately as its own
+            # heading elsewhere, so this copy has no purpose left but to float
+            # as a stray, meaningless one-word paragraph once its own picture
+            # stops anchoring it.
+            label_items = confirming_labels.get(picture_ref) or [
+                item
+                for item in children_by_picture.get(picture_ref, [])
+                if _CHAPTER_DIVIDER_PART_RE.match(str(item.get("text", "")).strip())
+            ]
+            for label_item in label_items:
                 label_item.setdefault("meta", {})["konverter_exclude_from_output"] = True
 
 
@@ -1723,6 +1762,126 @@ class PipelineOutput:
     doc_confidence: dict[str, Any]
     warnings: list[str]
     elapsed_seconds: float
+    docling_version: str = "unknown"
+    conversion_status: str = "success"
+    conversion_errors: list[dict[str, Any]] = field(default_factory=list)
+    parse_elapsed_seconds: float | None = None
+
+
+def _validate_remote_docling_result(
+    payload: Any,
+    *,
+    job_id: str | None = None,
+    worker_meta: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    job_ctx = f" for job {job_id}" if job_id else ""
+    if not isinstance(payload, dict):
+        raise RuntimeError(
+            f"Remote Docling worker contract mismatch{job_ctx}: expected JSON object, "
+            f"got {type(payload).__name__}."
+        )
+
+    raw_docling = payload.get("raw_docling")
+    if not isinstance(raw_docling, dict):
+        raise RuntimeError(
+            f"Remote Docling worker contract mismatch{job_ctx}: missing or invalid 'raw_docling' object."
+        )
+    pages = raw_docling.get("pages")
+    if not isinstance(pages, dict) or not pages:
+        raise RuntimeError(
+            f"Remote Docling worker contract mismatch{job_ctx}: 'raw_docling.pages' must be a non-empty object."
+        )
+
+    cluster_confidences = payload.get("cluster_confidences")
+    if not isinstance(cluster_confidences, list):
+        raise RuntimeError(
+            f"Remote Docling worker contract mismatch{job_ctx}: missing or invalid 'cluster_confidences' list."
+        )
+
+    doc_confidence = payload.get("doc_confidence")
+    if not isinstance(doc_confidence, dict):
+        raise RuntimeError(
+            f"Remote Docling worker contract mismatch{job_ctx}: missing or invalid 'doc_confidence' object."
+        )
+
+    if "docling_version" in payload:
+        raw_version = payload["docling_version"]
+        if not isinstance(raw_version, str) or not raw_version.strip():
+            raise RuntimeError(
+                f"Remote Docling worker contract mismatch{job_ctx}: 'docling_version' must be a non-empty string."
+            )
+        docling_version = raw_version.strip()
+    elif isinstance(worker_meta, dict) and isinstance(worker_meta.get("docling_version"), str) and worker_meta["docling_version"].strip():
+        docling_version = worker_meta["docling_version"].strip()
+    else:
+        docling_version = "unknown"
+
+    if "conversion_status" in payload:
+        raw_status = payload["conversion_status"]
+        if not isinstance(raw_status, str) or raw_status not in {"success", "partial_success"}:
+            raise RuntimeError(
+                f"Remote Docling worker contract mismatch{job_ctx}: invalid 'conversion_status' {raw_status!r}."
+            )
+        conversion_status = raw_status
+    elif isinstance(worker_meta, dict) and worker_meta.get("conversion_status") is not None:
+        raw_status = worker_meta["conversion_status"]
+        if not isinstance(raw_status, str) or raw_status not in {"success", "partial_success"}:
+            raise RuntimeError(
+                f"Remote Docling worker contract mismatch{job_ctx}: invalid worker 'conversion_status' {raw_status!r}."
+            )
+        conversion_status = raw_status
+    else:
+        conversion_status = "success"
+
+    if "conversion_errors" in payload:
+        raw_errors = payload["conversion_errors"]
+        if not isinstance(raw_errors, list) or not all(isinstance(err, dict) for err in raw_errors):
+            raise RuntimeError(
+                f"Remote Docling worker contract mismatch{job_ctx}: 'conversion_errors' must be a list of objects."
+            )
+        conversion_errors = raw_errors
+    else:
+        conversion_errors = []
+
+    if "parse_elapsed_seconds" in payload:
+        raw_elapsed = payload["parse_elapsed_seconds"]
+        if raw_elapsed is not None:
+            if (
+                isinstance(raw_elapsed, bool)
+                or not isinstance(raw_elapsed, (int, float))
+                or not math.isfinite(float(raw_elapsed))
+                or float(raw_elapsed) < 0
+            ):
+                raise RuntimeError(
+                    f"Remote Docling worker contract mismatch{job_ctx}: 'parse_elapsed_seconds' must be a non-negative finite number or null."
+                )
+            parse_elapsed_seconds: float | None = float(raw_elapsed)
+        else:
+            parse_elapsed_seconds = None
+    elif isinstance(worker_meta, dict) and worker_meta.get("parse_elapsed_seconds") is not None:
+        raw_elapsed = worker_meta["parse_elapsed_seconds"]
+        if (
+            isinstance(raw_elapsed, bool)
+            or not isinstance(raw_elapsed, (int, float))
+            or not math.isfinite(float(raw_elapsed))
+            or float(raw_elapsed) < 0
+        ):
+            raise RuntimeError(
+                f"Remote Docling worker contract mismatch{job_ctx}: worker 'parse_elapsed_seconds' must be a non-negative finite number."
+            )
+        parse_elapsed_seconds = float(raw_elapsed)
+    else:
+        parse_elapsed_seconds = None
+
+    return {
+        "raw_docling": raw_docling,
+        "cluster_confidences": cluster_confidences,
+        "doc_confidence": doc_confidence,
+        "docling_version": docling_version,
+        "conversion_status": conversion_status,
+        "conversion_errors": conversion_errors,
+        "parse_elapsed_seconds": parse_elapsed_seconds,
+    }
 
 
 class KonverterPipeline:
@@ -1730,19 +1889,30 @@ class KonverterPipeline:
         self.settings = settings
 
     def process(
-        self, pdf_path: Path, stage: StageCallback, document_id: str
+        self,
+        pdf_path: Path,
+        stage: StageCallback,
+        document_id: str,
+        cancel_check: Callable[[], bool] | None = None,
     ) -> PipelineOutput:
         started = time.monotonic()
         stage(1, "Preparing document")
-        raw_document, blocks, doc_confidence, warnings = self._run_docling(
-            pdf_path, stage, document_id
+        raw_docling_snapshot, working_document, blocks, doc_confidence, warnings = (
+            self._run_docling(
+                pdf_path,
+                stage,
+                document_id,
+                cancel_check=cancel_check,
+            )
         )
 
         _attach_text_styles(blocks, pdf_path)
 
         stage(4, "Extracting metadata")
         try:
-            metadata_payload = extract_metadata_from_docling(raw_document, pdf_path)
+            metadata_payload = extract_metadata_from_docling(
+                working_document, pdf_path
+            )
         except Exception as exc:
             warnings.append(f"Rule-based metadata extraction failed: {exc}")
             metadata_payload = empty_metadata_payload("extraction_failed")
@@ -1754,10 +1924,14 @@ class KonverterPipeline:
             blocks=blocks,
             review_items=review_items,
             metadata_payload=metadata_payload,
-            raw_docling=raw_document,
+            raw_docling=raw_docling_snapshot,
             doc_confidence=doc_confidence,
             warnings=warnings,
             elapsed_seconds=time.monotonic() - started,
+            docling_version=str(doc_confidence.get("docling_version") or "unknown"),
+            conversion_status=str(doc_confidence.get("conversion_status") or "success"),
+            conversion_errors=list(doc_confidence.get("conversion_errors") or []),
+            parse_elapsed_seconds=doc_confidence.get("parse_elapsed_seconds"),
         )
 
     def _run_docling(
@@ -1765,10 +1939,22 @@ class KonverterPipeline:
         pdf_path: Path,
         stage: StageCallback,
         document_id: str,
-    ) -> tuple[dict[str, Any], list[dict[str, Any]], dict[str, Any], list[str]]:
+        cancel_check: Callable[[], bool] | None = None,
+    ) -> tuple[
+        dict[str, Any],
+        dict[str, Any],
+        list[dict[str, Any]],
+        dict[str, Any],
+        list[str],
+    ]:
         stage(2, "Extracting content")
         if self.settings.docling_mode == "remote":
-            docling_result = self._run_docling_remote(pdf_path, stage, document_id)
+            docling_result = self._run_docling_remote(
+                pdf_path,
+                stage,
+                document_id,
+                cancel_check=cancel_check,
+            )
         else:
             docling_result = docling_runner.run_docling(
                 pdf_path,
@@ -1776,22 +1962,99 @@ class KonverterPipeline:
                     "do_ocr": self.settings.do_ocr,
                     "do_table_structure": self.settings.do_table_structure,
                     "device": self.settings.docling_device,
+                    "table_mode": self.settings.docling_table_mode,
+                    "document_timeout": self.settings.docling_timeout_seconds,
                 },
+                cancel_check=cancel_check,
             )
-        raw_document = docling_result["raw_docling"]
+        raw_docling_snapshot = copy.deepcopy(docling_result["raw_docling"])
+        working_document = copy.deepcopy(raw_docling_snapshot)
         cluster_confidences = docling_result["cluster_confidences"]
-        doc_confidence = docling_result["doc_confidence"]
+
+        docling_version = str(docling_result.get("docling_version") or "unknown")
+        conversion_status = str(docling_result.get("conversion_status") or "success")
+        conversion_errors = list(docling_result.get("conversion_errors") or [])
+        parse_elapsed_seconds = docling_result.get("parse_elapsed_seconds")
+
+        doc_confidence = dict(docling_result.get("doc_confidence") or {})
+        raw_failed_pages = doc_confidence.get("failed_pages")
+        if raw_failed_pages is None:
+            failed_pages = sorted(
+                {
+                    int(err["page_no"])
+                    for err in conversion_errors
+                    if isinstance(err, dict)
+                    and err.get("page_no") is not None
+                    and not isinstance(err.get("page_no"), bool)
+                }
+            )
+        else:
+            failed_pages = list(raw_failed_pages)
+
+        doc_confidence["docling_version"] = docling_version
+        doc_confidence["conversion_status"] = conversion_status
+        doc_confidence["error_count"] = len(conversion_errors) if conversion_errors else int(
+            doc_confidence.get("error_count", 0)
+        )
+        doc_confidence["failed_pages"] = failed_pages
+        doc_confidence["conversion_errors"] = conversion_errors
+        doc_confidence["parse_elapsed_seconds"] = parse_elapsed_seconds
+
+        partial_warnings: list[str] = []
+        if conversion_status == "partial_success" or conversion_errors:
+            error_count = doc_confidence["error_count"]
+            pages_label = (
+                ", ".join(str(page) for page in failed_pages)
+                if failed_pages
+                else "unspecified"
+            )
+            summary_parts: list[str] = []
+            for err in conversion_errors[:5]:
+                if not isinstance(err, dict):
+                    continue
+                page_part = (
+                    f"page {err['page_no']}"
+                    if err.get("page_no") is not None
+                    else "document"
+                )
+                category = str(
+                    err.get("category") or err.get("component_type") or "error"
+                )
+                message = str(err.get("error_message") or "").strip()
+                if len(message) > 160:
+                    message = message[:157] + "..."
+                summary_parts.append(
+                    f"[{page_part}] {category}: {message}"
+                    if message
+                    else f"[{page_part}] {category}"
+                )
+            if len(conversion_errors) > 5:
+                summary_parts.append(f"... (+{len(conversion_errors) - 5} more)")
+            detail_suffix = (
+                f" Details: {'; '.join(summary_parts)}" if summary_parts else ""
+            )
+            partial_warnings.append(
+                f"Docling conversion completed with status '{conversion_status}' "
+                f"({error_count} error(s); failed page(s): {pages_label})."
+                f"{detail_suffix}"
+            )
+            document_logger(__name__, document_id).warning(
+                "Docling conversion %s: %d error(s), failed_pages=%s",
+                sanitize_for_log(conversion_status),
+                error_count,
+                sanitize_for_log(failed_pages),
+            )
 
         stage(3, "Detecting document structure")
-        warnings = annotate_pdf_artifacts(raw_document, pdf_path)
-        _relabel_misclassified_page_furniture(raw_document)
-        _synthesize_missing_pictures(raw_document, pdf_path)
-        _exclude_repeating_decorative_pictures(raw_document)
-        _recover_page_number_pictures(raw_document, pdf_path)
-        _exclude_repeating_chapter_divider_pictures(raw_document)
-        _exclude_decorative_heading_accent_pictures(raw_document)
+        warnings = partial_warnings + annotate_pdf_artifacts(working_document, pdf_path)
+        _relabel_misclassified_page_furniture(working_document)
+        _synthesize_missing_pictures(working_document, pdf_path)
+        _exclude_repeating_decorative_pictures(working_document)
+        _recover_page_number_pictures(working_document, pdf_path)
+        _exclude_repeating_chapter_divider_pictures(working_document)
+        _exclude_decorative_heading_accent_pictures(working_document)
         excluded_diagram_text = _exclude_diagram_text_fragments(
-            raw_document, pdf_path, self.settings.claude_api_key
+            working_document, pdf_path, self.settings.claude_api_key
         )
         if excluded_diagram_text:
             warnings.append(
@@ -1806,10 +2069,10 @@ class KonverterPipeline:
         quote_regions, quote_warnings = detect_quote_regions(pdf_path)
         warnings.extend(quote_warnings)
         confidence_by_ref = self._confidence_by_reference(
-            raw_document, cluster_confidences
+            working_document, cluster_confidences
         )
         blocks, hierarchy_warnings = self._blocks_from_document(
-            raw_document,
+            working_document,
             confidence_by_ref,
             pdf_path,
         )
@@ -1824,44 +2087,131 @@ class KonverterPipeline:
         blocks = group_quote_blocks(blocks, quote_regions)
         blocks = _flag_orphaned_captions(blocks)
 
-        return raw_document, blocks, doc_confidence, warnings
+        return raw_docling_snapshot, working_document, blocks, doc_confidence, warnings
 
     def _run_docling_remote(
         self,
         pdf_path: Path,
         stage: StageCallback,
         document_id: str,
+        cancel_check: Callable[[], bool] | None = None,
     ) -> dict[str, Any]:
+        if cancel_check is not None and cancel_check():
+            raise InterruptedError("Processing was stopped")
+
+        log = document_logger(__name__, document_id)
+        if (
+            self.settings.runpod_job_timeout_seconds
+            > storage_bucket.SUPABASE_SIGNED_UPLOAD_TTL_SECONDS
+        ):
+            log.warning(
+                "KONVERTER_RUNPOD_JOB_TIMEOUT_SECONDS (%.0fs) exceeds Supabase's "
+                "fixed %ds signed-upload URL expiry; jobs queued longer than %ds "
+                "may fail result upload.",
+                self.settings.runpod_job_timeout_seconds,
+                storage_bucket.SUPABASE_SIGNED_UPLOAD_TTL_SECONDS,
+                storage_bucket.SUPABASE_SIGNED_UPLOAD_TTL_SECONDS,
+            )
+
         ttl = self.settings.signed_url_ttl
-        source_key = storage_bucket.upload_pdf(self.settings, document_id, pdf_path)
-        download_url = storage_bucket.signed_download_url(
-            self.settings, source_key, ttl
-        )
-        result_key = f"{document_id}/docling.json"
-        upload_target = storage_bucket.signed_upload_target(
-            self.settings, result_key, ttl
-        )
-        job_id = runpod_client.submit(
-            self.settings.docling_endpoint_url,
-            self.settings.runpod_api_key,
-            {
-                "pdf_download_url": download_url,
-                "result_upload": upload_target,
-                "options": {
-                    "do_ocr": self.settings.do_ocr,
-                    "do_table_structure": self.settings.do_table_structure,
-                    "device": "cuda",
+        attempt_id = uuid.uuid4().hex[:12]
+        result_key = f"{document_id}/{attempt_id}/docling.json"
+        cleanup_keys: list[str] = []
+        remote_started = time.monotonic()
+
+        try:
+            source_key = storage_bucket.upload_pdf(self.settings, document_id, pdf_path)
+            cleanup_keys.append(source_key)
+            download_url = storage_bucket.signed_download_url(
+                self.settings, source_key, ttl
+            )
+            upload_target = storage_bucket.signed_upload_target(
+                self.settings, result_key, ttl
+            )
+            cleanup_keys.append(result_key)
+            job_id = runpod_client.submit(
+                self.settings.docling_endpoint_url,
+                self.settings.runpod_api_key,
+                {
+                    "pdf_download_url": download_url,
+                    "result_upload": upload_target,
+                    "options": {
+                        "do_ocr": self.settings.do_ocr,
+                        "do_table_structure": self.settings.do_table_structure,
+                        "device": self.settings.docling_remote_device,
+                        "document_timeout": self.settings.docling_timeout_seconds,
+                        "table_mode": self.settings.docling_table_mode,
+                    },
                 },
-            },
+            )
+            try:
+                job_output = runpod_client.poll(
+                    self.settings.docling_endpoint_url,
+                    self.settings.runpod_api_key,
+                    job_id,
+                    on_progress=lambda: stage(2, "Waiting for remote GPU worker"),
+                    timeout_seconds=self.settings.runpod_job_timeout_seconds,
+                )
+            except InterruptedError:
+                raise
+            except Exception as exc:
+                self._raise_with_upload_expiry_hint(exc, remote_started)
+
+            if isinstance(job_output, dict) and job_output.get("ok") is False:
+                err_msg = f"Remote Docling worker reported failure for job {job_id}: {job_output}"
+                self._raise_with_upload_expiry_hint(
+                    RuntimeError(err_msg), remote_started
+                )
+
+            payload = storage_bucket.download_json(self.settings, result_key)
+            return _validate_remote_docling_result(
+                payload,
+                job_id=job_id,
+                worker_meta=job_output if isinstance(job_output, dict) else None,
+            )
+        finally:
+            if cleanup_keys:
+                try:
+                    storage_bucket.delete_objects(self.settings, cleanup_keys)
+                except Exception as exc:
+                    log.warning(
+                        "Failed to clean up remote storage objects %s: %s",
+                        sanitize_for_log(cleanup_keys),
+                        sanitize_for_log(exc),
+                    )
+
+    @staticmethod
+    def _raise_with_upload_expiry_hint(exc: Exception, remote_started: float) -> None:
+        message = str(exc)
+        lowered = message.lower()
+        upload_related = "upload" in lowered and any(
+            token in lowered
+            for token in (
+                "400",
+                "401",
+                "403",
+                "expired",
+                "token",
+                "signature",
+                "invalidjwt",
+                "signed",
+            )
         )
-        runpod_client.poll(
-            self.settings.docling_endpoint_url,
-            self.settings.runpod_api_key,
-            job_id,
-            on_progress=lambda: stage(2, "Waiting for remote GPU worker"),
-            timeout_seconds=self.settings.runpod_job_timeout_seconds,
+        expired_signed = "expired" in lowered and "signed" in lowered
+        elapsed_past_ttl = (
+            time.monotonic() - remote_started
+            >= storage_bucket.SUPABASE_SIGNED_UPLOAD_TTL_SECONDS
+            and "upload" in lowered
         )
-        return storage_bucket.download_json(self.settings, result_key)
+        if upload_related or expired_signed or elapsed_past_ttl:
+            ttl_limit = storage_bucket.SUPABASE_SIGNED_UPLOAD_TTL_SECONDS
+            raise RuntimeError(
+                f"{message} (Note: Supabase signed upload URLs expire after "
+                f"{ttl_limit}s regardless of KONVERTER_SIGNED_URL_TTL; if the "
+                f"RunPod job queued longer than {ttl_limit}s, the worker's result "
+                "upload will fail.)"
+            ) from exc
+        raise exc
 
     @classmethod
     def _confidence_by_reference(
@@ -2115,17 +2465,20 @@ class KonverterPipeline:
             label = resolver.label_for(item)
             text = resolver.output_text(item)
             if label == "picture" and not text:
-                text = str(item.get("caption", "")).strip()
-            blocks.append(
-                {
-                    "id": reference,
-                    "label": label,
-                    "text": text,
-                    "page": _first_page(item),
-                    "confidence": confidence_by_ref.get(reference),
-                    "source_bounds": self._combined_source_bounds(document, [item]),
-                }
-            )
+                text = self._item_caption(item, all_items)
+            block: dict[str, Any] = {
+                "id": reference,
+                "label": label,
+                "text": text,
+                "page": _first_page(item),
+                "confidence": confidence_by_ref.get(reference),
+                "source_bounds": self._combined_source_bounds(document, [item]),
+            }
+            if label == "checkbox":
+                block["checked"] = raw_label == "checkbox_selected" or bool(
+                    item.get("checked")
+                )
+            blocks.append(block)
 
         for reference in ordered_references:
             visit(reference)
@@ -2863,38 +3216,39 @@ class KonverterPipeline:
         if pdf_path is None:
             return self._build_review_items_with_textpages(blocks, None)
 
-        try:
-            pdf_document = pdfium.PdfDocument(str(pdf_path))
-        except Exception:
-            return self._build_review_items_with_textpages(blocks, None)
+        with pdfium_lock:
+            try:
+                pdf_document = pdfium.PdfDocument(str(pdf_path))
+            except Exception:
+                return self._build_review_items_with_textpages(blocks, None)
 
-        textpage_cache: dict[int, Any] = {}
-        page_cache: dict[int, Any] = {}
+            textpage_cache: dict[int, Any] = {}
+            page_cache: dict[int, Any] = {}
 
-        def footnote_textpage(page_number: int) -> Any:
-            if page_number not in textpage_cache:
-                try:
-                    textpage_cache[page_number] = pdf_document[
-                        page_number - 1
-                    ].get_textpage()
-                except Exception:
-                    textpage_cache[page_number] = None
-            return textpage_cache[page_number]
+            def footnote_textpage(page_number: int) -> Any:
+                if page_number not in textpage_cache:
+                    try:
+                        textpage_cache[page_number] = pdf_document[
+                            page_number - 1
+                        ].get_textpage()
+                    except Exception:
+                        textpage_cache[page_number] = None
+                return textpage_cache[page_number]
 
-        def footnote_page(page_number: int) -> Any:
-            if page_number not in page_cache:
-                try:
-                    page_cache[page_number] = pdf_document[page_number - 1]
-                except Exception:
-                    page_cache[page_number] = None
-            return page_cache[page_number]
+            def footnote_page(page_number: int) -> Any:
+                if page_number not in page_cache:
+                    try:
+                        page_cache[page_number] = pdf_document[page_number - 1]
+                    except Exception:
+                        page_cache[page_number] = None
+                return page_cache[page_number]
 
-        try:
-            return self._build_review_items_with_textpages(
-                blocks, footnote_textpage, footnote_page
-            )
-        finally:
-            pdf_document.close()
+            try:
+                return self._build_review_items_with_textpages(
+                    blocks, footnote_textpage, footnote_page
+                )
+            finally:
+                pdf_document.close()
 
     def _build_review_items_with_textpages(
         self,

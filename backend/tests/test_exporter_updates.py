@@ -1281,3 +1281,47 @@ def test_source_name_prefers_the_confirmed_record_title_over_a_misdetected_title
     )
 
     assert publication["sourceName"] == "Review of the Bail Act"
+
+
+def test_accessibility_properties_only_claim_alternative_text_when_figures_have_real_captions():
+    """Uncaptioned picture blocks fall back to caption='Figure' in
+    build_publication. _accessibility_properties must treat that placeholder
+    as uncaptioned rather than claiming alternativeText and textual
+    accessModeSufficient on uncaptioned figures."""
+    from app.exporter import _accessibility_properties
+
+    uncaptioned_pub = build_publication(
+        [
+            {"id": "title", "label": "title", "text": "Report", "order": 0},
+            {"id": "ch1", "label": "section_header_1", "text": "1. Intro", "order": 1},
+            {"id": "pic-1", "label": "picture", "text": "", "page": 2, "order": 2},
+        ],
+        {"title": "Report", "pages": 2, "file_name": "report.pdf"},
+    )
+    uncaptioned_a11y = _accessibility_properties(uncaptioned_pub)
+    assert "alternativeText" not in uncaptioned_a11y["accessibilityFeature"]
+    assert uncaptioned_a11y["accessModeSufficient"] is None
+    assert "Some figures may not include source-supplied alternative text." in (
+        uncaptioned_a11y["accessibilitySummary"]
+    )
+
+    captioned_pub = build_publication(
+        [
+            {"id": "title", "label": "title", "text": "Report", "order": 0},
+            {"id": "ch1", "label": "section_header_1", "text": "1. Intro", "order": 1},
+            {
+                "id": "pic-1",
+                "label": "picture",
+                "text": "Figure 1: Flowchart of committal proceedings",
+                "page": 2,
+                "order": 2,
+            },
+        ],
+        {"title": "Report", "pages": 2, "file_name": "report.pdf"},
+    )
+    captioned_a11y = _accessibility_properties(captioned_pub)
+    assert "alternativeText" in captioned_a11y["accessibilityFeature"]
+    assert captioned_a11y["accessModeSufficient"] == [
+        {"@type": "ItemList", "itemListElement": ["textual"]}
+    ]
+

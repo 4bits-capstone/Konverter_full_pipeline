@@ -2741,3 +2741,549 @@ def test_diagram_list_split_never_fires_when_a_tier_would_be_left_empty():
     )
 
     assert split is None
+
+
+def test_partial_conversion_and_version_persist_to_confidence_warnings_and_record(
+    tmp_path, monkeypatch
+):
+    from app import docling_runner
+    from app.service import ProcessingManager
+    from app.storage import LocalDocumentStore
+
+    pdf_path = tmp_path / "source.pdf"
+    doc = fitz.open()
+    doc.new_page(width=595, height=842).insert_text((72, 100), "Body text")
+    doc.save(pdf_path)
+    doc.close()
+
+    docling_payload = {
+        "raw_docling": {
+            "pages": {"1": {"size": {"width": 595, "height": 842}}},
+            "texts": [
+                {
+                    "self_ref": "#/texts/0",
+                    "label": "text",
+                    "text": "Body text",
+                    "prov": [
+                        {
+                            "page_no": 1,
+                            "bbox": {"l": 72, "t": 90, "r": 250, "b": 110, "coord_origin": "TOPLEFT"},
+                        }
+                    ],
+                }
+            ],
+        },
+        "cluster_confidences": [[1, {"l": 72, "t": 90, "r": 250, "b": 110}, 0.88]],
+        "doc_confidence": {
+            "layout_score": 0.85,
+            "mean_score": 0.84,
+            "mean_grade": "good",
+            "ocr_score": None,
+            "table_score": None,
+            "parse_score": 0.9,
+            "conversion_status": "partial_success",
+            "error_count": 1,
+            "failed_pages": [3],
+        },
+        "docling_version": "2.121.0",
+        "conversion_status": "partial_success",
+        "conversion_errors": [
+            {
+                "component_type": "pipeline",
+                "module_name": "table",
+                "error_message": "Page 3 exceeded timeout",
+                "category": "timeout",
+                "page_no": 3,
+            }
+        ],
+        "parse_elapsed_seconds": 4.25,
+    }
+    captured_options: dict = {}
+
+    def _fake_run_docling(_pdf_path, options=None, cancel_check=None):
+        captured_options["options"] = options
+        captured_options["cancel_check"] = cancel_check
+        return docling_payload
+
+    monkeypatch.setattr(docling_runner, "run_docling", _fake_run_docling)
+
+    settings = _settings(
+        data_dir=tmp_path / "runtime",
+        docling_table_mode="fast",
+        docling_timeout_seconds=321.0,
+    )
+    store = LocalDocumentStore(settings.data_dir)
+    stored_pdf = tmp_path / "upload.pdf"
+    stored_pdf.write_bytes(pdf_path.read_bytes())
+    store.create_document(
+        "doc-m2",
+        stored_pdf,
+        {
+            "id": "doc-m2",
+            "title": "Test",
+            "file_name": "test.pdf",
+            "pages": 1,
+            "publisher": "Pub",
+            "job": {"state": "running", "started_at": 1, "duration_ms": 1000},
+        },
+    )
+
+    manager = ProcessingManager(settings, store)
+    output = manager.pipeline.process(
+        store.source_path("doc-m2"),
+        lambda *_: None,
+        "doc-m2",
+        cancel_check=lambda: False,
+    )
+    record = manager._persist_output("doc-m2", output, 5.0)
+
+    assert captured_options["options"]["table_mode"] == "fast"
+    assert captured_options["options"]["document_timeout"] == 321.0
+    assert callable(captured_options["cancel_check"])
+
+    saved_conf = store.read_artifact("doc-m2", "doc_confidence.json")
+    saved_warnings = store.read_artifact("doc-m2", "warnings.json")
+    assert saved_conf["docling_version"] == "2.121.0"
+    assert saved_conf["conversion_status"] == "partial_success"
+    assert saved_conf["error_count"] == 1
+    assert saved_conf["failed_pages"] == [3]
+    assert saved_conf["conversion_errors"] == docling_payload["conversion_errors"]
+    assert saved_conf["parse_elapsed_seconds"] == 4.25
+    assert record["docling_version"] == "2.121.0"
+    assert record["conversion_status"] == "partial_success"
+    assert record["parse_elapsed_seconds"] == 4.25
+    assert any("partial_success" in w and "Page 3 exceeded timeout" in w for w in saved_warnings)
+
+
+def test_raw_docling_output_is_preserved_unmodified_while_heuristics_mutate_working_copy(
+    tmp_path, monkeypatch
+):
+    import copy
+    from app import docling_runner
+
+    pdf_path = tmp_path / "source.pdf"
+    doc = fitz.open()
+    page = doc.new_page(width=595, height=842)
+    page.insert_text((72, 100), "Real Report Title")
+    page.insert_text((72, 200), "Body content paragraph.")
+    # Add diagonal/margin watermark-like text outside normal crop or repeated footer
+    page.insert_text((72, 820), "Page 1")
+    doc.save(pdf_path)
+    doc.close()
+
+    original_raw = {
+        "pages": {"1": {"size": {"width": 595, "height": 842}}},
+        "texts": [
+            {
+                "self_ref": "#/texts/0",
+                "label": "title",
+                "text": "Real Report Title",
+                "prov": [
+                    {"page_no": 1, "bbox": {"l": 72, "t": 90, "r": 300, "b": 115, "coord_origin": "TOPLEFT"}}
+                ],
+            },
+            {
+                "self_ref": "#/texts/1",
+                "label": "text",
+                "text": "Body content paragraph.",
+                "prov": [
+                    {"page_no": 1, "bbox": {"l": 72, "t": 190, "r": 320, "b": 210, "coord_origin": "TOPLEFT"}}
+                ],
+            },
+            {
+                "self_ref": "#/texts/2",
+                "label": "page_footer",
+                "text": "Unique body sentence mislabelled as footer.",
+                "prov": [
+                    {"page_no": 1, "bbox": {"l": 72, "t": 780, "r": 400, "b": 800, "coord_origin": "TOPLEFT"}}
+                ],
+            },
+            {
+                "self_ref": "#/texts/3",
+                "label": "text",
+                "text": "Off-page artifact",
+                "prov": [
+                    {"page_no": 1, "bbox": {"l": -120, "t": 200, "r": -20, "b": 220, "coord_origin": "TOPLEFT"}}
+                ],
+            },
+        ],
+    }
+    expected_unmodified = copy.deepcopy(original_raw)
+
+    monkeypatch.setattr(
+        docling_runner,
+        "run_docling",
+        lambda *_a, **_kw: {
+            "raw_docling": original_raw,
+            "cluster_confidences": [],
+            "doc_confidence": {"mean_score": 0.9},
+            "docling_version": "2.121.0",
+            "conversion_status": "success",
+            "conversion_errors": [],
+            "parse_elapsed_seconds": 0.5,
+        },
+    )
+
+    pipe = KonverterPipeline(_settings())
+    output = pipe.process(pdf_path, lambda *_: None, "doc-raw")
+
+    assert output.raw_docling == expected_unmodified
+    assert output.raw_docling["texts"][2]["label"] == "page_footer"
+    assert "meta" not in output.raw_docling["texts"][3]
+    # Working copy heuristics still took effect for blocks & metadata
+    assert any(
+        "Unique body sentence mislabelled as footer" in b["text"] and b["label"] == "text"
+        for b in output.blocks
+    )
+    assert not any("Off-page artifact" in b["text"] for b in output.blocks)
+
+
+def test_local_processing_manager_passes_cancel_check_and_stops_cleanly(
+    tmp_path, monkeypatch
+):
+    from app import docling_runner
+    from app.service import ProcessingManager
+    from app.storage import LocalDocumentStore
+
+    pdf_path = tmp_path / "source.pdf"
+    doc = fitz.open()
+    doc.new_page(width=595, height=842)
+    doc.save(pdf_path)
+    doc.close()
+
+    settings = _settings(data_dir=tmp_path / "runtime")
+    store = LocalDocumentStore(settings.data_dir)
+    store.create_document(
+        "doc-stop",
+        pdf_path,
+        {
+            "id": "doc-stop",
+            "title": "Stop Test",
+            "file_name": "stop.pdf",
+            "pages": 1,
+            "publisher": "Pub",
+            "job": {"state": "running", "started_at": 1, "duration_ms": 1000},
+        },
+    )
+    manager = ProcessingManager(settings, store)
+
+    def _cancelling_run_docling(_pdf_path, options=None, cancel_check=None):
+        assert cancel_check is not None
+        assert cancel_check() is False
+        manager.stop("doc-stop")
+        assert cancel_check() is True
+        raise InterruptedError("Processing was stopped")
+
+    monkeypatch.setattr(docling_runner, "run_docling", _cancelling_run_docling)
+
+    manager._run("doc-stop")
+
+    record = store.get_record("doc-stop")
+    assert record["job"]["state"] == "idle"
+    assert record["job"]["message"] == "Processing stopped"
+    assert store.read_artifact("doc-stop", "docling.json") is None
+
+
+def test_build_review_items_holds_pdfium_lock(tmp_path, monkeypatch):
+    from contextlib import contextmanager
+    import app.pipeline as pipeline_mod
+
+    pdf_path = tmp_path / "source.pdf"
+    doc = fitz.open()
+    doc.new_page(width=595, height=842).insert_text((72, 750), "1. Footnote text.")
+    doc.save(pdf_path)
+    doc.close()
+
+    held = {"active": False, "entered": 0, "exited": 0}
+
+    @contextmanager
+    def _tracking_lock():
+        held["active"] = True
+        held["entered"] += 1
+        try:
+            yield
+        finally:
+            held["active"] = False
+            held["exited"] += 1
+
+    monkeypatch.setattr(pipeline_mod, "pdfium_lock", _tracking_lock())
+
+    pipe = KonverterPipeline(_settings())
+    orig = pipe._build_review_items_with_textpages
+
+    def _checked_inner(*args, **kwargs):
+        assert held["active"] is True
+        return orig(*args, **kwargs)
+
+    monkeypatch.setattr(pipe, "_build_review_items_with_textpages", _checked_inner)
+
+    items = pipe._build_review_items(
+        [
+            {
+                "id": "#/texts/0",
+                "label": "footnote",
+                "text": "1. Footnote text.",
+                "page": 1,
+                "confidence": 0.6,
+                "source_bounds": {
+                    "left": 70,
+                    "top": 740,
+                    "right": 300,
+                    "bottom": 760,
+                    "page_width": 595,
+                    "page_height": 842,
+                },
+            }
+        ],
+        pdf_path,
+    )
+
+    assert len(items) == 1
+    assert held == {"active": False, "entered": 1, "exited": 1}
+
+
+def test_checkbox_mapping_review_edits_export_and_fallback_warnings(tmp_path):
+    from app.exporter import build_publication
+    from app.models import ReviewItem
+    from app.preview_html import build_accessible_html
+    from app.service import WorkflowService
+
+    pdf_path = tmp_path / "source.pdf"
+    doc = fitz.open()
+    doc.new_page(width=595, height=842)
+    doc.save(pdf_path)
+    doc.close()
+
+    pipe = KonverterPipeline(_settings())
+    document = {
+        "texts": [
+            {
+                "self_ref": "#/texts/0",
+                "label": "checkbox_selected",
+                "text": "Accept terms",
+                "prov": [
+                    {"page_no": 1, "bbox": {"l": 72, "t": 100, "r": 250, "b": 120, "coord_origin": "TOPLEFT"}}
+                ],
+            },
+            {
+                "self_ref": "#/texts/1",
+                "label": "checkbox_unselected",
+                "text": "Optional opt-in",
+                "prov": [
+                    {"page_no": 1, "bbox": {"l": 72, "t": 130, "r": 250, "b": 150, "coord_origin": "TOPLEFT"}}
+                ],
+            },
+            {
+                "self_ref": "#/texts/2",
+                "label": "code",
+                "text": "CASE-1",
+                "prov": [
+                    {"page_no": 1, "bbox": {"l": 72, "t": 170, "r": 250, "b": 190, "coord_origin": "TOPLEFT"}}
+                ],
+            },
+            {
+                "self_ref": "#/texts/3",
+                "label": "code",
+                "text": "CASE-2",
+                "prov": [
+                    {"page_no": 1, "bbox": {"l": 72, "t": 200, "r": 250, "b": 220, "coord_origin": "TOPLEFT"}}
+                ],
+            },
+            {
+                "self_ref": "#/texts/4",
+                "label": "reference",
+                "text": "Ref A",
+                "prov": [
+                    {"page_no": 1, "bbox": {"l": 72, "t": 230, "r": 250, "b": 250, "coord_origin": "TOPLEFT"}}
+                ],
+            },
+            {
+                "self_ref": "#/texts/5",
+                "label": "handwritten_text",
+                "text": "Signed",
+                "prov": [
+                    {"page_no": 1, "bbox": {"l": 72, "t": 260, "r": 250, "b": 280, "coord_origin": "TOPLEFT"}}
+                ],
+            },
+            {
+                "self_ref": "#/texts/6",
+                "label": "chart",
+                "text": "Chart title",
+                "prov": [
+                    {"page_no": 1, "bbox": {"l": 72, "t": 290, "r": 250, "b": 310, "coord_origin": "TOPLEFT"}}
+                ],
+            },
+            {
+                "self_ref": "#/texts/7",
+                "label": "title",
+                "text": "Main Document Title",
+                "prov": [
+                    {"page_no": 1, "bbox": {"l": 72, "t": 320, "r": 250, "b": 340, "coord_origin": "TOPLEFT"}}
+                ],
+            },
+            {
+                "self_ref": "#/texts/8",
+                "label": "title",
+                "text": "Side",
+                "prov": [
+                    {"page_no": 1, "bbox": {"l": 72, "t": 350, "r": 250, "b": 370, "coord_origin": "TOPLEFT"}}
+                ],
+            },
+        ],
+        "pages": {"1": {"size": {"width": 595, "height": 842}}},
+    }
+
+    blocks, warnings = pipe._blocks_from_document(document, {}, pdf_path)
+    assert blocks[0]["label"] == "checkbox"
+    assert blocks[0]["checked"] is True
+    assert blocks[1]["label"] == "checkbox"
+    assert blocks[1]["checked"] is False
+    assert all(b["label"] == "text" for b in blocks[2:7])
+    assert blocks[7]["label"] == "title"
+    assert blocks[8]["label"] == "text"
+
+    fallback_warnings = [
+        w for w in warnings if w.startswith("Unrecognised Docling label(s)")
+    ]
+    assert len(fallback_warnings) == 1
+    assert "chart (1x)" in fallback_warnings[0]
+    assert "code (2x)" in fallback_warnings[0]
+    assert "handwritten_text (1x)" in fallback_warnings[0]
+    assert "reference (1x)" in fallback_warnings[0]
+    assert "title" not in fallback_warnings[0]
+    assert "checkbox" not in fallback_warnings[0]
+
+    # ReviewItem model validation accepts checkbox
+    review_items = pipe._build_review_items(blocks[:2], None)
+    assert [ReviewItem(**item).type for item in review_items] == ["checkbox", "checkbox"]
+    assert [item["label"] for item in review_items] == ["Checkbox", "Checkbox"]
+
+    # Editing checkbox text preserves checked; converting away removes checked
+    WorkflowService._apply_review_item_changes(
+        review_items, blocks, review_items[0]["id"], {"corrected_text": "Accept all terms"}
+    )
+    assert blocks[0]["checked"] is True
+    WorkflowService._apply_review_item_changes(
+        review_items, blocks, review_items[1]["id"], {"type": "text"}
+    )
+    assert "checked" not in blocks[1]
+
+    # Export top-level and box_section checkboxes
+    boxed = {
+        "id": "box-1",
+        "label": "box_section",
+        "box_section_title": "Checklist",
+        "box_section_kind": "information",
+        "text": "Boxed item",
+        "page": 1,
+        "order": 9,
+        "box_section_blocks": [
+            {"id": "c1", "label": "checkbox", "text": "Boxed item", "checked": True, "page": 1}
+        ],
+    }
+    pub = build_publication([blocks[0], boxed], {"title": "Form Doc"})
+    pub_blocks = pub["sections"][0]["blocks"]
+    assert pub_blocks[0] == {
+        "type": "checkbox",
+        "text": "Accept all terms",
+        "checked": True,
+        "page": 1,
+    }
+    assert pub_blocks[1]["blocks"][0] == {
+        "type": "checkbox",
+        "text": "Boxed item",
+        "checked": True,
+        "page": 1,
+    }
+    rendered = build_accessible_html(
+        "doc-cb",
+        pub,
+        {"title": "Form Doc", "publisher": "Pub"},
+        {},
+        tmp_path / "missing-cover.png",
+        tmp_path / "missing-logo.png",
+        tmp_path,
+    )
+    assert '<input type="checkbox" checked disabled>' in rendered
+
+
+def test_split_chapter_divider_children_confirm_cluster_and_are_excluded():
+    """Docling sometimes splits a chapter divider's printed "CHAPTER 01"
+    label into two separate child items ("CHAPTER" and "01") under the same
+    picture (found across all 5 chapter dividers in VLRC_Stalking_Interim
+    and 14 of 19 in VLRC_Inclusive-Juries). Both the split-child divider
+    and any sibling divider in the cluster with an unnumbered "CHAPTER"
+    fragment must be excluded along with their child text items."""
+    document = {
+        "pictures": [
+            _chapter_divider_picture("#/pictures/0", 11, 418.5, 41.8),
+            _chapter_divider_picture("#/pictures/1", 19, 414.9, 41.3),
+            _chapter_divider_picture("#/pictures/2", 31, 416.0, 41.9),
+        ],
+        "texts": [
+            {"text": "CHAPTER", "parent": {"$ref": "#/pictures/0"}},
+            {"text": "01", "parent": {"$ref": "#/pictures/0"}},
+            {"text": "CHAPTER", "parent": {"$ref": "#/pictures/1"}},
+        ],
+    }
+
+    _exclude_repeating_chapter_divider_pictures(document)
+
+    for picture in document["pictures"]:
+        assert picture["meta"]["konverter_exclude_from_output"] is True
+    for text_item in document["texts"]:
+        assert text_item["meta"]["konverter_exclude_from_output"] is True
+
+
+def test_picture_block_resolves_docling_captions_references():
+    """Docling stores figure captions in item['captions'] as [{'$ref': ...}]
+    references rather than a direct string on item['caption']. Picture blocks
+    must resolve those references via _item_caption so figures receive their
+    source-supplied caption text."""
+    pipe = KonverterPipeline(_settings())
+    document = {
+        "name": "Committals",
+        "pages": {"41": {"size": {"width": 595, "height": 842}}},
+        "body": {
+            "children": [
+                {"$ref": "#/texts/0"},
+                {"$ref": "#/pictures/0"},
+                {"$ref": "#/texts/1"},
+            ]
+        },
+        "texts": [
+            {
+                "self_ref": "#/texts/0",
+                "label": "section_header",
+                "level": 1,
+                "text": "2. Present system",
+                "prov": [{"page_no": 41, "bbox": {"l": 50, "t": 50, "r": 300, "b": 70}}],
+            },
+            {
+                "self_ref": "#/texts/1",
+                "label": "caption",
+                "text": "Figure 1: The present committal and pre-trial system",
+                "parent": {"$ref": "#/pictures/0"},
+                "prov": [{"page_no": 41, "bbox": {"l": 50, "t": 100, "r": 450, "b": 120}}],
+            },
+        ],
+        "pictures": [
+            {
+                "self_ref": "#/pictures/0",
+                "label": "picture",
+                "captions": [{"$ref": "#/texts/1"}],
+                "children": [{"$ref": "#/texts/1"}],
+                "prov": [{"page_no": 41, "bbox": {"l": 50, "t": 130, "r": 500, "b": 600}}],
+            }
+        ],
+    }
+
+    blocks, _ = pipe._blocks_from_document(document, {})
+    picture_blocks = [b for b in blocks if b.get("label") == "picture"]
+    assert len(picture_blocks) == 1
+    assert (
+        picture_blocks[0]["text"]
+        == "Figure 1: The present committal and pre-trial system"
+    )
+
+

@@ -22,7 +22,7 @@ from .config import load_settings  # noqa: I001 (must import first: loads .env
 # before audit/auth capture SUPABASE_* into module-level constants at import
 # time, so a variable already exported blank in the shell doesn't shadow it)
 
-from . import audit, wordpress_registry
+from . import audit, storage_bucket, wordpress_registry
 from .text_styles import STYLED_LABELS
 from .auth import get_current_user, get_current_user_optional, require_admin
 from .chat import (
@@ -32,7 +32,7 @@ from .chat import (
     stream_chat_completion,
     synthesize_speech,
 )
-from .logging_utils import configure_logging, document_logger
+from .logging_utils import configure_logging, document_logger, sanitize_for_log
 from .media import pdf_page_count, render_pdf_region
 from .models import (
     ApprovalResult,
@@ -508,6 +508,16 @@ async def delete_document(document_id: str, user: CurrentUser) -> Response:
             status_code=409, detail="Stop processing before removing this document"
         )
     store.delete_document(document_id)
+    if storage_bucket.is_configured(settings):
+        try:
+            await asyncio.to_thread(
+                storage_bucket.delete_document_objects, settings, document_id
+            )
+        except Exception as exc:
+            document_logger(__name__, document_id).warning(
+                "remote storage cleanup failed after local deletion: %s",
+                sanitize_for_log(exc),
+            )
     await audit.record_audit(
         "delete_document",
         document_id=document_id,

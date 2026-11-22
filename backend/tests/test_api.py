@@ -772,3 +772,54 @@ def test_job_left_running_by_a_restart_is_marked_failed_and_can_rerun(
         assert client.post(f"/api/documents/{document_id}/process").status_code == 200
         assert wait_until_complete(client, document_id)["state"] == "complete"
 
+
+def test_delete_document_cleans_up_remote_storage_when_configured(tmp_path, monkeypatch):
+    with load_client(tmp_path) as client:
+        import app.main
+
+        upload = client.post(
+            "/api/documents",
+            files={"files": ("report.pdf", make_pdf(), "application/pdf")},
+        )
+        assert upload.status_code == 201
+        document_id = upload.json()[0]["id"]
+
+        deleted_docs: list[str] = []
+        monkeypatch.setattr(app.main.storage_bucket, "is_configured", lambda _s: True)
+        monkeypatch.setattr(
+            app.main.storage_bucket,
+            "delete_document_objects",
+            lambda _s, doc_id: deleted_docs.append(doc_id) or 2,
+        )
+
+        response = client.delete(f"/api/documents/{document_id}")
+        assert response.status_code == 204
+        assert deleted_docs == [document_id]
+        assert not (tmp_path / "runtime" / "documents" / document_id).exists()
+
+
+def test_delete_document_succeeds_even_if_remote_cleanup_raises(tmp_path, monkeypatch):
+    with load_client(tmp_path) as client:
+        import app.main
+
+        upload = client.post(
+            "/api/documents",
+            files={"files": ("report.pdf", make_pdf(), "application/pdf")},
+        )
+        assert upload.status_code == 201
+        document_id = upload.json()[0]["id"]
+
+        monkeypatch.setattr(app.main.storage_bucket, "is_configured", lambda _s: True)
+
+        def _failing_cleanup(_s, _doc_id):
+            raise RuntimeError("supabase unreachable")
+
+        monkeypatch.setattr(
+            app.main.storage_bucket, "delete_document_objects", _failing_cleanup
+        )
+
+        response = client.delete(f"/api/documents/{document_id}")
+        assert response.status_code == 204
+        assert not (tmp_path / "runtime" / "documents" / document_id).exists()
+
+
