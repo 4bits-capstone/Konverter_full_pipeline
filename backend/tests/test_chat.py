@@ -359,6 +359,26 @@ def test_tts_returns_503_when_not_configured(tmp_path, monkeypatch):
         assert response.status_code == 503
 
 
+def test_tts_is_rate_limited_per_ip(tmp_path, monkeypatch):
+    monkeypatch.setenv("OPENAI_API_KEY", "test-key")
+    monkeypatch.setenv("KONVERTER_TTS_PER_IP_PER_MINUTE", "2")
+    with load_client(tmp_path) as client:
+        import app.main as app_main
+
+        async def fake_synthesize_speech(settings, text):
+            yield b"ID3"
+
+        monkeypatch.setattr(app_main, "synthesize_speech", fake_synthesize_speech)
+        visitor = {"CF-Connecting-IP": "203.0.113.7"}
+        assert client.post("/api/tts", json={"text": "Hello"}, headers=visitor).status_code == 200
+        assert client.post("/api/tts", json={"text": "Hello"}, headers=visitor).status_code == 200
+        limited = client.post("/api/tts", json={"text": "Hello"}, headers=visitor)
+        assert limited.status_code == 429
+        assert int(limited.headers["Retry-After"]) >= 1
+        other = {"CF-Connecting-IP": "198.51.100.9"}
+        assert client.post("/api/tts", json={"text": "Hello"}, headers=other).status_code == 200
+
+
 def test_tts_streams_audio(tmp_path, monkeypatch):
     monkeypatch.setenv("OPENAI_API_KEY", "test-key")
     with load_client(tmp_path) as client:

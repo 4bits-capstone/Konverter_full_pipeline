@@ -10,6 +10,7 @@ its raw text must never leak that raw text into *any* target type.
 
 from __future__ import annotations
 
+from app.exporter import build_publication
 from app.service import WorkflowService
 
 BULLET = "•"  # the literal marker character these bugs leaked
@@ -243,6 +244,125 @@ def test_list_to_footnote_keeps_decimal_paragraph_number():
         "2.39 People who have suffered significant injury.\n"
         "2.40 The Transport Accident Commission has been running a pilot."
     )
+
+
+def test_structure_label_change_keeps_the_chosen_label_instead_of_plain_text():
+    """Changing Table -> Footnote (and the other real labels) must persist
+    that label. A conversion that collapsed the block to plain text would
+    publish a paragraph instead of the structure the reviewer chose."""
+    targets = (
+        "footnote",
+        "quote",
+        "list",
+        "section_header_2",
+        "picture",
+        "caption",
+        "formula",
+        "form",
+    )
+    for target in targets:
+        block = {
+            "id": "b1",
+            "label": "table",
+            "text": "",
+            "page": 2,
+            "table_data": {
+                "headers": ["Column 1", "Column 2"],
+                "rows": [["100", "Wrongs Act 1958 (Vic) s 48."]],
+            },
+        }
+        item = {"id": "r1", "block_id": "b1", "type": "table", "label": "Table"}
+        WorkflowService._apply_review_item_changes(
+            [item], [block], "r1", {"type": target, "label": target}
+        )
+        assert block["label"] == target
+        assert item["type"] == target
+        assert block["label"] != "text"
+
+    footnote = {
+        "id": "fn",
+        "label": "table",
+        "text": "",
+        "page": 2,
+        "order": 1,
+        "table_data": {
+            "headers": ["Column 1", "Column 2"],
+            "rows": [["100", "Wrongs Act 1958 (Vic) s 48."]],
+        },
+    }
+    item = {"id": "r1", "block_id": "fn", "type": "table", "label": "Table"}
+    WorkflowService._apply_review_item_changes(
+        [item], [footnote], "r1", {"type": "footnote", "label": "Footnote"}
+    )
+    publication = build_publication(
+        [
+            {
+                "id": "section",
+                "label": "section_header_1",
+                "text": "Findings",
+                "order": 0,
+                "page": 1,
+            },
+            footnote,
+        ],
+        {"title": "Report", "pages": 1, "file_name": "report.pdf"},
+    )
+    section = publication["sections"][0]
+    assert [note["text"] for note in section["footnotes"]] == [
+        "100 Wrongs Act 1958 (Vic) s 48."
+    ]
+    assert all(block.get("type") != "paragraph" for block in section["blocks"])
+
+
+def test_adding_a_list_item_is_kept_and_exported():
+    """A reviewer appending a line to an existing list must grow that list.
+    Re-parsing the edited text has to keep the new line,     including one
+    with no marker of its own."""
+    block = {
+        "id": "b1",
+        "label": "list",
+        "text": "1. First\n2. Second",
+        "page": 2,
+        "order": 1,
+        "list_items": ["First", "Second"],
+        "list_entries": [
+            {"text": "First", "marker": "1.", "enumerated": True, "level": 0},
+            {"text": "Second", "marker": "2.", "enumerated": True, "level": 0},
+        ],
+    }
+    item = {"id": "r1", "block_id": "b1", "type": "list", "label": "List"}
+    WorkflowService._apply_review_item_changes(
+        [item],
+        [block],
+        "r1",
+        {
+            "type": "list",
+            "corrected_text": "1. First\n2. Second\n3. Third added item\nA newly added point",
+        },
+    )
+    assert [entry["text"] for entry in block["list_entries"]] == [
+        "First",
+        "Second",
+        "Third added item",
+        "A newly added point",
+    ]
+    assert block["label"] == "list"
+    publication = build_publication(
+        [
+            {
+                "id": "section",
+                "label": "section_header_1",
+                "text": "Findings",
+                "order": 0,
+                "page": 1,
+            },
+            block,
+        ],
+        {"title": "Report", "pages": 1, "file_name": "report.pdf"},
+    )
+    rendered = str(publication)
+    assert "Third added item" in rendered
+    assert "A newly added point" in rendered
 
 
 def test_list_to_footnote_still_strips_ordinary_bullet_alongside_decimal_numbers():

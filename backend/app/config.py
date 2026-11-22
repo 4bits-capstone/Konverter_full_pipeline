@@ -121,6 +121,8 @@ class Settings:
     runpod_job_timeout_seconds: float = 1800.0
     public_chat_per_ip_per_minute: int = 10
     public_chat_global_per_hour: int = 300
+    # Authenticated /api/tts still spends OpenAI credit, so cap it per caller IP.
+    tts_per_ip_per_minute: int = 20
     api_docs_enabled: bool = True
 
 
@@ -195,6 +197,9 @@ def load_settings() -> Settings:
         ),
         public_chat_global_per_hour=max(
             0, int(os.getenv("KONVERTER_PUBLIC_CHAT_GLOBAL_PER_HOUR", "300"))
+        ),
+        tts_per_ip_per_minute=max(
+            0, int(os.getenv("KONVERTER_TTS_PER_IP_PER_MINUTE", "20"))
         ),
         api_docs_enabled=_as_bool("KONVERTER_API_DOCS", True),
     )

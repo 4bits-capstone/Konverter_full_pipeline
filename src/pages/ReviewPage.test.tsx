@@ -431,6 +431,53 @@ describe('ReviewPage', () => {
     expect(execCommand).toHaveBeenCalledWith('insertText', false, '<b>Bold</b> line second line')
   })
 
+  it('does not send a second save while the first save is still in flight', async () => {
+    let release: (item: ReviewItem) => void = () => {}
+    const save = vi.spyOn(reviewService, 'saveItem').mockImplementation(
+      () => new Promise((resolve) => {
+        release = resolve
+      }),
+    )
+    renderReview()
+    await screen.findAllByText('Section heading needs confirmation')
+    fireEvent.click(screen.getByRole('button', { name: /Section heading needs confirmation/ }))
+    fireEvent.click(screen.getByRole('button', { name: 'Edit flagged item' }))
+    const saveButton = screen.getByRole('button', { name: 'Save changes' })
+    fireEvent.click(saveButton)
+    fireEvent.click(saveButton)
+    expect(save).toHaveBeenCalledTimes(1)
+    release({ ...testReviewItems[0], status: 'edited', correctedText: 'Purpose' })
+    await waitFor(() => expect(screen.queryByRole('button', { name: 'Save changes' })).not.toBeInTheDocument())
+  })
+
+  it('adds a list item and saves it with the rest of the list', async () => {
+    addTestReviewItem({
+      ...testReviewItems[0],
+      id: 'review-list',
+      blockId: '#/texts/list',
+      type: 'list',
+      label: 'List',
+      title: 'Recommendation list needs confirmation',
+      extractedText: '1. First point\n2. Second point',
+      status: 'pending',
+    })
+    const save = vi.spyOn(reviewService, 'saveItem')
+    renderReview()
+    await screen.findAllByText('Section heading needs confirmation')
+    fireEvent.click(screen.getByRole('button', { name: /Recommendation list needs confirmation/ }))
+    fireEvent.click(screen.getByRole('button', { name: 'Edit flagged item' }))
+    expect(screen.getAllByLabelText(/List item /)).toHaveLength(2)
+    fireEvent.click(screen.getByRole('button', { name: 'Add item' }))
+    const added = screen.getByLabelText('List item 3') as HTMLTextAreaElement
+    fireEvent.change(added, { target: { value: '3. Third added item' } })
+    fireEvent.click(screen.getByRole('button', { name: 'Save changes' }))
+    await waitFor(() => expect(save).toHaveBeenCalled())
+    expect(save.mock.calls[0][1]).toMatchObject({
+      type: 'list',
+      correctedText: '1. First point\n2. Second point\n3. Third added item',
+    })
+  })
+
   it('converts a table directly into footnote prose without table delimiters', async () => {
     renderReview()
     await screen.findAllByText('Definitions table needs confirmation')

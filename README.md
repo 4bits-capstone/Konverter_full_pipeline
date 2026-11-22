@@ -139,7 +139,12 @@ exports as context.
 OPENAI_API_KEY=                   # backend only, never exposed to the frontend
 ```
 
-Without this key set, `/api/chat` and `/api/tts` return 503.
+Without this key set, `/api/chat` and `/api/tts` return 503. `/api/tts` is
+also limited per caller IP (`KONVERTER_TTS_PER_IP_PER_MINUTE`, default 20;
+`0` disables the cap) and answers `429` once that cap is exceeded. The
+public widget chat is capped separately
+(`KONVERTER_PUBLIC_CHAT_PER_IP_PER_MINUTE` and
+`KONVERTER_PUBLIC_CHAT_GLOBAL_PER_HOUR`).
 
 ## Embeddable chat widget
 
