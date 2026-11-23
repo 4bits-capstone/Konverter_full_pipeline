@@ -8,7 +8,7 @@ Konverter turns PDF reports into accessible HTML and JSON-LD through a human rev
 | --- | --- |
 | Frontend | React 19, TypeScript, Vite 6, React Router 7, TanStack Query, Zod, react-hook-form. Tailwind 4 is a Vite plugin. Tests are Vitest + Testing Library. |
 | Backend | FastAPI 0.2.0 (`backend/app/main.py`), Pydantic v2, Uvicorn. Python `>=3.11,<3.14`. CI pins 3.12. |
-| PDF parse | Docling, in-process when `KONVERTER_DOCLING_MODE=local` (default), or a separate RunPod serverless GPU worker (`docling_worker/`) when `remote`. |
+| PDF parse | Docling (`docling==2.121.0`), in-process when `KONVERTER_DOCLING_MODE=local` (default, supporting `cpu`, `mps`, `cuda`, `auto`), or a separate RunPod serverless GPU worker (`docling_worker/`, using `KONVERTER_DOCLING_REMOTE_DEVICE=cuda`) when `remote`. TableFormer mode is configurable via `KONVERTER_DOCLING_TABLE_MODE` (`accurate` or `fast`) and conversion timeout via `KONVERTER_DOCLING_TIMEOUT_SECONDS`. |
 | Document store | Files on disk. Default directory is `backend/runtime/` (`KONVERTER_DATA_DIR`). Not a database. |
 | Postgres | Supabase Postgres, used only for auth users, an audit log, a WordPress publication registry, a thin `documents` mirror, and the optional RAG corpus (pgvector). |
 | Auth | Supabase Auth. The browser uses the anon key. The API checks the bearer token against `GET {SUPABASE_URL}/auth/v1/user`. |
@@ -44,7 +44,7 @@ Boilerplate and tooling sit at the root: `package.json`, `vite.config.ts`, `vite
 **Document content is files, one directory per id** under `{data_dir}/documents/<id>/` (`LocalDocumentStore` in `backend/app/storage.py`). Ids are `uuid4().hex`. A process-wide `RLock` guards reads and writes. Typical files:
 
 - `source.pdf`, `record.json` (title, owner, page count, job state, `approved_at`, `metadata_confirmed`)
-- `docling.json`, `blocks.json`, `review_items.json`, `metadata.json`, `doc_confidence.json`
+- `docling.json`, `docling-raw.json` (unmutated Docling payload snapshot), `blocks.json`, `review_items.json`, `metadata.json`, `doc_confidence.json`
 - `publication.json`, `schema.jsonld`, `structured.json`, `accessible.html` (written on approve)
 - `cover.png`, `figure-*.png`, evidence PNGs, `uploads/` for reviewer-supplied images
 - `wordpress-publication.json` (local cache; discarded when generated artifacts are discarded)
@@ -121,7 +121,7 @@ pytest backend                                           # or: cd backend && pyt
 
 - UI: `VITE_API_BASE_URL`, `VITE_API_TIMEOUT_MS`, `VITE_SUPABASE_URL`, `VITE_SUPABASE_ANON_KEY`. The image publish job refuses to run if the API URL and both Supabase vars are empty.
 - API auth and data: `SUPABASE_URL`, `SUPABASE_ANON_KEY`, `SUPABASE_SERVICE_ROLE_KEY`, `KONVERTER_DATA_DIR`, `KONVERTER_CORS_ORIGINS`, `KONVERTER_API_DOCS`, `KONVERTER_LOG_LEVEL`.
-- Parse: `KONVERTER_DO_OCR`, `KONVERTER_DO_TABLE_STRUCTURE`, `KONVERTER_DOCLING_DEVICE`, `KONVERTER_DOCLING_MODE`, `KONVERTER_DOCLING_ENDPOINT_URL`, `KONVERTER_RUNPOD_API_KEY`, `KONVERTER_STORAGE_BUCKET`, `KONVERTER_SIGNED_URL_TTL`, `KONVERTER_RUNPOD_JOB_TIMEOUT_SECONDS`, `KONVERTER_WORKERS`, `KONVERTER_MAX_PAGES`, confidence and baseline timing vars.
+- Parse: `KONVERTER_DO_OCR`, `KONVERTER_DO_TABLE_STRUCTURE`, `KONVERTER_DOCLING_TABLE_MODE`, `KONVERTER_DOCLING_TIMEOUT_SECONDS`, `KONVERTER_DOCLING_DEVICE`, `KONVERTER_DOCLING_REMOTE_DEVICE`, `KONVERTER_DOCLING_MODE`, `KONVERTER_DOCLING_ENDPOINT_URL`, `KONVERTER_RUNPOD_API_KEY`, `KONVERTER_STORAGE_BUCKET`, `KONVERTER_SIGNED_URL_TTL`, `KONVERTER_RUNPOD_JOB_TIMEOUT_SECONDS`, `KONVERTER_WORKERS`, `KONVERTER_MAX_PAGES`, confidence and baseline timing vars.
 - Chat and TTS: `OPENAI_API_KEY`, `KONVERTER_PUBLIC_CHAT_PER_IP_PER_MINUTE`, `KONVERTER_PUBLIC_CHAT_GLOBAL_PER_HOUR`, `KONVERTER_TTS_PER_IP_PER_MINUTE`, `KONVERTER_PUBLIC_API_URL` (also the origin baked into the widget).
 - Optional: `CLAUDE_API_KEY`. WordPress: `KONVERTER_WORDPRESS_PUBLISH_URL`, `KONVERTER_WORDPRESS_BEARER_TOKEN`, `KONVERTER_WORDPRESS_TIMEOUT_SECONDS`.
 - RAG CLI: `RAG_EMBED_PROVIDER`, `RAG_EMBED_MODEL`, `RAG_EMBED_DIM`, `VOYAGE_API_KEY`, `DEEPSEEK_API_KEY`, `DEEPSEEK_BASE_URL`, `RAG_LLM_MODEL`, `RAG_TOP_K`, `RAG_MIN_SIMILARITY`. Live SQL test only: `RAG_TEST_DATABASE_URL`.
