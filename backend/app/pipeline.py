@@ -69,6 +69,41 @@ def _first_page(item: dict[str, Any]) -> int:
 _BARE_PAGE_NUMBER_RE = re.compile(
     r"^(?:\d{1,5}|[ivxlcdm]{1,6})(?:\s+(?:\d{1,5}|[ivxlcdm]{1,6}))*$", re.IGNORECASE
 )
+_FOOTNOTE_MARGIN_LEFT_MIN_POINTS = 65.0
+_FOOTNOTE_MARGIN_LEFT_MAX_POINTS = 110.0
+_FOOTNOTE_MARGIN_RIGHT_MAX_POINTS = 130.0
+
+
+def _consecutive_footnote_numbers(value: str) -> list[int] | None:
+    parts = value.strip().split()
+    if len(parts) < 2 or not all(re.match(r"^\d{1,3}$", part) for part in parts):
+        return None
+    numbers = [int(part) for part in parts]
+    if numbers == list(range(numbers[0], numbers[0] + len(numbers))):
+        return numbers
+    return None
+
+
+def _is_footnote_margin_marker_mislabelled_as_footer(
+    item: dict[str, Any], normalised: str
+) -> bool:
+    if _raw_label(item) != "page_footer":
+        return False
+    if _consecutive_footnote_numbers(normalised) is not None:
+        return True
+    if not re.match(r"^\d{1,3}$", normalised):
+        return False
+    provenance = item.get("prov") or []
+    if not provenance:
+        return False
+    bbox = provenance[0].get("bbox") or {}
+    left, right = bbox.get("l"), bbox.get("r")
+    if not isinstance(left, (int, float)) or not isinstance(right, (int, float)):
+        return False
+    return (
+        _FOOTNOTE_MARGIN_LEFT_MIN_POINTS <= float(left) <= _FOOTNOTE_MARGIN_LEFT_MAX_POINTS
+        and float(right) <= _FOOTNOTE_MARGIN_RIGHT_MAX_POINTS
+    )
 # A running "which appendix am I in" margin indicator (e.g. a bare "B" next
 # to "Appendix B: Consultations") — the same running-marginalia role as a
 # bare page number, just a single letter instead of a digit. Deliberately
@@ -202,6 +237,9 @@ def _relabel_misclassified_page_furniture(document: dict[str, Any]) -> None:
     for item in candidates:
         text = str(item.get("text", ""))
         normalised = _normalise_furniture_text(text)
+        if _is_footnote_margin_marker_mislabelled_as_footer(item, normalised):
+            item["label"] = "text"
+            continue
         if _BARE_PAGE_NUMBER_RE.match(normalised) or _BARE_MARGIN_LETTER_RE.match(
             normalised
         ):
@@ -1049,6 +1087,104 @@ def _split_merged_footnotes(blocks: list[dict[str, Any]]) -> list[dict[str, Any]
     return output
 
 
+def _expand_multi_number_footnote_markers(
+    blocks: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    """When several short footnotes stack at the bottom of a page, Docling
+    sometimes groups their left-margin numbers into one vertical box (e.g.
+    "37 38 39 40 41 42" at L~79.5) while extracting the citation bodies to
+    the right (L~119.4) as separate blocks. Splitting a strictly consecutive
+    run of 2+ footnote numbers into individual marker blocks with vertical
+    positions aligned to the page's unnumbered body lines (or interpolated
+    across the box's vertical span) lets normal marker pairing and PDF
+    recovery handle each number individually."""
+    output: list[dict[str, Any]] = []
+    for block in blocks:
+        if block.get("label") not in {"text", "footnote", "footer"}:
+            output.append(block)
+            continue
+        text = str(block.get("text", "")).strip()
+        numbers = _consecutive_footnote_numbers(text)
+        if numbers is None:
+            output.append(block)
+            continue
+        bounds = block.get("source_bounds")
+        left = bounds.get("left") if isinstance(bounds, dict) else None
+        if isinstance(left, (int, float)) and float(left) < _PAGE_EDGE_MARGIN_POINTS:
+            output.append(block)
+            continue
+        top = bounds.get("top") if isinstance(bounds, dict) else None
+        bottom = bounds.get("bottom") if isinstance(bounds, dict) else None
+        page = block.get("page")
+        candidate_tops: list[float] = []
+        if (
+            isinstance(top, (int, float))
+            and isinstance(bottom, (int, float))
+            and isinstance(left, (int, float))
+        ):
+            matching_bodies = sorted(
+                float(b_top)
+                for other in blocks
+                if other is not block
+                and other.get("page") == page
+                and other.get("label") in {"text", "footnote"}
+                and str(other.get("text", "")).strip()
+                and not _BARE_FOOTNOTE_MARKER_RE.match(str(other.get("text", "")).strip())
+                and not (
+                    other.get("label") == "footnote"
+                    and _LEADING_FOOTNOTE_NUMBER_RE.match(str(other.get("text", "")).strip())
+                )
+                and isinstance(_block_left(other), float)
+                and (_block_left(other) or 0.0) - float(left)
+                >= _FOOTNOTE_CONTINUATION_INDENT_POINTS
+                and isinstance((b_top := _block_top(other)), float)
+                and float(top) - 4.0 <= b_top <= float(bottom) + 4.0
+            )
+            if len(matching_bodies) == len(numbers):
+                candidate_tops = matching_bodies
+            else:
+                span = max(0.0, float(bottom) - float(top) - 4.6)
+                step = span / max(1, len(numbers) - 1) if span > 0 else 8.0
+                candidate_tops = [
+                    float(top) + idx * step for idx in range(len(numbers))
+                ]
+        base_id = str(block.get("id", ""))
+        for idx, number in enumerate(numbers):
+            marker_block = dict(block)
+            marker_block["label"] = "text"
+            marker_block["text"] = str(number)
+            if idx > 0:
+                marker_block["id"] = f"{base_id}/marker-{idx}"
+            if isinstance(bounds, dict) and idx < len(candidate_tops):
+                row_top = candidate_tops[idx]
+                marker_block["source_bounds"] = {
+                    **bounds,
+                    "top": row_top,
+                    "bottom": min(float(bounds.get("bottom", row_top + 4.6)), row_top + 4.6),
+                }
+            output.append(marker_block)
+    return output
+
+
+def _merge_marker_bounds_into_content(
+    marker_block: dict[str, Any], content_block: dict[str, Any]
+) -> None:
+    m_bounds = marker_block.get("source_bounds")
+    c_bounds = content_block.get("source_bounds")
+    if not (isinstance(m_bounds, dict) and isinstance(c_bounds, dict)):
+        return
+    merged = dict(c_bounds)
+    if isinstance(m_bounds.get("left"), (int, float)) and isinstance(
+        c_bounds.get("left"), (int, float)
+    ):
+        merged["left"] = min(float(m_bounds["left"]), float(c_bounds["left"]))
+    if isinstance(m_bounds.get("top"), (int, float)) and isinstance(
+        c_bounds.get("top"), (int, float)
+    ):
+        merged["top"] = min(float(m_bounds["top"]), float(c_bounds["top"]))
+    content_block["source_bounds"] = merged
+
+
 def _repair_split_footnote_markers(
     blocks: list[dict[str, Any]],
 ) -> list[dict[str, Any]]:
@@ -1097,8 +1233,71 @@ def _repair_split_footnote_markers(
     bare-number block rather than guessed at; a reviewer checking the
     original PDF can split the merged text by hand if exact per-number
     fidelity matters for that citation."""
-    working = list(blocks)
+    working = _expand_multi_number_footnote_markers(list(blocks))
     remove_indices: set[int] = set()
+
+    # Pass 1: Same-row geometric pairing on each page. In two-column footnote
+    # layouts (number at L~79.7, citation body tab-indented at L~119.4 on the
+    # exact same vertical line within 3pt), pairing by row geometry resolves
+    # markers even when Docling emitted the marker after its body, labelled
+    # the bare marker "footnote", or missed an earlier footnote in sequence.
+    markers_by_page: dict[Any, list[int]] = {}
+    bodies_by_page: dict[Any, list[int]] = {}
+    for idx, block in enumerate(working):
+        label = block.get("label")
+        if label not in {"text", "footnote"}:
+            continue
+        text = str(block.get("text", "")).strip()
+        if not text:
+            continue
+        left = _block_left(block)
+        top = _block_top(block)
+        if left is None or top is None:
+            continue
+        page = block.get("page")
+        if _BARE_FOOTNOTE_MARKER_RE.match(text):
+            markers_by_page.setdefault(page, []).append(idx)
+        elif not (label == "footnote" and _LEADING_FOOTNOTE_NUMBER_RE.match(text)):
+            bodies_by_page.setdefault(page, []).append(idx)
+
+    used_bodies: set[int] = set()
+    for page, m_indices in markers_by_page.items():
+        b_indices = bodies_by_page.get(page, [])
+        if not b_indices:
+            continue
+        for m_idx in sorted(m_indices, key=lambda i: _block_top(working[i]) or 0.0):
+            m_left = _block_left(working[m_idx])
+            m_top = _block_top(working[m_idx])
+            if m_left is None or m_top is None:
+                continue
+            best_b_idx: int | None = None
+            best_dist = _FOOTNOTE_MARKER_PROXIMITY_POINTS + 1.0
+            for b_idx in b_indices:
+                if b_idx in used_bodies:
+                    continue
+                b_left = _block_left(working[b_idx])
+                b_top = _block_top(working[b_idx])
+                if b_left is None or b_top is None:
+                    continue
+                if b_left - m_left < _FOOTNOTE_CONTINUATION_INDENT_POINTS:
+                    continue
+                dist = abs(b_top - m_top)
+                if dist <= _FOOTNOTE_MARKER_PROXIMITY_POINTS and dist < best_dist:
+                    best_dist = dist
+                    best_b_idx = b_idx
+            if best_b_idx is not None:
+                used_bodies.add(best_b_idx)
+                number = int(str(working[m_idx].get("text", "")).strip())
+                content_block = working[best_b_idx]
+                content_block["label"] = "footnote"
+                content_block["text"] = (
+                    f"{number} {str(content_block.get('text', '')).strip()}"
+                )
+                _merge_marker_bounds_into_content(working[m_idx], content_block)
+                remove_indices.add(m_idx)
+
+    working = [block for i, block in enumerate(working) if i not in remove_indices]
+    remove_indices = set()
     last_footnote_num: int | None = None
     index = 0
     total = len(working)
@@ -1107,7 +1306,7 @@ def _repair_split_footnote_markers(
         label = block.get("label")
         text = str(block.get("text", "")).strip()
 
-        if label == "footnote":
+        if label == "footnote" and not _BARE_FOOTNOTE_MARKER_RE.match(text):
             match = _LEADING_FOOTNOTE_NUMBER_RE.match(text)
             if match:
                 last_footnote_num = int(match.group(1))
@@ -1115,7 +1314,7 @@ def _repair_split_footnote_markers(
             continue
 
         if (
-            label != "text"
+            label not in {"text", "footnote"}
             or last_footnote_num is None
             or not _BARE_FOOTNOTE_MARKER_RE.match(text)
             or int(text) != last_footnote_num + 1
@@ -1196,6 +1395,7 @@ def _repair_split_footnote_markers(
             content_block["text"] = (
                 f"{number} {str(content_block.get('text', '')).strip()}"
             )
+            _merge_marker_bounds_into_content(working[marker_index], content_block)
             remove_indices.add(marker_index)
         # The run's numbers are real, printed footnote numbers regardless of
         # how many of them found their own content -- an unpaired marker
@@ -1287,7 +1487,7 @@ def _block_left(block: dict[str, Any]) -> float | None:
 
 _ISOLATED_FOOTNOTE_MARKER_RE = re.compile(r"^\d{1,3}$")
 _RECOVERED_FOOTNOTE_SHORT_TOKEN_RATIO = 0.3
-_RECOVERED_FOOTNOTE_MIN_LENGTH = 15
+_RECOVERED_FOOTNOTE_MIN_LENGTH = 4
 _ORPHAN_MARKER_MAX_LOOKAHEAD_POINTS = 80.0
 
 
@@ -1344,7 +1544,20 @@ def _recover_orphaned_footnote_markers(
     except Exception:
         return blocks
 
-    index_by_id = {str(block.get("id")): index for index, block in enumerate(blocks)}
+    def _next_content_lower_bound(page_no: int, top: float) -> float:
+        bound = top + _ORPHAN_MARKER_MAX_LOOKAHEAD_POINTS
+        for other in blocks:
+            if other.get("page") != page_no or other.get("label") in ("header", "footer"):
+                continue
+            other_bounds = other.get("source_bounds")
+            other_top = other_bounds.get("top") if isinstance(other_bounds, dict) else None
+            if (
+                isinstance(other_top, (int, float))
+                and float(other_top) > top + _FOOTNOTE_MARKER_PROXIMITY_POINTS
+            ):
+                bound = min(bound, float(other_top) - 1.0)
+        return bound
+
     try:
         with pymupdf.open(pdf_path) as pdf:
             for block in candidates:
@@ -1362,36 +1575,9 @@ def _recover_orphaned_footnote_markers(
                 ):
                     continue
 
-                lower_bound = top + _ORPHAN_MARKER_MAX_LOOKAHEAD_POINTS
-                own_index = index_by_id.get(str(block.get("id")))
-                if own_index is not None:
-                    # A page footer/header sitting right after this marker
-                    # in block order isn't necessarily below the footnote's
-                    # own wrapped continuation -- verified directly: a real
-                    # footnote's last line printed *after* the page-number
-                    # furniture that happened to be ordered just ahead of it
-                    # in this exact case, so stopping at the first following
-                    # block regardless of what it is truncated a real
-                    # citation mid-sentence. Skipping past consecutive
-                    # furniture to find the next real content block (or the
-                    # lookahead cap, if none) is what the boundary should
-                    # actually be keyed to.
-                    for candidate_index in range(own_index + 1, len(blocks)):
-                        next_block = blocks[candidate_index]
-                        if next_block.get("label") in ("header", "footer"):
-                            continue
-                        next_bounds = next_block.get("source_bounds")
-                        if (
-                            next_block.get("page") == page_no
-                            and isinstance(next_bounds, dict)
-                            and isinstance(next_bounds.get("top"), (int, float))
-                            and next_bounds["top"] > top
-                        ):
-                            lower_bound = min(lower_bound, next_bounds["top"] - 1)
-                        break
-
+                lower_bound = _next_content_lower_bound(page_no, float(top))
                 clip = pymupdf.Rect(
-                    max(0.0, left - 15.0), top - 2.0, page_width, lower_bound
+                    max(0.0, float(left) - 15.0), float(top) - 2.0, float(page_width), lower_bound
                 )
                 try:
                     recovered = pdf[page_no - 1].get_text("text", clip=clip)
@@ -1412,6 +1598,56 @@ def _recover_orphaned_footnote_markers(
 
                 block["text"] = f"{marker} {recovered_body}"
                 block["label"] = "footnote"
+                block["source_bounds"] = {
+                    **bounds,
+                    "right": max(float(bounds.get("right", 0)), float(page_width)),
+                    "bottom": max(float(bounds.get("bottom", 0)), lower_bound),
+                }
+
+                # When Docling fused this footnote's right-column body into an
+                # earlier footnote on the same page (leaving this marker bare),
+                # re-read that earlier footnote's own vertical band so it doesn't
+                # retain the duplicate merged tail.
+                probe = recovered_body.rstrip(".;, ")
+                for prev in blocks:
+                    if (
+                        prev is block
+                        or prev.get("page") != page_no
+                        or prev.get("label") != "footnote"
+                    ):
+                        continue
+                    prev_top = _block_top(prev)
+                    prev_left = _block_left(prev)
+                    if (
+                        prev_top is None
+                        or prev_left is None
+                        or prev_top >= float(top) - _FOOTNOTE_MARKER_PROXIMITY_POINTS
+                    ):
+                        continue
+                    prev_text = str(prev.get("text", "")).strip()
+                    prev_num_match = _LEADING_FOOTNOTE_NUMBER_RE.match(prev_text)
+                    if not prev_num_match or (probe and probe not in prev_text):
+                        continue
+                    prev_marker = prev_num_match.group(1)
+                    prev_lower = _next_content_lower_bound(page_no, prev_top)
+                    prev_clip = pymupdf.Rect(
+                        max(0.0, prev_left - 15.0),
+                        prev_top - 2.0,
+                        float(page_width),
+                        prev_lower,
+                    )
+                    try:
+                        prev_rec = pdf[page_no - 1].get_text("text", clip=prev_clip)
+                    except Exception:
+                        continue
+                    prev_m = re.match(
+                        rf"^\s*{prev_marker}\s+(.+)$", prev_rec, re.DOTALL
+                    )
+                    if not prev_m:
+                        continue
+                    prev_body = re.sub(r"\s+", " ", prev_m.group(1)).strip()
+                    if len(prev_body) >= _RECOVERED_FOOTNOTE_MIN_LENGTH:
+                        prev["text"] = f"{prev_marker} {prev_body}"
     except Exception:
         return blocks
     return blocks
@@ -1548,6 +1784,57 @@ def _looks_like_misclassified_recommendation(text: str) -> bool:
     )
 
 
+_VALID_NUMBERED_FOOTNOTE_RE = re.compile(r"^\s*(\d{1,3})\s+(\S.*)$", re.DOTALL)
+_FOOTNOTE_TEXT_MIN_LENGTH_RATIO = 0.85
+_FOOTNOTE_TEXT_SHORT_BLEED_TOLERANCE_CHARS = 12
+
+
+def _footnote_has_valid_numbered_body(text: str) -> int | None:
+    """Return the leading footnote number if `text` has a valid `<number> <body>`
+    citation shape (at least 3 body chars including a letter and no embedded
+    next-in-sequence footnote), else None."""
+    stripped = text.strip()
+    if _BARE_FOOTNOTE_MARKER_RE.match(stripped):
+        return None
+    match = _VALID_NUMBERED_FOOTNOTE_RE.match(stripped)
+    if not match:
+        return None
+    number = int(match.group(1))
+    body = match.group(2).strip()
+    if len(body) < 3 or not re.search(r"[A-Za-z]", body):
+        return None
+    for embedded in _EMBEDDED_FOOTNOTE_NUMBER_RE.finditer(stripped):
+        if int(embedded.group(1)) == number + 1:
+            return None
+    return number
+
+
+def _in_sequence_footnote_block_ids(blocks: list[dict[str, Any]]) -> set[str]:
+    """Return the block IDs of footnotes whose leading number is consistent with
+    their neighbouring footnotes (continues `prev + 1`, starts a chapter at `1`,
+    or is immediately followed by `num + 1`)."""
+    numbered: list[tuple[str, int]] = []
+    for block in blocks:
+        if block.get("label") != "footnote":
+            continue
+        number = _footnote_has_valid_numbered_body(str(block.get("text", "")))
+        if number is not None:
+            numbered.append((str(block.get("id", "")), number))
+    if len(numbered) <= 1:
+        return {block_id for block_id, _ in numbered}
+    valid_ids: set[str] = set()
+    for idx, (block_id, number) in enumerate(numbered):
+        prev_num = numbered[idx - 1][1] if idx > 0 else None
+        next_num = numbered[idx + 1][1] if idx + 1 < len(numbered) else None
+        continues_prev = number == 1 or (
+            prev_num is not None and number == prev_num + 1
+        )
+        precedes_next = next_num is not None and next_num == number + 1
+        if continues_prev or precedes_next:
+            valid_ids.add(block_id)
+    return valid_ids
+
+
 def _footnote_text_is_trustworthy(
     page_textpage: Any, bounds: dict[str, Any], docling_text: str
 ) -> bool:
@@ -1564,12 +1851,20 @@ def _footnote_text_is_trustworthy(
     URLs) is treated as untrustworthy too, same as real content loss —
     both mean the extracted text doesn't match the source, just at
     different severities, and either way a person should confirm it."""
+    if _footnote_has_valid_numbered_body(docling_text) is None:
+        return False
     page_height = float(bounds.get("page_height", 0))
     if page_height <= 0:
         return False
+    raw_left = float(bounds.get("left", 0))
+    crop_left = (
+        min(raw_left, _FOOTNOTE_MARGIN_LEFT_MIN_POINTS)
+        if raw_left >= _FOOTNOTE_MARGIN_LEFT_MIN_POINTS
+        else raw_left
+    )
     try:
         independent_text = page_textpage.get_text_bounded(
-            left=float(bounds.get("left", 0)),
+            left=crop_left,
             right=float(bounds.get("right", 0)),
             bottom=page_height - float(bounds.get("bottom", 0)),
             top=page_height - float(bounds.get("top", 0)),
@@ -1580,12 +1875,122 @@ def _footnote_text_is_trustworthy(
     ind_norm = _normalize_for_text_comparison(independent_text)
     if not doc_norm or not ind_norm:
         return False
-    # The independent crop commonly bleeds in stray characters from the
-    # line directly above (ascenders/descenders clipped at the bbox edge)
-    # without losing any of the footnote's own text — a true superset —
-    # so a substring match either way, not exact equality, is the right
-    # bar for "matches", verified against the real document above.
-    return doc_norm in ind_norm or ind_norm in doc_norm
+    number = _footnote_has_valid_numbered_body(docling_text)
+    if number is None:
+        return False
+    if doc_norm in ind_norm:
+        pos = ind_norm.find(doc_norm)
+        after = ind_norm[pos + len(doc_norm) :].strip()
+        # Text before `doc_norm` (which starts with `{number} `) is vertical
+        # ascender/descender bleed from the line above. Text *after* `doc_norm`
+        # inside the block's own bbox means the footnote was truncated before
+        # its end (unless this block was split from a multi-footnote bbox by
+        # _split_merged_footnotes, in which case `after` starts with `number + 1`).
+        if len(after) > 4 and not after.startswith(str(number + 1)):
+            return False
+        return True
+    if ind_norm in doc_norm:
+        # When _merge_indented_footnote_continuations appends a wrapped line,
+        # `doc_norm` extends past the first line's original `bounds`; require
+        # the PDF crop of the anchor box to match the start of `doc_norm`.
+        pos = doc_norm.find(ind_norm)
+        return pos == 0 and len(ind_norm) >= min(len(doc_norm), 10)
+    return False
+
+
+_MINI_TOC_LIST_LINE_RE = re.compile(r"^\d{1,3}\s+[A-Z]")
+_PROSE_SENTENCE_END_RE = re.compile(r"[.?!'”\"\])]\s*$")
+
+
+def _pdf_region_text_matches(
+    page_textpage: Any, bounds: dict[str, Any] | None, docling_text: str
+) -> bool:
+    """Independently re-read `bounds` from `page_textpage` and confirm the PDF
+    text layer matches `docling_text` within tight length tolerances."""
+    if page_textpage is None or not isinstance(bounds, dict):
+        return False
+    page_height = float(bounds.get("page_height", 0))
+    if page_height <= 0:
+        return False
+    try:
+        independent_text = page_textpage.get_text_bounded(
+            left=max(0.0, float(bounds.get("left", 0)) - 2.0),
+            right=float(bounds.get("right", 0)) + 2.0,
+            bottom=page_height - float(bounds.get("bottom", 0)) - 2.0,
+            top=page_height - float(bounds.get("top", 0)) + 2.0,
+        )
+    except Exception:
+        return False
+    doc_norm = _normalize_for_text_comparison(docling_text)
+    ind_norm = _normalize_for_text_comparison(independent_text)
+    if not doc_norm or not ind_norm or len(doc_norm) < 4:
+        return False
+    if not (doc_norm in ind_norm or ind_norm in doc_norm):
+        return False
+    shorter = min(len(doc_norm), len(ind_norm))
+    longer = max(len(doc_norm), len(ind_norm))
+    return (
+        longer - shorter <= _FOOTNOTE_TEXT_SHORT_BLEED_TOLERANCE_CHARS
+        or shorter >= _FOOTNOTE_TEXT_MIN_LENGTH_RATIO * longer
+    )
+
+
+def _non_footnote_block_is_verified(
+    *,
+    label: str,
+    confidence: float,
+    medium_threshold: float,
+    is_orphaned_caption: bool,
+    is_vlm_assisted: bool,
+    bounds: dict[str, Any] | None,
+    raw_text: str,
+    extracted_text: str,
+    page_textpage: Any,
+    page_obj: Any,
+    body_text_font_size: float | None,
+) -> bool:
+    """Verify non-footnote text/caption/quote/box/list blocks against the source
+    PDF so reviewers only spend time on genuinely uncertain or critical items.
+    Pictures, tables, document_index, headings, titles, orphaned captions,
+    VLM-assisted lists, and low-confidence (< medium_threshold) prose text are
+    never auto-skipped here."""
+    if page_textpage is None or not isinstance(bounds, dict):
+        return False
+    candidate_text = extracted_text.strip() or raw_text.strip()
+    if not candidate_text:
+        return False
+    if label == "caption":
+        if is_orphaned_caption:
+            return False
+        return _pdf_region_text_matches(page_textpage, bounds, candidate_text)
+    if label in {"quote", "box_section"}:
+        return _pdf_region_text_matches(
+            page_textpage, bounds, candidate_text
+        ) or _pdf_region_text_matches(page_textpage, bounds, raw_text)
+    if label == "list":
+        if is_vlm_assisted:
+            return False
+        lines = [line.strip() for line in candidate_text.splitlines() if line.strip()]
+        if not lines or any(_MINI_TOC_LIST_LINE_RE.match(line) for line in lines):
+            return False
+        return _pdf_region_text_matches(
+            page_textpage, bounds, candidate_text
+        ) or _pdf_region_text_matches(page_textpage, bounds, raw_text)
+    if label == "text":
+        if confidence < medium_threshold:
+            return False
+        if (
+            len(candidate_text) < 40
+            or not _PROSE_SENTENCE_END_RE.search(candidate_text)
+            or _LEADING_FOOTNOTE_NUMBER_RE.match(candidate_text)
+        ):
+            return False
+        if body_text_font_size is not None and page_obj is not None:
+            font_size = _effective_font_size(page_obj, bounds)
+            if font_size is None or abs(font_size - body_text_font_size) > 1.0:
+                return False
+        return _pdf_region_text_matches(page_textpage, bounds, candidate_text)
+    return False
 
 
 def _effective_font_size(page: Any, bounds: dict[str, Any]) -> float | None:
@@ -2078,8 +2483,8 @@ class KonverterPipeline:
         )
         warnings.extend(hierarchy_warnings)
         blocks = _split_merged_footnotes(blocks)
-        blocks = _merge_indented_footnote_continuations(blocks)
         blocks = _repair_split_footnote_markers(blocks)
+        blocks = _merge_indented_footnote_continuations(blocks)
         blocks = _reorder_inverted_adjacent_footnotes(blocks)
         blocks = _recover_orphaned_footnote_markers(blocks, pdf_path)
         blocks = _relabel_footnote_lists(blocks, callout_regions)
@@ -3286,6 +3691,7 @@ class KonverterPipeline:
             if footnote_page is not None
             else None
         )
+        in_sequence_footnote_ids = _in_sequence_footnote_block_ids(blocks)
 
         items: list[dict[str, Any]] = []
         for block in blocks:
@@ -3435,6 +3841,11 @@ class KonverterPipeline:
                 # passing the text cross-check below wouldn't make it any
                 # more trustworthy as a *footnote*.
                 footnote_verified = False
+            elif (
+                _footnote_has_valid_numbered_body(text) is None
+                or str(block.get("id", "")) not in in_sequence_footnote_ids
+            ):
+                footnote_verified = False
             elif footnote_textpage is None:
                 # No PDF available to check against at all (e.g. these
                 # blocks didn't come from a real on-disk PDF) — that's
@@ -3446,6 +3857,22 @@ class KonverterPipeline:
                 ) and _footnote_text_is_trustworthy(
                     footnote_textpage(page), block.get("source_bounds") or {}, text
                 )
+            if footnote_verified:
+                continue
+            if label != "footnote" and _non_footnote_block_is_verified(
+                label=label,
+                confidence=confidence,
+                medium_threshold=self.settings.medium_confidence_threshold,
+                is_orphaned_caption=is_orphaned_caption,
+                is_vlm_assisted=is_vlm_assisted,
+                bounds=block.get("source_bounds"),
+                raw_text=text,
+                extracted_text=extracted_text,
+                page_textpage=footnote_textpage(page) if footnote_textpage is not None else None,
+                page_obj=footnote_page(page) if footnote_page is not None else None,
+                body_text_font_size=body_text_font_size,
+            ):
+                continue
             items.append(
                 {
                     "id": f"review-{len(items) + 1}",

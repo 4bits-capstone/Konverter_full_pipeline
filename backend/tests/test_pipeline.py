@@ -306,20 +306,11 @@ def test_footnote_review_items_are_pre_accepted_but_other_types_stay_pending():
     pipeline = KonverterPipeline(_settings())
     items = pipeline._build_review_items(blocks)
 
-    assert {item["type"]: item["status"] for item in items} == {
-        "footnote": "accepted",
-        "text": "pending",
-    }
-    # A footnote's "accepted" status is the pipeline's own decision, made
-    # before any reviewer has seen the item — Docling cannot preserve
-    # italics on PDF text (verified directly against this project's own
-    # Docling install), so an auto-accepted citation with an italicised
-    # case name may have already silently lost that styling. Tagging it
-    # "system" keeps that distinct from a reviewer's own accept.
-    assert {item["type"]: item.get("reviewed_by") for item in items} == {
-        "footnote": "system",
-        "text": None,
-    }
+    # Verified footnotes are omitted from the review queue so reviewers
+    # only spend time on items that failed verification or need confirmation.
+    assert [item["type"] for item in items] == ["text"]
+    assert items[0]["status"] == "pending"
+    assert items[0].get("reviewed_by") is None
 
 
 def test_a_caption_with_no_picture_anywhere_on_its_page_is_flagged_orphaned():
@@ -748,9 +739,7 @@ def test_footnote_matching_the_source_pdf_is_verified_and_pre_accepted(tmp_path)
     pipeline = KonverterPipeline(_settings())
     items = pipeline._build_review_items(blocks, pdf_path)
 
-    assert len(items) == 1
-    assert items[0]["status"] == "accepted"
-    assert items[0]["reviewed_by"] == "system"
+    assert items == []
 
 
 def test_footnote_disagreeing_with_the_source_pdf_is_not_pre_accepted(tmp_path):
@@ -785,9 +774,9 @@ def test_footnote_disagreeing_with_the_source_pdf_is_not_pre_accepted(tmp_path):
 
 def test_footnote_verification_is_skipped_without_a_pdf_path():
     """No pdf_path means there's no PDF to independently check against at
-    all — that's "unverifiable", not "verified and wrong" — so it must
-    fall back to the old trust-by-default behaviour rather than marking
-    every footnote pending just because verification wasn't possible."""
+    all — that's "unverifiable", not "verified and wrong" — so structurally
+    valid, in-sequence footnotes are omitted from review rather than marking
+    every footnote pending just because a PDF path wasn't supplied."""
     blocks = [
         {
             "id": "#/texts/1",
@@ -805,8 +794,84 @@ def test_footnote_verification_is_skipped_without_a_pdf_path():
     pipeline = KonverterPipeline(_settings())
     items = pipeline._build_review_items(blocks)
 
-    assert items[0]["status"] == "accepted"
-    assert items[0]["reviewed_by"] == "system"
+    assert items == []
+
+
+def test_unnumbered_bare_out_of_sequence_or_prefix_truncated_footnotes_stay_pending_for_review(tmp_path):
+    """Strict footnote verification must never skip review for:
+    - an unnumbered footnote fragment ('Victorian Law Reform Commission...')
+    - a bare number with no body ('166')
+    - an out-of-sequence footnote number ('99' sitting between '1' and '2')
+    - a prefix-truncated footnote that is a contiguous substring of the PDF line."""
+    pdf_path = tmp_path / "source.pdf"
+    line_1 = "1 Ibid s 4."
+    line_2 = "2 Victorian Law Reform Commission, Medicinal Cannabis: Issues Paper (2015) 45."
+    line_3 = "3 Submission 14 (Law Institute of Victoria)."
+    b1, b2, b3 = _write_mixed_font_size_pdf(
+        pdf_path, [(line_1, 8, 760), (line_2, 8, 780), (line_3, 8, 800)]
+    )
+    blocks = [
+        {
+            "id": "#/texts/fn-1",
+            "label": "footnote",
+            "text": line_1,
+            "page": 1,
+            "confidence": 0.6,
+            "source_bounds": b1,
+        },
+        {
+            "id": "#/texts/fn-unnumbered",
+            "label": "footnote",
+            "text": "Victorian Law Reform Commission, Medicinal Cannabis: Issues Paper (2015) 45.",
+            "page": 1,
+            "confidence": 0.6,
+            "source_bounds": b2,
+        },
+        {
+            "id": "#/texts/fn-bare",
+            "label": "footnote",
+            "text": "166",
+            "page": 1,
+            "confidence": 0.6,
+            "source_bounds": b2,
+        },
+        {
+            "id": "#/texts/fn-out-of-seq",
+            "label": "footnote",
+            "text": "99 Submission 12 (Law Institute of Victoria).",
+            "page": 1,
+            "confidence": 0.6,
+            "source_bounds": b2,
+        },
+        {
+            "id": "#/texts/fn-prefix-truncated",
+            "label": "footnote",
+            "text": "2 Victorian Law Reform",
+            "page": 1,
+            "confidence": 0.6,
+            "source_bounds": b2,
+        },
+        {
+            "id": "#/texts/fn-3",
+            "label": "footnote",
+            "text": line_3,
+            "page": 1,
+            "confidence": 0.6,
+            "source_bounds": b3,
+        },
+    ]
+
+    pipeline = KonverterPipeline(_settings())
+    items = pipeline._build_review_items(blocks, pdf_path)
+
+    flagged_ids = [item["block_id"] for item in items]
+    assert flagged_ids == [
+        "#/texts/fn-unnumbered",
+        "#/texts/fn-bare",
+        "#/texts/fn-out-of-seq",
+        "#/texts/fn-prefix-truncated",
+    ]
+    assert all(item["status"] == "pending" for item in items)
 
 
 def test_high_confidence_footnote_with_recommendation_language_is_still_flagged():
@@ -3285,5 +3350,234 @@ def test_picture_block_resolves_docling_captions_references():
         picture_blocks[0]["text"]
         == "Figure 1: The present committal and pre-trial system"
     )
+
+
+def test_footnote_margin_markers_mislabelled_as_page_footer_are_recovered():
+    """Docling frequently raw-labels footnote markers sitting in the bottom
+    margin column (L~79.7) as 'page_footer' -- both individual numbers ('33')
+    and vertical multi-number stacks ('37 38 39 40 41 42'). They must be
+    relabelled to 'text' so the footnote repair chain can pair them, while a
+    genuine page-edge footer ('44' at L=36.2) stays 'page_footer'."""
+    document = {
+        "pages": {"68": {"size": {"width": 595.3, "height": 841.9}}},
+        "texts": [
+            {
+                "self_ref": "#/texts/edge-page-num",
+                "label": "page_footer",
+                "text": "44",
+                "prov": [{"page_no": 68, "bbox": {"l": 36.2, "t": 36.7, "r": 49.5, "b": 28.3}}],
+            },
+            {
+                "self_ref": "#/texts/single-fn-marker",
+                "label": "page_footer",
+                "text": "33",
+                "prov": [{"page_no": 68, "bbox": {"l": 79.7, "t": 32.9, "r": 86.4, "b": 28.3}}],
+            },
+            {
+                "self_ref": "#/texts/multi-fn-markers",
+                "label": "page_footer",
+                "text": "37 38 39",
+                "prov": [{"page_no": 68, "bbox": {"l": 79.5, "t": 104.9, "r": 86.5, "b": 84.3}}],
+            },
+        ],
+    }
+
+    _relabel_misclassified_page_furniture(document)
+
+    labels = {item["self_ref"]: item["label"] for item in document["texts"]}
+    assert labels["#/texts/edge-page-num"] == "page_footer"
+    assert labels["#/texts/single-fn-marker"] == "text"
+    assert labels["#/texts/multi-fn-markers"] == "text"
+
+
+def test_multi_number_and_same_row_split_footnote_markers_pair_with_indented_bodies():
+    """Reproduces the two-column VLRC split-footnote shapes found across
+    Medicinal Cannabis, Committals, and Litigation Funding:
+    1. A bare marker at L~79.7 raw-labelled 'footnote' or emitted after its
+       tab-indented body at L~119.4 on the same horizontal row (delta top <= 3pt).
+    2. A vertical multi-number marker block ('37 38 39' at L~79.5) alongside
+       three unnumbered body blocks at L~119.4.
+    3. Reunited footnotes update their left bound to ~79.7 so a subsequent
+       _merge_indented_footnote_continuations pass does not swallow the next
+       footnote's body into a preceding footnote."""
+    blocks = [
+        # Body emitted before its own marker '36' (Committals p. 68 shape)
+        {
+            "id": "#/texts/1398",
+            "label": "footnote",
+            "text": "Submissions 9 (Australian Lawyers for Human Rights), 11 (Criminal Bar Association).",
+            "page": 68,
+            "source_bounds": {"left": 119.4, "top": 720.6, "right": 498.6, "bottom": 734.9},
+        },
+        {
+            "id": "#/texts/1399",
+            "label": "footnote",
+            "text": "Submission 11 (Criminal Bar Association (Victoria)).",
+            "page": 68,
+            "source_bounds": {"left": 119.4, "top": 736.6, "right": 263.4, "bottom": 742.4},
+        },
+        {
+            "id": "#/texts/1400",
+            "label": "text",
+            "text": "Ibid.",
+            "page": 68,
+            "source_bounds": {"left": 119.6, "top": 744.7, "right": 130.8, "bottom": 749.6},
+        },
+        {
+            "id": "#/texts/1401",
+            "label": "footnote",
+            "text": "Submission 24 (Law Institute of Victoria).",
+            "page": 68,
+            "source_bounds": {"left": 119.4, "top": 752.7, "right": 234.9, "bottom": 758.5},
+        },
+        {
+            "id": "#/texts/1405",
+            "label": "footnote",
+            "text": "36",
+            "page": 68,
+            "source_bounds": {"left": 79.7, "top": 721.0, "right": 86.4, "bottom": 725.6},
+        },
+        {
+            "id": "#/texts/1407",
+            "label": "footer",
+            "text": "37 38 39",
+            "page": 68,
+            "source_bounds": {"left": 79.5, "top": 737.0, "right": 86.5, "bottom": 757.6},
+        },
+    ]
+
+    repaired = _repair_split_footnote_markers(blocks)
+    merged = _merge_indented_footnote_continuations(repaired)
+
+    assert [b["text"] for b in merged] == [
+        "36 Submissions 9 (Australian Lawyers for Human Rights), 11 (Criminal Bar Association).",
+        "37 Submission 11 (Criminal Bar Association (Victoria)).",
+        "38 Ibid.",
+        "39 Submission 24 (Law Institute of Victoria).",
+    ]
+    assert all(b["label"] == "footnote" for b in merged)
+    assert all(b["source_bounds"]["left"] < 85.0 for b in merged)
+
+
+def test_pdf_verified_captions_quotes_lists_and_medium_prose_skip_review_while_orphans_and_low_conf_stay(
+    tmp_path,
+):
+    """Non-orphaned captions, quotes, box sections, non-VLM lists, and
+    medium-confidence body-sized prose sentences that match the PDF text layer
+    skip the review queue, while orphaned captions, VLM-assisted lists,
+    low-confidence (< 0.60) text, and mismatched text stay pending."""
+    pdf_path = tmp_path / "source.pdf"
+    cap_text = "Table 1: Time taken for finalisation of criminal cases."
+    quote_text = "Independent scrutiny of the prosecution case is essential."
+    list_text = "2.70 Parties must come prepared to answer a list of questions."
+    prose_text = "The Commission received submissions from stakeholders across Victoria."
+    low_text = "This low-confidence paragraph must remain in the review queue."
+    b_cap, b_quote, b_list, b_prose, b_low = _write_mixed_font_size_pdf(
+        pdf_path,
+        [
+            (cap_text, 9, 120),
+            (quote_text, 10, 200),
+            (list_text, 11, 300),
+            (prose_text, 11, 400),
+            (low_text, 11, 500),
+        ],
+    )
+    blocks = [
+        {
+            "id": "#/texts/paired-caption",
+            "label": "caption",
+            "text": cap_text,
+            "page": 1,
+            "confidence": 0.68,
+            "source_bounds": b_cap,
+        },
+        {
+            "id": "#/texts/orphaned-caption",
+            "label": "caption",
+            "text": cap_text,
+            "page": 1,
+            "confidence": 0.68,
+            "orphaned_caption": True,
+            "source_bounds": b_cap,
+        },
+        {
+            "id": "#/texts/verified-quote",
+            "label": "quote",
+            "text": quote_text,
+            "page": 1,
+            "confidence": 0.66,
+            "source_bounds": b_quote,
+        },
+        {
+            "id": "#/groups/verified-list",
+            "label": "list",
+            "text": list_text,
+            "list_items": [list_text],
+            "page": 1,
+            "confidence": 0.70,
+            "source_bounds": b_list,
+        },
+        {
+            "id": "#/groups/vlm-list",
+            "label": "list",
+            "text": list_text,
+            "list_items": [list_text],
+            "vlm_assisted": True,
+            "page": 1,
+            "confidence": 0.70,
+            "source_bounds": b_list,
+        },
+        {
+            "id": "#/texts/verified-prose",
+            "label": "text",
+            "text": prose_text,
+            "page": 1,
+            "confidence": 0.68,
+            "source_bounds": b_prose,
+        },
+        {
+            "id": "#/texts/high-prose-1",
+            "label": "text",
+            "text": prose_text,
+            "page": 1,
+            "confidence": 0.92,
+            "source_bounds": b_prose,
+        },
+        {
+            "id": "#/texts/high-prose-2",
+            "label": "text",
+            "text": prose_text,
+            "page": 1,
+            "confidence": 0.92,
+            "source_bounds": b_prose,
+        },
+        {
+            "id": "#/texts/high-prose-3",
+            "label": "text",
+            "text": prose_text,
+            "page": 1,
+            "confidence": 0.92,
+            "source_bounds": b_prose,
+        },
+        {
+            "id": "#/texts/low-conf-prose",
+            "label": "text",
+            "text": low_text,
+            "page": 1,
+            "confidence": 0.45,
+            "source_bounds": b_low,
+        },
+    ]
+
+    pipeline = KonverterPipeline(_settings())
+    items = pipeline._build_review_items(blocks, pdf_path)
+
+    assert [item["block_id"] for item in items] == [
+        "#/texts/orphaned-caption",
+        "#/groups/vlm-list",
+        "#/texts/low-conf-prose",
+    ]
+
+
 
 
