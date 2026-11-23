@@ -18,6 +18,53 @@ from typing import Any
 # state corruption while post-Docling stages continue concurrently.
 _lock = threading.Lock()
 _converter_cache: dict[tuple[bool, bool, str, str, float | None], Any] = {}
+_mps_position_embedding_patched = False
+
+
+def _patch_mps_rt_detr_v2_float64() -> None:
+    """Work around transformers RTDetrV2 creating a float64 tensor directly on MPS.
+
+    Apple Metal (MPS) does not support float64 tensors, while transformers
+    `build_2d_sinusoidal_position_embedding` uses `dtype=torch.float64` on `device`
+    before casting back to `dtype` (float32). Compute the sinusoidal frequency grid
+    on CPU and move the resulting float32 embedding to the MPS device.
+    """
+    global _mps_position_embedding_patched
+    if _mps_position_embedding_patched:
+        return
+    try:
+        from transformers.models.rt_detr_v2 import modeling_rt_detr_v2
+        from transformers.pytorch_utils import compile_compatible_method_lru_cache
+    except ImportError:
+        return
+
+    orig_build = getattr(
+        modeling_rt_detr_v2, "build_2d_sinusoidal_position_embedding", None
+    )
+    embedding_cls = getattr(
+        modeling_rt_detr_v2, "RTDetrV2SinePositionEmbedding", None
+    )
+    if orig_build is None or embedding_cls is None:
+        return
+
+    def _mps_safe_build_2d_sinusoidal_position_embedding(
+        *args: Any, **kwargs: Any
+    ) -> Any:
+        device = kwargs.get("device")
+        if device is not None and str(device).startswith("mps"):
+            cpu_kwargs = dict(kwargs, device="cpu")
+            return orig_build(*args, **cpu_kwargs).to(device)
+        return orig_build(*args, **kwargs)
+
+    modeling_rt_detr_v2.build_2d_sinusoidal_position_embedding = (
+        _mps_safe_build_2d_sinusoidal_position_embedding
+    )
+    embedding_cls._cached_build_2d_sinusoidal_position_embedding = staticmethod(
+        compile_compatible_method_lru_cache(maxsize=32)(
+            _mps_safe_build_2d_sinusoidal_position_embedding
+        )
+    )
+    _mps_position_embedding_patched = True
 
 
 def _enum_value(value: Any) -> str | None:
@@ -257,6 +304,8 @@ def _build_converter(
         name: getattr(AcceleratorDevice, name.upper(), name)
         for name in ("auto", "cpu", "cuda", "mps", "xpu")
     }
+    if device in {"mps", "auto"}:
+        _patch_mps_rt_detr_v2_float64()
     pipeline_options.accelerator_options = AcceleratorOptions(
         device=named_devices.get(device, device),
     )
