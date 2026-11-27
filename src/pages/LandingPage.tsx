@@ -81,11 +81,24 @@ const REPORT_LENGTHS = [
   { name: "Sex Offences response report", pages: 614, share: 1, color: "#292768" },
 ];
 
-const CONFIDENCE = [
-  { field: "Title", pct: 99 },
-  { field: "Publisher", pct: 98 },
-  { field: "Jurisdiction", pct: 93 },
-  { field: "Published", pct: 0 },
+/**
+ * Plain-language metadata statuses, matching the metadata review page: a field
+ * the rules confirmed shows where it was found; anything else says why it
+ * needs a person ("Needs review", "Not found") instead of a percentage score.
+ */
+type MetadataStatus = "found" | "review" | "missing";
+
+const METADATA_STATUS_LABEL: Record<MetadataStatus, string> = {
+  found: "Found",
+  review: "Needs review",
+  missing: "Not found",
+};
+
+const METADATA_CHECKS: { field: string; source: string; status: MetadataStatus }[] = [
+  { field: "Title", source: "Page 1 · cover", status: "found" },
+  { field: "Publisher", source: "Page 2 · cataloguing details", status: "found" },
+  { field: "Jurisdiction", source: "Page 2 · two places named", status: "review" },
+  { field: "Published", source: "No date in pages 1–8", status: "missing" },
 ];
 
 const STEPS = [
@@ -170,6 +183,27 @@ function CheckIcon() {
     <svg className="kl-ico" viewBox="0 0 24 24" aria-hidden="true">
       <path d="M20 6 9 17l-5-5" />
     </svg>
+  );
+}
+
+/** A metadata status chip: icon + text + colour, never colour alone (as on the metadata page). */
+function MetadataStatusChip({ status }: { status: MetadataStatus }) {
+  return (
+    <span className={`kl-status is-${status}`}>
+      <svg className="kl-ico" viewBox="0 0 24 24" aria-hidden="true">
+        {status === "found" ? (
+          <path d="M20 6 9 17l-5-5" />
+        ) : status === "review" ? (
+          <circle cx="12" cy="12" r="8" />
+        ) : (
+          <>
+            <circle cx="11" cy="11" r="7" />
+            <path d="m21 21-5-5M8.5 8.5l5 5M13.5 8.5l-5 5" />
+          </>
+        )}
+      </svg>
+      {METADATA_STATUS_LABEL[status]}
+    </span>
   );
 }
 
@@ -642,23 +676,24 @@ function WhySection() {
             </p>
           </article>
           <article className="kl-why-card">
-            <div aria-hidden="true" className="kl-why-visual kl-bars">
-              <span className="kl-bar-row">
-                <span>Title</span>
-                <span className="kl-bar-fill" style={{ width: "99%" }} />
-              </span>
-              <span className="kl-bar-row">
-                <span>Publisher</span>
-                <span className="kl-bar-fill" style={{ width: "98%" }} />
-              </span>
-              <span className="kl-bar-row">
-                <span>Date</span>
-                <span className="kl-bar-missing" />
-              </span>
+            <div aria-hidden="true" className="kl-why-visual kl-status-list">
+              {(
+                [
+                  ["Title", "found"],
+                  ["Publisher", "found"],
+                  ["Date", "missing"],
+                ] as const
+              ).map(([field, status]) => (
+                <span key={field} className="kl-status-row">
+                  <span>{field}</span>
+                  <MetadataStatusChip status={status} />
+                </span>
+              ))}
             </div>
             <h3 className="kl-why-title">People make the calls</h3>
             <p className="kl-why-body">
-              Low-confidence items go to a reviewer, with the source page beside them.
+              Anything the rules can’t confirm is flagged in plain language, with the source page
+              beside it.
             </p>
           </article>
           <article className="kl-why-card">
@@ -732,25 +767,24 @@ function ResultsSection() {
         </figure>
         <figure className="kl-figure" style={{ gap: 16 }}>
           <figcaption>
-            <span className="kl-figure-title">Metadata confidence</span>
+            <span className="kl-figure-title">Metadata checks</span>
             <span className="kl-figure-unit">88-page report</span>
           </figcaption>
-          {CONFIDENCE.map(({ field, pct }) => (
-            <div key={field} className="kl-confidence">
-              <span>{field}</span>
-              {pct > 0 ? (
-                <span className="kl-confidence-track">
-                  <span style={{ width: `${pct}%` }} />
-                </span>
-              ) : (
-                <span className="kl-confidence-track is-missing" />
-              )}
-              <span className={`kl-figure-num${pct > 0 ? "" : " is-missing"}`}>{pct}%</span>
-            </div>
-          ))}
-          <p className="kl-confidence-note">
+          <dl className="kl-meta-checks">
+            {METADATA_CHECKS.map(({ field, source, status }) => (
+              <div key={field} className={`kl-meta-check is-${status}`}>
+                <dt>{field}</dt>
+                <dd className="kl-meta-source">{source}</dd>
+                <dd>
+                  <MetadataStatusChip status={status} />
+                </dd>
+              </div>
+            ))}
+          </dl>
+          <p className="kl-meta-note">
             <span aria-hidden="true" className="kl-square" />
-            Not found, so sent to a reviewer.
+            Anything not found or unclear goes to a reviewer, who checks it against the source
+            page.
           </p>
         </figure>
       </div>
