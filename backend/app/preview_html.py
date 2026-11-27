@@ -17,7 +17,7 @@ from pathlib import Path
 from typing import Any
 
 from .footnote_numbering import resolve_footnote_number
-from .text_styles import render_styled
+from .text_styles import render_flagged, render_styled, style_flags
 
 # A footnote number that Docling split off from its own citation text, and
 # that the pipeline's own repair pass (pipeline.py's
@@ -357,19 +357,37 @@ def _footnote_targets(footnotes: list[dict[str, Any]]) -> dict[str, str]:
     return targets
 
 
-def _render_inline_text(value: Any, footnote_targets: dict[str, str]) -> str:
-    """Escape text and restore Docling's flattened footnote-reference links."""
+def _render_inline_text(
+    value: Any,
+    footnote_targets: dict[str, str],
+    styles: list[dict[str, Any]] | None = None,
+) -> str:
+    """Escape text and restore Docling's flattened footnote-reference links.
+    `styles` (italic/bold ranges over `value`) are carried through the
+    rewriting below, so styled text keeps its footnote links."""
 
     text = str(value or "")
+    flags = style_flags(styles or [], len(text))
     if not text or not footnote_targets:
-        return html.escape(text)
+        return render_flagged(text, flags)
 
     for number in footnote_targets:
-        text = re.sub(
-            rf"(?<!\d){re.escape(number)}[ \t]+{re.escape(number)}(?!\d)",
-            number,
-            text,
-        )
+        # Drop the doubled number Docling leaves for a reference, keeping the
+        # style of the first copy.
+        pattern = re.compile(rf"(?<!\d){re.escape(number)}[ \t]+{re.escape(number)}(?!\d)")
+        kept: list[str] = []
+        kept_flags: list[tuple[bool, bool]] = []
+        cursor = 0
+        for match in pattern.finditer(text):
+            kept.append(text[cursor : match.start()] + number)
+            kept_flags.extend(flags[cursor : match.start()])
+            kept_flags.extend(flags[match.start() : match.start() + len(number)])
+            cursor = match.end()
+        if cursor:
+            kept.append(text[cursor:])
+            kept_flags.extend(flags[cursor:])
+            text = "".join(kept)
+            flags = kept_flags
 
     parts: list[str] = []
     cursor = 0
@@ -401,14 +419,14 @@ def _render_inline_text(value: Any, footnote_targets: dict[str, str]) -> str:
         # A citation marker belongs to the preceding word or punctuation, so do
         # not preserve extraction whitespace immediately before the superscript.
         prefix = re.sub(r"[ \t]+$", "", prefix)
-        parts.append(html.escape(prefix))
+        parts.append(render_flagged(prefix, flags[cursor : cursor + len(prefix)]))
         safe_id = html.escape(note_id, quote=True)
         parts.append(
             f'<sup class="footnote-reference"><a href="#{safe_id}" '
             f'role="doc-noteref" aria-label="Footnote {number}">{number}</a></sup>'
         )
         cursor = match.end()
-    parts.append(html.escape(text[cursor:]))
+    parts.append(render_flagged(text[cursor:], flags[cursor:]))
     return "".join(parts)
 
 
@@ -514,13 +532,14 @@ def _render_numbered_paragraph(
     number: Any,
     text: Any,
     footnote_targets: dict[str, str],
+    styles: list[dict[str, Any]] | None = None,
 ) -> str:
     safe_number = html.escape(str(number or ""))
     return (
         '<div class="reader-numbered-paragraph">'
         f'<span class="reader-paragraph-number" aria-hidden="true">{safe_number}</span>'
         f'<p><span class="sr-only">Paragraph {safe_number}. </span>'
-        f"{_render_inline_text(text, footnote_targets)}</p></div>"
+        f"{_render_inline_text(text, footnote_targets, styles)}</p></div>"
     )
 
 
@@ -536,24 +555,41 @@ def _render_block(
         level = 2 if source_level <= 2 else min(6, source_level)
         return (
             f'<h{level} id="{html.escape(str(block.get("id", "")), quote=True)}">'
-            f'{html.escape(str(block.get("text", "")))}</h{level}>'
+            f'{render_styled(str(block.get("text", "")), block.get("styles") or [])}</h{level}>'
         )
     if block_type == "paragraph":
         if block.get("number"):
             return _render_numbered_paragraph(
-                block.get("number"), block.get("text"), footnote_targets
+                block.get("number"),
+                block.get("text"),
+                footnote_targets,
+                block.get("styles"),
             )
         text = str(block.get("text", ""))
         if _ISOLATED_FOOTNOTE_MARKER_RE.match(text.strip()):
             return f'<p class="docling-paragraph docling-orphan-marker">{html.escape(text)}</p>'
-        return f'<p class="docling-paragraph">{_render_inline_text(text, footnote_targets)}</p>'
+        return f'<p class="docling-paragraph">{_render_inline_text(text, footnote_targets, block.get("styles"))}</p>'
     if block_type == "quote":
-        paragraphs = re.split(r"\n\s*\n", str(block.get("text", "")))
-        content = "".join(
-            f'<p class="docling-paragraph">{_render_inline_text(paragraph.strip(), footnote_targets)}</p>'
-            for paragraph in paragraphs
-            if paragraph.strip()
-        )
+        quote_text = str(block.get("text", ""))
+        quote_styles = block.get("styles") or []
+        content_parts: list[str] = []
+        cursor = 0
+        for boundary in [*re.finditer(r"\n\s*\n", quote_text), None]:
+            end = boundary.start() if boundary else len(quote_text)
+            paragraph = quote_text[cursor:end]
+            lead = len(paragraph) - len(paragraph.lstrip())
+            if paragraph.strip():
+                shifted = [
+                    {**run, "start": run["start"] - cursor - lead, "end": run["end"] - cursor - lead}
+                    for run in quote_styles
+                ]
+                content_parts.append(
+                    '<p class="docling-paragraph">'
+                    f"{_render_inline_text(paragraph.strip(), footnote_targets, shifted)}</p>"
+                )
+            if boundary:
+                cursor = boundary.end()
+        content = "".join(content_parts)
         attribution = html.escape(str(block.get("attribution") or ""))
         caption = f'<figcaption><cite>{attribution}</cite></figcaption>' if attribution else ""
         return f'<figure class="report-quote report-quote--inline"><blockquote class="docling-quote">{content}</blockquote>{caption}</figure>'
@@ -660,7 +696,7 @@ def _render_block(
             f"{visual}<figcaption>{caption}</figcaption></figure>"
         )
     if block_type == "caption":
-        return f'<p class="docling-caption">{html.escape(str(block.get("text", "")))}</p>'
+        return f'<p class="docling-caption">{render_styled(str(block.get("text", "")), block.get("styles") or [])}</p>'
     if block_type == "formula":
         return (
             '<div class="docling-formula" role="math" aria-label="Formula">'

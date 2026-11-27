@@ -10,4 +10,4 @@ Do a test of everything in the backend
 - Verify changing label structures works ie. Table -> Footnote is broken: it changes it to text
 - Adding more items to a list is broken
 - We should still render the pictures, tables, and headings despite their confidence score because they are very important and cannot be missed.
-- ~~Manually edited footnotes lose style metadata and become plain text~~ — fixed: the footnote editor writes italic/bold inline (`*italic*`, `**bold**`, Italic/Bold buttons), opens with the styles detected from the PDF, and saves them with the text. Use the Review page "Validation" filter -> "Manually reviewed" to find hand-edited footnotes.
+- ~~Manually edited footnotes lose style metadata and become plain text~~ — fixed: the review editor shows italic/bold as real formatting (Italic/Bold buttons, Ctrl/⌘+I and Ctrl/⌘+B) for footnotes, body text, quotes, captions and headings, opens with the styles detected from the PDF, and saves them with the text. Use the Review page "Validation" filter -> "Manually reviewed" to find hand-edited footnotes.
