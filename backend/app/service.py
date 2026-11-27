@@ -1,8 +1,9 @@
 from __future__ import annotations
 
-import math
-import hashlib
 import copy
+import hashlib
+import inspect
+import math
 import re
 import threading
 import time
@@ -23,7 +24,11 @@ from .logging_utils import document_logger, sanitize_for_log
 from .media import render_pdf_region, render_pdf_regions
 from .pipeline import LABEL_DISPLAY, KonverterPipeline, _plain_text_from_table
 from .storage import LocalDocumentStore
-from .text_styles import normalize_style_runs, styles_for_text
+from .text_styles import (
+    STYLED_LABELS,
+    normalize_style_runs,
+    styles_for_text,
+)
 
 
 def _table_from_text(value: str) -> dict[str, Any]:
@@ -619,11 +624,27 @@ class ProcessingManager:
         started = time.monotonic()
         log.info("processing started")
         try:
-            output = self.pipeline.process(
-                self.store.source_path(document_id),
-                lambda step, message: self._set_stage(document_id, step, message),
-                document_id,
+            def cancel_check() -> bool:
+                return self._is_cancelled(document_id)
+
+            process_params = inspect.signature(self.pipeline.process).parameters
+            accepts_cancel_check = "cancel_check" in process_params or any(
+                param.kind is inspect.Parameter.VAR_KEYWORD
+                for param in process_params.values()
             )
+            if accepts_cancel_check:
+                output = self.pipeline.process(
+                    self.store.source_path(document_id),
+                    lambda step, message: self._set_stage(document_id, step, message),
+                    document_id,
+                    cancel_check=cancel_check,
+                )
+            else:
+                output = self.pipeline.process(
+                    self.store.source_path(document_id),
+                    lambda step, message: self._set_stage(document_id, step, message),
+                    document_id,
+                )
             if self._is_cancelled(document_id):
                 log.info("processing stopped by user")
                 return
@@ -700,6 +721,9 @@ class ProcessingManager:
             title=metadata.get("title") or record["title"],
             publisher=metadata.get("publisher") or record["publisher"],
             job=job,
+            docling_version=getattr(output, "docling_version", "unknown"),
+            conversion_status=getattr(output, "conversion_status", "success"),
+            parse_elapsed_seconds=getattr(output, "parse_elapsed_seconds", None),
         )
 
 
@@ -1081,16 +1105,21 @@ class WorkflowService:
                     if block.get("table_data")
                     else _clean_source_text(block)
                 )
+            raw_text = text.strip()
             if target_type in SINGLE_LINE_TYPES:
                 text = _single_line(text)
             new_styles = changes.get("corrected_styles")
-            if target_type == "footnote" and new_styles is not None:
-                # The reviewer styled this footnote themselves. Ranges are
+            if target_type in STYLED_LABELS and new_styles is not None:
+                # The reviewer styled this text themselves. Ranges are
                 # relative to the trimmed text, so store that exact string
                 # as `styles_text` -- styles_for_text only honours ranges
                 # while the text still equals it.
                 text = text.strip()
                 runs = normalize_style_runs(new_styles, len(text))
+                if text != raw_text:
+                    # Collapsing the line breaks moved the characters the
+                    # ranges point at, so they can't be trusted.
+                    runs = []
                 if runs:
                     block["styles"] = runs
                     block["styles_text"] = text
@@ -1103,6 +1132,11 @@ class WorkflowService:
             block.pop("list_entries", None)
             item["corrected_text"] = text
             item["corrected_table"] = None
+
+        if target_type == "checkbox":
+            block["checked"] = bool(block.get("checked", False))
+        else:
+            block.pop("checked", None)
 
         if changes.get("status") is not None:
             item["status"] = changes["status"]
@@ -1135,10 +1169,10 @@ class WorkflowService:
             self._discard_generated(document_id)
             return items
 
-    def with_footnote_styles(
+    def with_text_styles(
         self, document_id: str, items: list[dict[str, Any]]
     ) -> list[dict[str, Any]]:
-        """Copies of `items` where each footnote carries the italic/bold
+        """Copies of `items` where each styleable item carries the italic/bold
         ranges that still match the text it currently shows -- whether the
         pipeline detected them in the PDF or a reviewer set them. Derived
         from the block on every read, never stored on the item, so it can't
@@ -1147,7 +1181,7 @@ class WorkflowService:
         by_id = {block.get("id"): block for block in blocks}
         result: list[dict[str, Any]] = []
         for item in items:
-            if item.get("type") == "footnote":
+            if item.get("type") in STYLED_LABELS:
                 block = by_id.get(item.get("block_id"))
                 shown = item.get("corrected_text")
                 if shown is None:

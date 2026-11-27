@@ -83,16 +83,16 @@ def test_ranges_are_relative_to_the_trimmed_text():
     assert styles_for_text(block, "Ibid 5.") == [_run(0, 4, italic=True)]
 
 
-def test_styles_are_ignored_for_non_footnote_targets():
+def test_styles_are_ignored_for_unstyled_targets():
     item, block = _footnote()
-    item["type"] = "text"
-    block["label"] = "text"
+    item["type"] = "title"
+    block["label"] = "title"
     WorkflowService._apply_review_item_changes(
         [item],
         [block],
         "r1",
         {
-            "type": "text",
+            "type": "title",
             "corrected_text": "Plain.",
             "corrected_styles": [_run(0, 5, italic=True)],
         },
@@ -131,8 +131,8 @@ def _service(blocks):
 def test_served_footnotes_carry_styles_that_match_their_shown_text():
     text = "See Smith v Jones (1990) 12 CLR 3."
     item, block = _footnote(text, styles=[_run(4, 17, italic=True)], styles_text=text)
-    other = {"id": "r2", "block_id": "b2", "type": "text", "extracted_text": "x"}
-    served = _service([block]).with_footnote_styles("doc", [item, other])
+    other = {"id": "r2", "block_id": "b2", "type": "list", "extracted_text": "x"}
+    served = _service([block]).with_text_styles("doc", [item, other])
     assert served[0]["styles"] == [_run(4, 17, italic=True)]
     assert "styles" not in served[1]
     assert "styles" not in item  # never mutates what gets persisted
@@ -142,12 +142,12 @@ def test_served_footnote_ignores_styles_for_a_stale_text():
     item, block = _footnote(
         styles=[_run(4, 17, italic=True)], styles_text="the text before an edit"
     )
-    served = _service([block]).with_footnote_styles("doc", [item])
+    served = _service([block]).with_text_styles("doc", [item])
     assert served[0]["styles"] is None
 
 
 def test_served_footnote_matches_despite_surrounding_whitespace():
     text = "Ibid 5."
     item, block = _footnote(f"{text}\n", styles=[_run(0, 4, italic=True)], styles_text=text)
-    served = _service([block]).with_footnote_styles("doc", [item])
+    served = _service([block]).with_text_styles("doc", [item])
     assert served[0]["styles"] == [_run(0, 4, italic=True)]

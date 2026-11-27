@@ -366,12 +366,12 @@ The control called no real backend endpoint and reported success regardless. Rem
 **🟠 High — Saving an edit had no double-submit guard or error handling**
 A slow network or a double-click could fire the save twice with no feedback on failure.
 `src/pages/ReviewPage.tsx — saveEdit` (`if (actingItemId === item.id) return;` guard, try/catch/finally with an error toast)
-✅ **Fixed — verified live in code**, read directly at the call site. **Validated**: no dedicated automated test found for this specific guard — confirmed by code inspection only, not a regression test. Worth adding one.
+✅ **Fixed — verified live in code**, read directly at the call site. **Validated** (2026-11-22): `src/pages/ReviewPage.test.tsx` (`ignores a repeated click on Save changes while the edit is still saving`) asserts the in-flight click fires one save.
 
 **🔵 Medium — Deleting a document silently swallowed a failed backend delete**
 The UI proceeded as if the delete succeeded even when the backend call failed.
 `src/state/KonverterContext.tsx — removeDocument` (`.catch()` shows an error toast and re-syncs from the server's own list rather than trusting the optimistic local removal)
-✅ **Fixed — verified live in code**, read directly at the call site. **Validated**: no dedicated automated test found for this specific path either — confirmed by code inspection only, same gap as above.
+✅ **Fixed — verified live in code**, read directly at the call site. **Validated** (2026-11-22): `src/state/KonverterContext.test.tsx` (`shows an error and restores the document from the server when delete fails`) asserts the error toast and a re-sync from the server list.
 
 ### Verified, no bug found
 
@@ -412,14 +412,14 @@ Found, understood, and consciously not fixed this pass — either because the fi
 |---|---|
 | No "upload replacement image" feature for a figure Docling still can't detect | Scoped and explicitly deferred by product decision — noted, not built, this pass. |
 | Chart-label word-fragment noise (distinct from the fixed bare-number case) | Lower-volume, cosmetic; the content-safety fix (bare numbers) was prioritized over this residual noise. |
-| 702 residual split-footnote-marker cases (measured directly against the 10 fresh documents), separated by page-boundary furniture from their own body text | No reliable boundary signal exists to auto-split them — sample-checked, several have a page-footer interrupting the marker and its real body text, meaning they genuinely aren't adjacent in extraction order. Forcing a guess risks corrupting correct text. **Corrected figure**: an earlier version of this report cited "~93," measured against a smaller, earlier corpus snapshot and never re-verified — 702 is the current, directly-measured count. |
+| 702 residual split-footnote-marker cases (measured directly against the 10 fresh documents), separated by page-boundary furniture from their own body text | **Closed in code on `Fix/docling` (2026-11-22):** Fixed the 4 root causes in `backend/app/pipeline.py` — (1) multi-number stacked left-margin markers (`"37 38 39 40 41 42"`) rescued from `page_footer` and expanded via `_expand_multi_number_footnote_markers`, (2) Pass 1 same-row geometric pairing (`Δtop <= 3 pt`, `body_left - marker_left >= 20 pt`) in `_repair_split_footnote_markers` with merged `source_bounds`, (3) running `_repair_split_footnote_markers` before `_merge_indented_footnote_continuations`, and (4) bounded PDF recovery + preceding-footnote tail trimming in `_recover_orphaned_footnote_markers`. Split footnotes dropped to **0** across the 5 benchmark VLRC reports (`1,218` complete footnotes recovered), and 5-rule PDF-verified footnotes + PDF-verified captions/quotes/boxes/lists/medium-confidence paragraphs cut total review items by **69.1% (`573` → `177`)**. |
 | A multi-position footnote reordering jumble (47→42) in "Review of the Bail Act" | 1 instance found; too complex for the existing narrow, same-adjacent-pair reorder fix to touch safely without risking real citations elsewhere. |
 | Footnote-numbering monotonicity check groups by top-level heading only, not by chapter | "Contempt of Court" restarts footnote numbering per chapter within one top-level section, producing a false-positive break; the fallback this triggers is safe, just not optimal. Needs a corpus-wide audit of chapter/restart conventions before widening the grouping. |
 | `toc_hierarchy.py` chapter-repair "number_match" bonus can promote a subsection to a fake chapter | Requires two independent extraction gaps to compound; not reproduced against a real document. |
 | `metadata_rules.py`'s "published by" regex can fire on ordinary prose | Doesn't drop content, and the metadata page is always human-reviewed before approval. |
 | WordPress publish lock is a single process-local lock, not per-document | Correct for the current single-process deployment; would need to become per-document if ever scaled to multiple workers. |
 | Chat stream failures give the frontend no explicit error signal | The failure is now logged server-side; surfacing it to the client needs a streaming-protocol sentinel not yet implemented. |
-| RunPod remote-Docling client polls with no timeout or max-retry | Not currently active — deployment defaults to local Docling — left as a known latent issue on an inactive path. |
+| RunPod remote-Docling client polls with no timeout or max-retry | **Closed in code** (confirmed 2026-11-22, already implemented before the rate-limit note below). `runpod_client.poll` stops at `KONVERTER_RUNPOD_JOB_TIMEOUT_SECONDS` (default 1800), cancels the job, and raises `RunPodJobTimeoutError` (`test_poll_times_out_and_cancels_stuck_job`). Five consecutive transient status errors are retried; the next one cancels the job (`test_poll_gives_up_after_too_many_consecutive_transient_errors`). Deployment still defaults to local Docling. |
 
 ---
 
@@ -439,11 +439,11 @@ Everything still outstanding across this whole report, in one place, ordered by 
 - **Move off a single shared org-level key** to per-person/per-environment scoped keys (OpenAI Projects) — the credit-drain incident was only unsolvable because no usage was attributable to anyone; a shared secret has this problem by construction.
 
 ### Worth doing, not urgent
-- **Add automated tests for two frontend fixes** that are currently verified by code inspection only, not a regression test: `saveEdit`'s double-submit guard (`ReviewPage.tsx`) and `removeDocument`'s failed-delete handling (`KonverterContext.tsx`).
-- **Rate limiting + request logging on the public chat/TTS endpoints** (`/api/public/documents/{id}/chat`) — offered during the credit-drain investigation as defense-in-depth. Turned out to be unrelated to that specific incident, but it's still a real gap: currently unauthenticated by design, with no rate limit and no record of successful (only failed) calls.
+- **Automated tests for two frontend fixes** — done (2026-11-22). `src/pages/ReviewPage.test.tsx` (`ignores a repeated click on Save changes while the edit is still saving`) covers `saveEdit`'s double-submit guard. `src/state/KonverterContext.test.tsx` (`shows an error and restores the document from the server when delete fails`) covers `removeDocument`'s failed delete: the error is shown and the list is re-synced from the server.
+- **Rate limiting + request logging on public chat and TTS** — the rate limits are in place; a record of successful calls is still not. Public chat (`POST /api/public/documents/{id}/chat`, still unauthenticated, approved documents only) is capped per IP and across all callers (`KONVERTER_PUBLIC_CHAT_PER_IP_PER_MINUTE` default 10, `KONVERTER_PUBLIC_CHAT_GLOBAL_PER_HOUR` default 300; `test_public_chat_is_rate_limited_per_ip`, `test_public_chat_has_a_global_cap_across_visitors`). Authenticated `POST /api/tts` still requires login and returns 429 after `KONVERTER_TTS_PER_IP_PER_MINUTE` (default 20; `0` disables the cap) requests per IP per minute, counted only in this process (`test_tts_is_rate_limited_per_ip`). There is no public TTS route. Failures are still the only calls logged (`public chat request failed`, `tts request failed`).
 
 ### Known limitations (see table above) — no action planned this pass
-Everything in "Known limitations" above is understood, scoped, and deliberately not being worked on right now — listed there for visibility, not as a to-do list. The two most recently found (`Review of the Bail Act`'s 47→42 reorder jumble, `Contempt of Court`'s per-chapter numbering scope) fall in this category too: real, low-volume, safely contained by an existing fallback.
+Everything in "Known limitations" above is understood, scoped, and deliberately not being worked on right now — listed there for visibility, not as a to-do list. The RunPod poll row is the exception: the 2026-11-22 note marks that timeout closed in code. The two most recently found (`Review of the Bail Act`'s 47→42 reorder jumble, `Contempt of Court`'s per-chapter numbering scope) fall in this category too: real, low-volume, safely contained by an existing fallback.
 
 ---
 
@@ -467,7 +467,7 @@ Everything in "Known limitations" above is understood, scoped, and deliberately 
 | Medicinal Cannabis | fresh · pending |
 | Jury Empanelment | fresh · pending |
 
-10 of 15 documents were uploaded after every fix in this report shipped (all in one upload batch on 2026-09-09, 09:49:44–57 UTC), giving a genuine out-of-sample check rather than re-testing against the documents each fix was written from. Backend: **275/275** tests passing. Frontend: **101/101** tests passing across 13 files.
+10 of 15 documents were uploaded after every fix in this report shipped (all in one upload batch on 2026-09-09, 09:49:44–57 UTC), giving a genuine out-of-sample check rather than re-testing against the documents each fix was written from. Backend: **275/275** tests passing. Frontend: **101/101** tests passing across 13 files. Those counts are the suite size recorded for this report. They were not re-run on 2026-11-22, so they are not a new total. Later tests were added after that snapshot, including the frontend guards and the chat/TTS rate-limit tests named under "Worth doing."
 
 ---
 

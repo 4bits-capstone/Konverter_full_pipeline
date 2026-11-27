@@ -44,9 +44,10 @@ RUN python -m pip install --no-cache-dir -r requirements.txt
 COPY backend/app/docling_runner.py /app/docling_runner.py
 COPY docling_worker/handler.py /app/handler.py
 
-# Pre-download Docling models so there's no cold-start HF fetch.
-RUN python -m docling.cli.models download layout tableformer \
-    || echo "WARN: model pre-download failed; will fetch at runtime"
+# Pre-download Docling layout, TableFormer, and RapidOCR models so there is
+# no cold-start HF fetch, and point Docling at that folder for offline/non-root use.
+RUN python -m docling.cli.models download layout tableformer rapidocr
+ENV DOCLING_ARTIFACTS_PATH=/home/worker/.cache/docling/models
 
 # Hand the pre-downloaded models (and room for any runtime fetch) to the
 # worker, then drop root for good. The handler only writes to a temp dir.

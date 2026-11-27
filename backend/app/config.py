@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import math
 import os
 import re
 import sys
@@ -43,15 +44,38 @@ def _as_docling_device(name: str, default: str) -> str:
     value = os.getenv(name, default).strip().lower()
     if value in {"auto", "cpu", "cuda", "mps", "xpu"}:
         return value
-    if re.fullmatch(r"(?:cuda|xpu):\d+", value):
+    if re.fullmatch(r"cuda:\d+", value):
         return value
-    raise ValueError(f"{name} must be auto, cpu, cuda, mps, xpu, cuda:N or xpu:N")
+    raise ValueError(f"{name} must be auto, cpu, cuda, mps, xpu, or cuda:N")
 
 
 def _as_docling_mode(name: str, default: str) -> str:
     value = os.getenv(name, default).strip().lower()
     if value not in {"local", "remote"}:
         raise ValueError(f"{name} must be 'local' or 'remote'")
+    return value
+
+
+def _as_optional_timeout(name: str, default: float | None) -> float | None:
+    raw = os.getenv(name)
+    if raw is None:
+        return default
+    normalized = raw.strip().lower()
+    if normalized in {"", "none", "null", "off"}:
+        return None
+    try:
+        value = float(normalized)
+    except ValueError as exc:
+        raise ValueError(f"{name} must be a positive number or 'none'") from exc
+    if not math.isfinite(value) or value <= 0:
+        raise ValueError(f"{name} must be a positive number or 'none'")
+    return value
+
+
+def _as_docling_table_mode(name: str, default: str) -> str:
+    value = os.getenv(name, default).strip().lower()
+    if value not in {"accurate", "fast"}:
+        raise ValueError(f"{name} must be 'accurate' or 'fast'")
     return value
 
 
@@ -121,7 +145,12 @@ class Settings:
     runpod_job_timeout_seconds: float = 1800.0
     public_chat_per_ip_per_minute: int = 10
     public_chat_global_per_hour: int = 300
+    # Authenticated /api/tts still spends OpenAI credit, so cap it per caller IP.
+    tts_per_ip_per_minute: int = 20
     api_docs_enabled: bool = True
+    docling_timeout_seconds: float | None = 600.0
+    docling_table_mode: str = "accurate"
+    docling_remote_device: str = "cuda"
 
 
 def load_settings() -> Settings:
@@ -196,5 +225,17 @@ def load_settings() -> Settings:
         public_chat_global_per_hour=max(
             0, int(os.getenv("KONVERTER_PUBLIC_CHAT_GLOBAL_PER_HOUR", "300"))
         ),
+        tts_per_ip_per_minute=max(
+            0, int(os.getenv("KONVERTER_TTS_PER_IP_PER_MINUTE", "20"))
+        ),
         api_docs_enabled=_as_bool("KONVERTER_API_DOCS", True),
+        docling_timeout_seconds=_as_optional_timeout(
+            "KONVERTER_DOCLING_TIMEOUT_SECONDS", 600.0
+        ),
+        docling_table_mode=_as_docling_table_mode(
+            "KONVERTER_DOCLING_TABLE_MODE", "accurate"
+        ),
+        docling_remote_device=_as_docling_device(
+            "KONVERTER_DOCLING_REMOTE_DEVICE", "cuda"
+        ),
     )

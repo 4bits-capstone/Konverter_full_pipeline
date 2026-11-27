@@ -22,7 +22,8 @@ from .config import load_settings  # noqa: I001 (must import first: loads .env
 # before audit/auth capture SUPABASE_* into module-level constants at import
 # time, so a variable already exported blank in the shell doesn't shadow it)
 
-from . import audit, wordpress_registry
+from . import audit, storage_bucket, wordpress_registry
+from .text_styles import STYLED_LABELS
 from .auth import get_current_user, get_current_user_optional, require_admin
 from .chat import (
     OpenAINotConfiguredError,
@@ -31,7 +32,7 @@ from .chat import (
     stream_chat_completion,
     synthesize_speech,
 )
-from .logging_utils import configure_logging, document_logger
+from .logging_utils import configure_logging, document_logger, sanitize_for_log
 from .media import pdf_page_count, render_pdf_region
 from .models import (
     ApprovalResult,
@@ -80,6 +81,8 @@ wordpress_publish_lock = asyncio.Lock()
 # so cap it per visitor IP and across all visitors combined.
 public_chat_ip_limiter = SlidingWindowLimiter(settings.public_chat_per_ip_per_minute, 60)
 public_chat_global_limiter = SlidingWindowLimiter(settings.public_chat_global_per_hour, 3600)
+# Speech synthesis is a separate OpenAI spend path from widget chat.
+tts_ip_limiter = SlidingWindowLimiter(settings.tts_per_ip_per_minute, 60)
 
 WORDPRESS_PUBLICATION_ARTIFACT = "wordpress-publication.json"
 
@@ -231,10 +234,10 @@ def _shown_text(item: dict[str, Any]) -> str | None:
 
 
 def _audit_styles(document_id: str, item: dict[str, Any]) -> str | None:
-    """The italic/bold a footnote item currently shows, for audit logging."""
-    if item.get("type") != "footnote":
+    """The italic/bold a styleable item currently shows, for audit logging."""
+    if item.get("type") not in STYLED_LABELS:
         return None
-    styled = workflow.with_footnote_styles(document_id, [item])[0]
+    styled = workflow.with_text_styles(document_id, [item])[0]
     shown = _shown_text(styled) or ""
     return _describe_styles(str(shown).strip(), styled.get("styles") or [])
 
@@ -505,6 +508,16 @@ async def delete_document(document_id: str, user: CurrentUser) -> Response:
             status_code=409, detail="Stop processing before removing this document"
         )
     store.delete_document(document_id)
+    if storage_bucket.is_configured(settings):
+        try:
+            await asyncio.to_thread(
+                storage_bucket.delete_document_objects, settings, document_id
+            )
+        except Exception as exc:
+            document_logger(__name__, document_id).warning(
+                "remote storage cleanup failed after local deletion: %s",
+                sanitize_for_log(exc),
+            )
     await audit.record_audit(
         "delete_document",
         document_id=document_id,
@@ -579,7 +592,7 @@ def get_review_items(document_id: str, user: CurrentUser) -> list[ReviewItem]:
     try:
         return [
             ReviewItem(**item)
-            for item in workflow.with_footnote_styles(
+            for item in workflow.with_text_styles(
                 document_id, workflow.get_review_items(document_id)
             )
         ]
@@ -638,7 +651,7 @@ async def update_review_item(
             "after": after,
         },
     )
-    return ReviewItem(**workflow.with_footnote_styles(document_id, [item])[0])
+    return ReviewItem(**workflow.with_text_styles(document_id, [item])[0])
 
 
 @app.post(
@@ -680,7 +693,7 @@ async def upload_review_item_image(
             "item": _review_item_label(item),
         },
     )
-    return ReviewItem(**workflow.with_footnote_styles(document_id, [item])[0])
+    return ReviewItem(**workflow.with_text_styles(document_id, [item])[0])
 
 
 @app.post(
@@ -712,7 +725,7 @@ async def update_review_items_bulk(
     )
     return [
         ReviewItem(**item)
-        for item in workflow.with_footnote_styles(document_id, items)
+        for item in workflow.with_text_styles(document_id, items)
     ]
 
 
@@ -741,7 +754,7 @@ async def resolve_all(document_id: str, user: CurrentUser) -> list[ReviewItem]:
     )
     return [
         ReviewItem(**item)
-        for item in workflow.with_footnote_styles(document_id, items)
+        for item in workflow.with_text_styles(document_id, items)
     ]
 
 
@@ -1270,11 +1283,20 @@ async def public_chat_with_document(
 
 
 @app.post("/api/tts")
-async def text_to_speech(payload: TtsRequest, user: CurrentUser) -> StreamingResponse:
+async def text_to_speech(
+    payload: TtsRequest, request: Request, user: CurrentUser
+) -> StreamingResponse:
     """Converts assistant replies to speech (OpenAI tts-1, nova voice) for
     the document chat's voice-out and hands-free conversation mode."""
     if not settings.openai_api_key:
         raise HTTPException(status_code=503, detail="Text-to-speech is not configured")
+    retry_after = tts_ip_limiter.hit(client_ip(request))
+    if retry_after is not None:
+        raise HTTPException(
+            status_code=429,
+            detail="Too many speech requests right now. Please wait a moment and try again.",
+            headers={"Retry-After": str(int(retry_after) + 1)},
+        )
 
     async def stream() -> Any:
         try:

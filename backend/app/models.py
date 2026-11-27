@@ -65,6 +65,7 @@ ReviewKind = Literal["kv", "text", "table", "image"]
 ReviewType = Literal[
     "box_section",
     "caption",
+    "checkbox",
     "document_index",
     "footnote",
     "footer",
