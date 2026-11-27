@@ -1,8 +1,9 @@
 from __future__ import annotations
 
-import math
-import hashlib
 import copy
+import hashlib
+import inspect
+import math
 import re
 import threading
 import time
@@ -623,11 +624,27 @@ class ProcessingManager:
         started = time.monotonic()
         log.info("processing started")
         try:
-            output = self.pipeline.process(
-                self.store.source_path(document_id),
-                lambda step, message: self._set_stage(document_id, step, message),
-                document_id,
+            def cancel_check() -> bool:
+                return self._is_cancelled(document_id)
+
+            process_params = inspect.signature(self.pipeline.process).parameters
+            accepts_cancel_check = "cancel_check" in process_params or any(
+                param.kind is inspect.Parameter.VAR_KEYWORD
+                for param in process_params.values()
             )
+            if accepts_cancel_check:
+                output = self.pipeline.process(
+                    self.store.source_path(document_id),
+                    lambda step, message: self._set_stage(document_id, step, message),
+                    document_id,
+                    cancel_check=cancel_check,
+                )
+            else:
+                output = self.pipeline.process(
+                    self.store.source_path(document_id),
+                    lambda step, message: self._set_stage(document_id, step, message),
+                    document_id,
+                )
             if self._is_cancelled(document_id):
                 log.info("processing stopped by user")
                 return
@@ -704,6 +721,9 @@ class ProcessingManager:
             title=metadata.get("title") or record["title"],
             publisher=metadata.get("publisher") or record["publisher"],
             job=job,
+            docling_version=getattr(output, "docling_version", "unknown"),
+            conversion_status=getattr(output, "conversion_status", "success"),
+            parse_elapsed_seconds=getattr(output, "parse_elapsed_seconds", None),
         )
 
 
@@ -1112,6 +1132,11 @@ class WorkflowService:
             block.pop("list_entries", None)
             item["corrected_text"] = text
             item["corrected_table"] = None
+
+        if target_type == "checkbox":
+            block["checked"] = bool(block.get("checked", False))
+        else:
+            block.pop("checked", None)
 
         if changes.get("status") is not None:
             item["status"] = changes["status"]

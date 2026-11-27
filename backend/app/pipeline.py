@@ -1,11 +1,14 @@
 from __future__ import annotations
 
+import copy
 import html
+import math
 import re
 import time
+import uuid
 from collections import Counter
 from collections.abc import Callable
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
@@ -13,6 +16,8 @@ import pypdfium2 as pdfium
 
 from . import docling_runner, runpod_client, storage_bucket
 from .config import Settings
+from .logging_utils import document_logger, sanitize_for_log
+from .media import pdfium_lock
 from .metadata_rules import empty_metadata_payload, extract_metadata_from_docling
 from .text_styles import STYLED_LABELS, extract_style_ranges
 from .toc_hierarchy import _ALWAYS_TOP_LEVEL, TocHierarchyResolver
@@ -31,6 +36,7 @@ StageCallback = Callable[[int, str], None]
 LABEL_DISPLAY = {
     "box_section": "Box Section",
     "caption": "Caption",
+    "checkbox": "Checkbox",
     "document_index": "Document index",
     "footnote": "Footnote",
     "footer": "Footer",
@@ -63,6 +69,41 @@ def _first_page(item: dict[str, Any]) -> int:
 _BARE_PAGE_NUMBER_RE = re.compile(
     r"^(?:\d{1,5}|[ivxlcdm]{1,6})(?:\s+(?:\d{1,5}|[ivxlcdm]{1,6}))*$", re.IGNORECASE
 )
+_FOOTNOTE_MARGIN_LEFT_MIN_POINTS = 65.0
+_FOOTNOTE_MARGIN_LEFT_MAX_POINTS = 110.0
+_FOOTNOTE_MARGIN_RIGHT_MAX_POINTS = 130.0
+
+
+def _consecutive_footnote_numbers(value: str) -> list[int] | None:
+    parts = value.strip().split()
+    if len(parts) < 2 or not all(re.match(r"^\d{1,3}$", part) for part in parts):
+        return None
+    numbers = [int(part) for part in parts]
+    if numbers == list(range(numbers[0], numbers[0] + len(numbers))):
+        return numbers
+    return None
+
+
+def _is_footnote_margin_marker_mislabelled_as_footer(
+    item: dict[str, Any], normalised: str
+) -> bool:
+    if _raw_label(item) != "page_footer":
+        return False
+    if _consecutive_footnote_numbers(normalised) is not None:
+        return True
+    if not re.match(r"^\d{1,3}$", normalised):
+        return False
+    provenance = item.get("prov") or []
+    if not provenance:
+        return False
+    bbox = provenance[0].get("bbox") or {}
+    left, right = bbox.get("l"), bbox.get("r")
+    if not isinstance(left, (int, float)) or not isinstance(right, (int, float)):
+        return False
+    return (
+        _FOOTNOTE_MARGIN_LEFT_MIN_POINTS <= float(left) <= _FOOTNOTE_MARGIN_LEFT_MAX_POINTS
+        and float(right) <= _FOOTNOTE_MARGIN_RIGHT_MAX_POINTS
+    )
 # A running "which appendix am I in" margin indicator (e.g. a bare "B" next
 # to "Appendix B: Consultations") — the same running-marginalia role as a
 # bare page number, just a single letter instead of a digit. Deliberately
@@ -196,6 +237,9 @@ def _relabel_misclassified_page_furniture(document: dict[str, Any]) -> None:
     for item in candidates:
         text = str(item.get("text", ""))
         normalised = _normalise_furniture_text(text)
+        if _is_footnote_margin_marker_mislabelled_as_footer(item, normalised):
+            item["label"] = "text"
+            continue
         if _BARE_PAGE_NUMBER_RE.match(normalised) or _BARE_MARGIN_LETTER_RE.match(
             normalised
         ):
@@ -488,6 +532,9 @@ def _recover_page_number_pictures(
 
 
 _CHAPTER_DIVIDER_TEXT_RE = re.compile(r"^\s*chapter\s+\d+\s*$", re.IGNORECASE)
+_CHAPTER_DIVIDER_PART_RE = re.compile(
+    r"^\s*(?:chapter(?:\s+\d+)?|\d+)\s*$", re.IGNORECASE
+)
 _DECORATIVE_PICTURE_POSITION_TOLERANCE_POINTS = 20.0
 
 
@@ -523,13 +570,37 @@ def _exclude_repeating_chapter_divider_pictures(document: dict[str, Any]) -> Non
     if not pictures:
         return
     picture_refs = {str(picture.get("self_ref", "")) for picture in pictures}
-    confirming_labels: dict[str, list[dict[str, Any]]] = {}
+    children_by_picture: dict[str, list[dict[str, Any]]] = {}
     for item in document.get("texts", []):
-        if not _CHAPTER_DIVIDER_TEXT_RE.match(str(item.get("text", "")).strip()):
-            continue
         parent_ref = str((item.get("parent") or {}).get("$ref", ""))
         if parent_ref in picture_refs:
-            confirming_labels.setdefault(parent_ref, []).append(item)
+            children_by_picture.setdefault(parent_ref, []).append(item)
+
+    confirming_labels: dict[str, list[dict[str, Any]]] = {}
+    for parent_ref, child_items in children_by_picture.items():
+        single_matches = [
+            item
+            for item in child_items
+            if _CHAPTER_DIVIDER_TEXT_RE.match(str(item.get("text", "")).strip())
+        ]
+        if single_matches:
+            confirming_labels[parent_ref] = single_matches
+            continue
+        # Docling sometimes splits the divider's printed "CHAPTER 01" into
+        # two separate child items ("CHAPTER" and "01") under the same
+        # picture (found across all 5 chapter dividers in VLRC_Stalking_Interim
+        # and 14 of 19 in VLRC_Inclusive-Juries).
+        part_items = [
+            item
+            for item in child_items
+            if _CHAPTER_DIVIDER_PART_RE.match(str(item.get("text", "")).strip())
+        ]
+        combined_text = " ".join(
+            str(item.get("text", "")).strip() for item in part_items
+        )
+        if part_items and _CHAPTER_DIVIDER_TEXT_RE.match(combined_text):
+            confirming_labels[parent_ref] = part_items
+
     confirmed_refs = set(confirming_labels)
     if not confirmed_refs:
         return
@@ -568,12 +639,18 @@ def _exclude_repeating_chapter_divider_pictures(document: dict[str, Any]) -> Non
         for picture, *_ in cluster:
             picture.setdefault("meta", {})["konverter_exclude_from_output"] = True
             picture_ref = str(picture.get("self_ref", ""))
-            # A "CHAPTER N" label nested under an excluded divider graphic
-            # is now an orphan -- the chapter's real title is already
-            # extracted separately as its own heading elsewhere, so this
-            # copy has no purpose left but to float as a stray, meaningless
-            # one-word paragraph once its own picture stops anchoring it.
-            for label_item in confirming_labels.get(picture_ref, []):
+            # A "CHAPTER N" label (or split "CHAPTER" / "N" fragments) nested
+            # under an excluded divider graphic is now an orphan -- the
+            # chapter's real title is already extracted separately as its own
+            # heading elsewhere, so this copy has no purpose left but to float
+            # as a stray, meaningless one-word paragraph once its own picture
+            # stops anchoring it.
+            label_items = confirming_labels.get(picture_ref) or [
+                item
+                for item in children_by_picture.get(picture_ref, [])
+                if _CHAPTER_DIVIDER_PART_RE.match(str(item.get("text", "")).strip())
+            ]
+            for label_item in label_items:
                 label_item.setdefault("meta", {})["konverter_exclude_from_output"] = True
 
 
@@ -1010,6 +1087,104 @@ def _split_merged_footnotes(blocks: list[dict[str, Any]]) -> list[dict[str, Any]
     return output
 
 
+def _expand_multi_number_footnote_markers(
+    blocks: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    """When several short footnotes stack at the bottom of a page, Docling
+    sometimes groups their left-margin numbers into one vertical box (e.g.
+    "37 38 39 40 41 42" at L~79.5) while extracting the citation bodies to
+    the right (L~119.4) as separate blocks. Splitting a strictly consecutive
+    run of 2+ footnote numbers into individual marker blocks with vertical
+    positions aligned to the page's unnumbered body lines (or interpolated
+    across the box's vertical span) lets normal marker pairing and PDF
+    recovery handle each number individually."""
+    output: list[dict[str, Any]] = []
+    for block in blocks:
+        if block.get("label") not in {"text", "footnote", "footer"}:
+            output.append(block)
+            continue
+        text = str(block.get("text", "")).strip()
+        numbers = _consecutive_footnote_numbers(text)
+        if numbers is None:
+            output.append(block)
+            continue
+        bounds = block.get("source_bounds")
+        left = bounds.get("left") if isinstance(bounds, dict) else None
+        if isinstance(left, (int, float)) and float(left) < _PAGE_EDGE_MARGIN_POINTS:
+            output.append(block)
+            continue
+        top = bounds.get("top") if isinstance(bounds, dict) else None
+        bottom = bounds.get("bottom") if isinstance(bounds, dict) else None
+        page = block.get("page")
+        candidate_tops: list[float] = []
+        if (
+            isinstance(top, (int, float))
+            and isinstance(bottom, (int, float))
+            and isinstance(left, (int, float))
+        ):
+            matching_bodies = sorted(
+                float(b_top)
+                for other in blocks
+                if other is not block
+                and other.get("page") == page
+                and other.get("label") in {"text", "footnote"}
+                and str(other.get("text", "")).strip()
+                and not _BARE_FOOTNOTE_MARKER_RE.match(str(other.get("text", "")).strip())
+                and not (
+                    other.get("label") == "footnote"
+                    and _LEADING_FOOTNOTE_NUMBER_RE.match(str(other.get("text", "")).strip())
+                )
+                and isinstance(_block_left(other), float)
+                and (_block_left(other) or 0.0) - float(left)
+                >= _FOOTNOTE_CONTINUATION_INDENT_POINTS
+                and isinstance((b_top := _block_top(other)), float)
+                and float(top) - 4.0 <= b_top <= float(bottom) + 4.0
+            )
+            if len(matching_bodies) == len(numbers):
+                candidate_tops = matching_bodies
+            else:
+                span = max(0.0, float(bottom) - float(top) - 4.6)
+                step = span / max(1, len(numbers) - 1) if span > 0 else 8.0
+                candidate_tops = [
+                    float(top) + idx * step for idx in range(len(numbers))
+                ]
+        base_id = str(block.get("id", ""))
+        for idx, number in enumerate(numbers):
+            marker_block = dict(block)
+            marker_block["label"] = "text"
+            marker_block["text"] = str(number)
+            if idx > 0:
+                marker_block["id"] = f"{base_id}/marker-{idx}"
+            if isinstance(bounds, dict) and idx < len(candidate_tops):
+                row_top = candidate_tops[idx]
+                marker_block["source_bounds"] = {
+                    **bounds,
+                    "top": row_top,
+                    "bottom": min(float(bounds.get("bottom", row_top + 4.6)), row_top + 4.6),
+                }
+            output.append(marker_block)
+    return output
+
+
+def _merge_marker_bounds_into_content(
+    marker_block: dict[str, Any], content_block: dict[str, Any]
+) -> None:
+    m_bounds = marker_block.get("source_bounds")
+    c_bounds = content_block.get("source_bounds")
+    if not (isinstance(m_bounds, dict) and isinstance(c_bounds, dict)):
+        return
+    merged = dict(c_bounds)
+    if isinstance(m_bounds.get("left"), (int, float)) and isinstance(
+        c_bounds.get("left"), (int, float)
+    ):
+        merged["left"] = min(float(m_bounds["left"]), float(c_bounds["left"]))
+    if isinstance(m_bounds.get("top"), (int, float)) and isinstance(
+        c_bounds.get("top"), (int, float)
+    ):
+        merged["top"] = min(float(m_bounds["top"]), float(c_bounds["top"]))
+    content_block["source_bounds"] = merged
+
+
 def _repair_split_footnote_markers(
     blocks: list[dict[str, Any]],
 ) -> list[dict[str, Any]]:
@@ -1058,8 +1233,71 @@ def _repair_split_footnote_markers(
     bare-number block rather than guessed at; a reviewer checking the
     original PDF can split the merged text by hand if exact per-number
     fidelity matters for that citation."""
-    working = list(blocks)
+    working = _expand_multi_number_footnote_markers(list(blocks))
     remove_indices: set[int] = set()
+
+    # Pass 1: Same-row geometric pairing on each page. In two-column footnote
+    # layouts (number at L~79.7, citation body tab-indented at L~119.4 on the
+    # exact same vertical line within 3pt), pairing by row geometry resolves
+    # markers even when Docling emitted the marker after its body, labelled
+    # the bare marker "footnote", or missed an earlier footnote in sequence.
+    markers_by_page: dict[Any, list[int]] = {}
+    bodies_by_page: dict[Any, list[int]] = {}
+    for idx, block in enumerate(working):
+        label = block.get("label")
+        if label not in {"text", "footnote"}:
+            continue
+        text = str(block.get("text", "")).strip()
+        if not text:
+            continue
+        left = _block_left(block)
+        top = _block_top(block)
+        if left is None or top is None:
+            continue
+        page = block.get("page")
+        if _BARE_FOOTNOTE_MARKER_RE.match(text):
+            markers_by_page.setdefault(page, []).append(idx)
+        elif not (label == "footnote" and _LEADING_FOOTNOTE_NUMBER_RE.match(text)):
+            bodies_by_page.setdefault(page, []).append(idx)
+
+    used_bodies: set[int] = set()
+    for page, m_indices in markers_by_page.items():
+        b_indices = bodies_by_page.get(page, [])
+        if not b_indices:
+            continue
+        for m_idx in sorted(m_indices, key=lambda i: _block_top(working[i]) or 0.0):
+            m_left = _block_left(working[m_idx])
+            m_top = _block_top(working[m_idx])
+            if m_left is None or m_top is None:
+                continue
+            best_b_idx: int | None = None
+            best_dist = _FOOTNOTE_MARKER_PROXIMITY_POINTS + 1.0
+            for b_idx in b_indices:
+                if b_idx in used_bodies:
+                    continue
+                b_left = _block_left(working[b_idx])
+                b_top = _block_top(working[b_idx])
+                if b_left is None or b_top is None:
+                    continue
+                if b_left - m_left < _FOOTNOTE_CONTINUATION_INDENT_POINTS:
+                    continue
+                dist = abs(b_top - m_top)
+                if dist <= _FOOTNOTE_MARKER_PROXIMITY_POINTS and dist < best_dist:
+                    best_dist = dist
+                    best_b_idx = b_idx
+            if best_b_idx is not None:
+                used_bodies.add(best_b_idx)
+                number = int(str(working[m_idx].get("text", "")).strip())
+                content_block = working[best_b_idx]
+                content_block["label"] = "footnote"
+                content_block["text"] = (
+                    f"{number} {str(content_block.get('text', '')).strip()}"
+                )
+                _merge_marker_bounds_into_content(working[m_idx], content_block)
+                remove_indices.add(m_idx)
+
+    working = [block for i, block in enumerate(working) if i not in remove_indices]
+    remove_indices = set()
     last_footnote_num: int | None = None
     index = 0
     total = len(working)
@@ -1068,7 +1306,7 @@ def _repair_split_footnote_markers(
         label = block.get("label")
         text = str(block.get("text", "")).strip()
 
-        if label == "footnote":
+        if label == "footnote" and not _BARE_FOOTNOTE_MARKER_RE.match(text):
             match = _LEADING_FOOTNOTE_NUMBER_RE.match(text)
             if match:
                 last_footnote_num = int(match.group(1))
@@ -1076,7 +1314,7 @@ def _repair_split_footnote_markers(
             continue
 
         if (
-            label != "text"
+            label not in {"text", "footnote"}
             or last_footnote_num is None
             or not _BARE_FOOTNOTE_MARKER_RE.match(text)
             or int(text) != last_footnote_num + 1
@@ -1157,6 +1395,7 @@ def _repair_split_footnote_markers(
             content_block["text"] = (
                 f"{number} {str(content_block.get('text', '')).strip()}"
             )
+            _merge_marker_bounds_into_content(working[marker_index], content_block)
             remove_indices.add(marker_index)
         # The run's numbers are real, printed footnote numbers regardless of
         # how many of them found their own content -- an unpaired marker
@@ -1248,7 +1487,7 @@ def _block_left(block: dict[str, Any]) -> float | None:
 
 _ISOLATED_FOOTNOTE_MARKER_RE = re.compile(r"^\d{1,3}$")
 _RECOVERED_FOOTNOTE_SHORT_TOKEN_RATIO = 0.3
-_RECOVERED_FOOTNOTE_MIN_LENGTH = 15
+_RECOVERED_FOOTNOTE_MIN_LENGTH = 4
 _ORPHAN_MARKER_MAX_LOOKAHEAD_POINTS = 80.0
 
 
@@ -1305,7 +1544,20 @@ def _recover_orphaned_footnote_markers(
     except Exception:
         return blocks
 
-    index_by_id = {str(block.get("id")): index for index, block in enumerate(blocks)}
+    def _next_content_lower_bound(page_no: int, top: float) -> float:
+        bound = top + _ORPHAN_MARKER_MAX_LOOKAHEAD_POINTS
+        for other in blocks:
+            if other.get("page") != page_no or other.get("label") in ("header", "footer"):
+                continue
+            other_bounds = other.get("source_bounds")
+            other_top = other_bounds.get("top") if isinstance(other_bounds, dict) else None
+            if (
+                isinstance(other_top, (int, float))
+                and float(other_top) > top + _FOOTNOTE_MARKER_PROXIMITY_POINTS
+            ):
+                bound = min(bound, float(other_top) - 1.0)
+        return bound
+
     try:
         with pymupdf.open(pdf_path) as pdf:
             for block in candidates:
@@ -1323,36 +1575,9 @@ def _recover_orphaned_footnote_markers(
                 ):
                     continue
 
-                lower_bound = top + _ORPHAN_MARKER_MAX_LOOKAHEAD_POINTS
-                own_index = index_by_id.get(str(block.get("id")))
-                if own_index is not None:
-                    # A page footer/header sitting right after this marker
-                    # in block order isn't necessarily below the footnote's
-                    # own wrapped continuation -- verified directly: a real
-                    # footnote's last line printed *after* the page-number
-                    # furniture that happened to be ordered just ahead of it
-                    # in this exact case, so stopping at the first following
-                    # block regardless of what it is truncated a real
-                    # citation mid-sentence. Skipping past consecutive
-                    # furniture to find the next real content block (or the
-                    # lookahead cap, if none) is what the boundary should
-                    # actually be keyed to.
-                    for candidate_index in range(own_index + 1, len(blocks)):
-                        next_block = blocks[candidate_index]
-                        if next_block.get("label") in ("header", "footer"):
-                            continue
-                        next_bounds = next_block.get("source_bounds")
-                        if (
-                            next_block.get("page") == page_no
-                            and isinstance(next_bounds, dict)
-                            and isinstance(next_bounds.get("top"), (int, float))
-                            and next_bounds["top"] > top
-                        ):
-                            lower_bound = min(lower_bound, next_bounds["top"] - 1)
-                        break
-
+                lower_bound = _next_content_lower_bound(page_no, float(top))
                 clip = pymupdf.Rect(
-                    max(0.0, left - 15.0), top - 2.0, page_width, lower_bound
+                    max(0.0, float(left) - 15.0), float(top) - 2.0, float(page_width), lower_bound
                 )
                 try:
                     recovered = pdf[page_no - 1].get_text("text", clip=clip)
@@ -1373,6 +1598,56 @@ def _recover_orphaned_footnote_markers(
 
                 block["text"] = f"{marker} {recovered_body}"
                 block["label"] = "footnote"
+                block["source_bounds"] = {
+                    **bounds,
+                    "right": max(float(bounds.get("right", 0)), float(page_width)),
+                    "bottom": max(float(bounds.get("bottom", 0)), lower_bound),
+                }
+
+                # When Docling fused this footnote's right-column body into an
+                # earlier footnote on the same page (leaving this marker bare),
+                # re-read that earlier footnote's own vertical band so it doesn't
+                # retain the duplicate merged tail.
+                probe = recovered_body.rstrip(".;, ")
+                for prev in blocks:
+                    if (
+                        prev is block
+                        or prev.get("page") != page_no
+                        or prev.get("label") != "footnote"
+                    ):
+                        continue
+                    prev_top = _block_top(prev)
+                    prev_left = _block_left(prev)
+                    if (
+                        prev_top is None
+                        or prev_left is None
+                        or prev_top >= float(top) - _FOOTNOTE_MARKER_PROXIMITY_POINTS
+                    ):
+                        continue
+                    prev_text = str(prev.get("text", "")).strip()
+                    prev_num_match = _LEADING_FOOTNOTE_NUMBER_RE.match(prev_text)
+                    if not prev_num_match or (probe and probe not in prev_text):
+                        continue
+                    prev_marker = prev_num_match.group(1)
+                    prev_lower = _next_content_lower_bound(page_no, prev_top)
+                    prev_clip = pymupdf.Rect(
+                        max(0.0, prev_left - 15.0),
+                        prev_top - 2.0,
+                        float(page_width),
+                        prev_lower,
+                    )
+                    try:
+                        prev_rec = pdf[page_no - 1].get_text("text", clip=prev_clip)
+                    except Exception:
+                        continue
+                    prev_m = re.match(
+                        rf"^\s*{prev_marker}\s+(.+)$", prev_rec, re.DOTALL
+                    )
+                    if not prev_m:
+                        continue
+                    prev_body = re.sub(r"\s+", " ", prev_m.group(1)).strip()
+                    if len(prev_body) >= _RECOVERED_FOOTNOTE_MIN_LENGTH:
+                        prev["text"] = f"{prev_marker} {prev_body}"
     except Exception:
         return blocks
     return blocks
@@ -1509,6 +1784,57 @@ def _looks_like_misclassified_recommendation(text: str) -> bool:
     )
 
 
+_VALID_NUMBERED_FOOTNOTE_RE = re.compile(r"^\s*(\d{1,3})\s+(\S.*)$", re.DOTALL)
+_FOOTNOTE_TEXT_MIN_LENGTH_RATIO = 0.85
+_FOOTNOTE_TEXT_SHORT_BLEED_TOLERANCE_CHARS = 12
+
+
+def _footnote_has_valid_numbered_body(text: str) -> int | None:
+    """Return the leading footnote number if `text` has a valid `<number> <body>`
+    citation shape (at least 3 body chars including a letter and no embedded
+    next-in-sequence footnote), else None."""
+    stripped = text.strip()
+    if _BARE_FOOTNOTE_MARKER_RE.match(stripped):
+        return None
+    match = _VALID_NUMBERED_FOOTNOTE_RE.match(stripped)
+    if not match:
+        return None
+    number = int(match.group(1))
+    body = match.group(2).strip()
+    if len(body) < 3 or not re.search(r"[A-Za-z]", body):
+        return None
+    for embedded in _EMBEDDED_FOOTNOTE_NUMBER_RE.finditer(stripped):
+        if int(embedded.group(1)) == number + 1:
+            return None
+    return number
+
+
+def _in_sequence_footnote_block_ids(blocks: list[dict[str, Any]]) -> set[str]:
+    """Return the block IDs of footnotes whose leading number is consistent with
+    their neighbouring footnotes (continues `prev + 1`, starts a chapter at `1`,
+    or is immediately followed by `num + 1`)."""
+    numbered: list[tuple[str, int]] = []
+    for block in blocks:
+        if block.get("label") != "footnote":
+            continue
+        number = _footnote_has_valid_numbered_body(str(block.get("text", "")))
+        if number is not None:
+            numbered.append((str(block.get("id", "")), number))
+    if len(numbered) <= 1:
+        return {block_id for block_id, _ in numbered}
+    valid_ids: set[str] = set()
+    for idx, (block_id, number) in enumerate(numbered):
+        prev_num = numbered[idx - 1][1] if idx > 0 else None
+        next_num = numbered[idx + 1][1] if idx + 1 < len(numbered) else None
+        continues_prev = number == 1 or (
+            prev_num is not None and number == prev_num + 1
+        )
+        precedes_next = next_num is not None and next_num == number + 1
+        if continues_prev or precedes_next:
+            valid_ids.add(block_id)
+    return valid_ids
+
+
 def _footnote_text_is_trustworthy(
     page_textpage: Any, bounds: dict[str, Any], docling_text: str
 ) -> bool:
@@ -1525,12 +1851,20 @@ def _footnote_text_is_trustworthy(
     URLs) is treated as untrustworthy too, same as real content loss —
     both mean the extracted text doesn't match the source, just at
     different severities, and either way a person should confirm it."""
+    if _footnote_has_valid_numbered_body(docling_text) is None:
+        return False
     page_height = float(bounds.get("page_height", 0))
     if page_height <= 0:
         return False
+    raw_left = float(bounds.get("left", 0))
+    crop_left = (
+        min(raw_left, _FOOTNOTE_MARGIN_LEFT_MIN_POINTS)
+        if raw_left >= _FOOTNOTE_MARGIN_LEFT_MIN_POINTS
+        else raw_left
+    )
     try:
         independent_text = page_textpage.get_text_bounded(
-            left=float(bounds.get("left", 0)),
+            left=crop_left,
             right=float(bounds.get("right", 0)),
             bottom=page_height - float(bounds.get("bottom", 0)),
             top=page_height - float(bounds.get("top", 0)),
@@ -1541,12 +1875,122 @@ def _footnote_text_is_trustworthy(
     ind_norm = _normalize_for_text_comparison(independent_text)
     if not doc_norm or not ind_norm:
         return False
-    # The independent crop commonly bleeds in stray characters from the
-    # line directly above (ascenders/descenders clipped at the bbox edge)
-    # without losing any of the footnote's own text — a true superset —
-    # so a substring match either way, not exact equality, is the right
-    # bar for "matches", verified against the real document above.
-    return doc_norm in ind_norm or ind_norm in doc_norm
+    number = _footnote_has_valid_numbered_body(docling_text)
+    if number is None:
+        return False
+    if doc_norm in ind_norm:
+        pos = ind_norm.find(doc_norm)
+        after = ind_norm[pos + len(doc_norm) :].strip()
+        # Text before `doc_norm` (which starts with `{number} `) is vertical
+        # ascender/descender bleed from the line above. Text *after* `doc_norm`
+        # inside the block's own bbox means the footnote was truncated before
+        # its end (unless this block was split from a multi-footnote bbox by
+        # _split_merged_footnotes, in which case `after` starts with `number + 1`).
+        if len(after) > 4 and not after.startswith(str(number + 1)):
+            return False
+        return True
+    if ind_norm in doc_norm:
+        # When _merge_indented_footnote_continuations appends a wrapped line,
+        # `doc_norm` extends past the first line's original `bounds`; require
+        # the PDF crop of the anchor box to match the start of `doc_norm`.
+        pos = doc_norm.find(ind_norm)
+        return pos == 0 and len(ind_norm) >= min(len(doc_norm), 10)
+    return False
+
+
+_MINI_TOC_LIST_LINE_RE = re.compile(r"^\d{1,3}\s+[A-Z]")
+_PROSE_SENTENCE_END_RE = re.compile(r"[.?!'”\"\])]\s*$")
+
+
+def _pdf_region_text_matches(
+    page_textpage: Any, bounds: dict[str, Any] | None, docling_text: str
+) -> bool:
+    """Independently re-read `bounds` from `page_textpage` and confirm the PDF
+    text layer matches `docling_text` within tight length tolerances."""
+    if page_textpage is None or not isinstance(bounds, dict):
+        return False
+    page_height = float(bounds.get("page_height", 0))
+    if page_height <= 0:
+        return False
+    try:
+        independent_text = page_textpage.get_text_bounded(
+            left=max(0.0, float(bounds.get("left", 0)) - 2.0),
+            right=float(bounds.get("right", 0)) + 2.0,
+            bottom=page_height - float(bounds.get("bottom", 0)) - 2.0,
+            top=page_height - float(bounds.get("top", 0)) + 2.0,
+        )
+    except Exception:
+        return False
+    doc_norm = _normalize_for_text_comparison(docling_text)
+    ind_norm = _normalize_for_text_comparison(independent_text)
+    if not doc_norm or not ind_norm or len(doc_norm) < 4:
+        return False
+    if not (doc_norm in ind_norm or ind_norm in doc_norm):
+        return False
+    shorter = min(len(doc_norm), len(ind_norm))
+    longer = max(len(doc_norm), len(ind_norm))
+    return (
+        longer - shorter <= _FOOTNOTE_TEXT_SHORT_BLEED_TOLERANCE_CHARS
+        or shorter >= _FOOTNOTE_TEXT_MIN_LENGTH_RATIO * longer
+    )
+
+
+def _non_footnote_block_is_verified(
+    *,
+    label: str,
+    confidence: float,
+    medium_threshold: float,
+    is_orphaned_caption: bool,
+    is_vlm_assisted: bool,
+    bounds: dict[str, Any] | None,
+    raw_text: str,
+    extracted_text: str,
+    page_textpage: Any,
+    page_obj: Any,
+    body_text_font_size: float | None,
+) -> bool:
+    """Verify non-footnote text/caption/quote/box/list blocks against the source
+    PDF so reviewers only spend time on genuinely uncertain or critical items.
+    Pictures, tables, document_index, headings, titles, orphaned captions,
+    VLM-assisted lists, and low-confidence (< medium_threshold) prose text are
+    never auto-skipped here."""
+    if page_textpage is None or not isinstance(bounds, dict):
+        return False
+    candidate_text = extracted_text.strip() or raw_text.strip()
+    if not candidate_text:
+        return False
+    if label == "caption":
+        if is_orphaned_caption:
+            return False
+        return _pdf_region_text_matches(page_textpage, bounds, candidate_text)
+    if label in {"quote", "box_section"}:
+        return _pdf_region_text_matches(
+            page_textpage, bounds, candidate_text
+        ) or _pdf_region_text_matches(page_textpage, bounds, raw_text)
+    if label == "list":
+        if is_vlm_assisted:
+            return False
+        lines = [line.strip() for line in candidate_text.splitlines() if line.strip()]
+        if not lines or any(_MINI_TOC_LIST_LINE_RE.match(line) for line in lines):
+            return False
+        return _pdf_region_text_matches(
+            page_textpage, bounds, candidate_text
+        ) or _pdf_region_text_matches(page_textpage, bounds, raw_text)
+    if label == "text":
+        if confidence < medium_threshold:
+            return False
+        if (
+            len(candidate_text) < 40
+            or not _PROSE_SENTENCE_END_RE.search(candidate_text)
+            or _LEADING_FOOTNOTE_NUMBER_RE.match(candidate_text)
+        ):
+            return False
+        if body_text_font_size is not None and page_obj is not None:
+            font_size = _effective_font_size(page_obj, bounds)
+            if font_size is None or abs(font_size - body_text_font_size) > 1.0:
+                return False
+        return _pdf_region_text_matches(page_textpage, bounds, candidate_text)
+    return False
 
 
 def _effective_font_size(page: Any, bounds: dict[str, Any]) -> float | None:
@@ -1723,6 +2167,126 @@ class PipelineOutput:
     doc_confidence: dict[str, Any]
     warnings: list[str]
     elapsed_seconds: float
+    docling_version: str = "unknown"
+    conversion_status: str = "success"
+    conversion_errors: list[dict[str, Any]] = field(default_factory=list)
+    parse_elapsed_seconds: float | None = None
+
+
+def _validate_remote_docling_result(
+    payload: Any,
+    *,
+    job_id: str | None = None,
+    worker_meta: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    job_ctx = f" for job {job_id}" if job_id else ""
+    if not isinstance(payload, dict):
+        raise RuntimeError(
+            f"Remote Docling worker contract mismatch{job_ctx}: expected JSON object, "
+            f"got {type(payload).__name__}."
+        )
+
+    raw_docling = payload.get("raw_docling")
+    if not isinstance(raw_docling, dict):
+        raise RuntimeError(
+            f"Remote Docling worker contract mismatch{job_ctx}: missing or invalid 'raw_docling' object."
+        )
+    pages = raw_docling.get("pages")
+    if not isinstance(pages, dict) or not pages:
+        raise RuntimeError(
+            f"Remote Docling worker contract mismatch{job_ctx}: 'raw_docling.pages' must be a non-empty object."
+        )
+
+    cluster_confidences = payload.get("cluster_confidences")
+    if not isinstance(cluster_confidences, list):
+        raise RuntimeError(
+            f"Remote Docling worker contract mismatch{job_ctx}: missing or invalid 'cluster_confidences' list."
+        )
+
+    doc_confidence = payload.get("doc_confidence")
+    if not isinstance(doc_confidence, dict):
+        raise RuntimeError(
+            f"Remote Docling worker contract mismatch{job_ctx}: missing or invalid 'doc_confidence' object."
+        )
+
+    if "docling_version" in payload:
+        raw_version = payload["docling_version"]
+        if not isinstance(raw_version, str) or not raw_version.strip():
+            raise RuntimeError(
+                f"Remote Docling worker contract mismatch{job_ctx}: 'docling_version' must be a non-empty string."
+            )
+        docling_version = raw_version.strip()
+    elif isinstance(worker_meta, dict) and isinstance(worker_meta.get("docling_version"), str) and worker_meta["docling_version"].strip():
+        docling_version = worker_meta["docling_version"].strip()
+    else:
+        docling_version = "unknown"
+
+    if "conversion_status" in payload:
+        raw_status = payload["conversion_status"]
+        if not isinstance(raw_status, str) or raw_status not in {"success", "partial_success"}:
+            raise RuntimeError(
+                f"Remote Docling worker contract mismatch{job_ctx}: invalid 'conversion_status' {raw_status!r}."
+            )
+        conversion_status = raw_status
+    elif isinstance(worker_meta, dict) and worker_meta.get("conversion_status") is not None:
+        raw_status = worker_meta["conversion_status"]
+        if not isinstance(raw_status, str) or raw_status not in {"success", "partial_success"}:
+            raise RuntimeError(
+                f"Remote Docling worker contract mismatch{job_ctx}: invalid worker 'conversion_status' {raw_status!r}."
+            )
+        conversion_status = raw_status
+    else:
+        conversion_status = "success"
+
+    if "conversion_errors" in payload:
+        raw_errors = payload["conversion_errors"]
+        if not isinstance(raw_errors, list) or not all(isinstance(err, dict) for err in raw_errors):
+            raise RuntimeError(
+                f"Remote Docling worker contract mismatch{job_ctx}: 'conversion_errors' must be a list of objects."
+            )
+        conversion_errors = raw_errors
+    else:
+        conversion_errors = []
+
+    if "parse_elapsed_seconds" in payload:
+        raw_elapsed = payload["parse_elapsed_seconds"]
+        if raw_elapsed is not None:
+            if (
+                isinstance(raw_elapsed, bool)
+                or not isinstance(raw_elapsed, (int, float))
+                or not math.isfinite(float(raw_elapsed))
+                or float(raw_elapsed) < 0
+            ):
+                raise RuntimeError(
+                    f"Remote Docling worker contract mismatch{job_ctx}: 'parse_elapsed_seconds' must be a non-negative finite number or null."
+                )
+            parse_elapsed_seconds: float | None = float(raw_elapsed)
+        else:
+            parse_elapsed_seconds = None
+    elif isinstance(worker_meta, dict) and worker_meta.get("parse_elapsed_seconds") is not None:
+        raw_elapsed = worker_meta["parse_elapsed_seconds"]
+        if (
+            isinstance(raw_elapsed, bool)
+            or not isinstance(raw_elapsed, (int, float))
+            or not math.isfinite(float(raw_elapsed))
+            or float(raw_elapsed) < 0
+        ):
+            raise RuntimeError(
+                f"Remote Docling worker contract mismatch{job_ctx}: worker 'parse_elapsed_seconds' must be a non-negative finite number."
+            )
+        parse_elapsed_seconds = float(raw_elapsed)
+    else:
+        parse_elapsed_seconds = None
+
+    return {
+        "raw_docling": raw_docling,
+        "cluster_confidences": cluster_confidences,
+        "doc_confidence": doc_confidence,
+        "docling_version": docling_version,
+        "conversion_status": conversion_status,
+        "conversion_errors": conversion_errors,
+        "parse_elapsed_seconds": parse_elapsed_seconds,
+    }
 
 
 class KonverterPipeline:
@@ -1730,19 +2294,30 @@ class KonverterPipeline:
         self.settings = settings
 
     def process(
-        self, pdf_path: Path, stage: StageCallback, document_id: str
+        self,
+        pdf_path: Path,
+        stage: StageCallback,
+        document_id: str,
+        cancel_check: Callable[[], bool] | None = None,
     ) -> PipelineOutput:
         started = time.monotonic()
         stage(1, "Preparing document")
-        raw_document, blocks, doc_confidence, warnings = self._run_docling(
-            pdf_path, stage, document_id
+        raw_docling_snapshot, working_document, blocks, doc_confidence, warnings = (
+            self._run_docling(
+                pdf_path,
+                stage,
+                document_id,
+                cancel_check=cancel_check,
+            )
         )
 
         _attach_text_styles(blocks, pdf_path)
 
         stage(4, "Extracting metadata")
         try:
-            metadata_payload = extract_metadata_from_docling(raw_document, pdf_path)
+            metadata_payload = extract_metadata_from_docling(
+                working_document, pdf_path
+            )
         except Exception as exc:
             warnings.append(f"Rule-based metadata extraction failed: {exc}")
             metadata_payload = empty_metadata_payload("extraction_failed")
@@ -1754,10 +2329,14 @@ class KonverterPipeline:
             blocks=blocks,
             review_items=review_items,
             metadata_payload=metadata_payload,
-            raw_docling=raw_document,
+            raw_docling=raw_docling_snapshot,
             doc_confidence=doc_confidence,
             warnings=warnings,
             elapsed_seconds=time.monotonic() - started,
+            docling_version=str(doc_confidence.get("docling_version") or "unknown"),
+            conversion_status=str(doc_confidence.get("conversion_status") or "success"),
+            conversion_errors=list(doc_confidence.get("conversion_errors") or []),
+            parse_elapsed_seconds=doc_confidence.get("parse_elapsed_seconds"),
         )
 
     def _run_docling(
@@ -1765,10 +2344,22 @@ class KonverterPipeline:
         pdf_path: Path,
         stage: StageCallback,
         document_id: str,
-    ) -> tuple[dict[str, Any], list[dict[str, Any]], dict[str, Any], list[str]]:
+        cancel_check: Callable[[], bool] | None = None,
+    ) -> tuple[
+        dict[str, Any],
+        dict[str, Any],
+        list[dict[str, Any]],
+        dict[str, Any],
+        list[str],
+    ]:
         stage(2, "Extracting content")
         if self.settings.docling_mode == "remote":
-            docling_result = self._run_docling_remote(pdf_path, stage, document_id)
+            docling_result = self._run_docling_remote(
+                pdf_path,
+                stage,
+                document_id,
+                cancel_check=cancel_check,
+            )
         else:
             docling_result = docling_runner.run_docling(
                 pdf_path,
@@ -1776,22 +2367,99 @@ class KonverterPipeline:
                     "do_ocr": self.settings.do_ocr,
                     "do_table_structure": self.settings.do_table_structure,
                     "device": self.settings.docling_device,
+                    "table_mode": self.settings.docling_table_mode,
+                    "document_timeout": self.settings.docling_timeout_seconds,
                 },
+                cancel_check=cancel_check,
             )
-        raw_document = docling_result["raw_docling"]
+        raw_docling_snapshot = copy.deepcopy(docling_result["raw_docling"])
+        working_document = copy.deepcopy(raw_docling_snapshot)
         cluster_confidences = docling_result["cluster_confidences"]
-        doc_confidence = docling_result["doc_confidence"]
+
+        docling_version = str(docling_result.get("docling_version") or "unknown")
+        conversion_status = str(docling_result.get("conversion_status") or "success")
+        conversion_errors = list(docling_result.get("conversion_errors") or [])
+        parse_elapsed_seconds = docling_result.get("parse_elapsed_seconds")
+
+        doc_confidence = dict(docling_result.get("doc_confidence") or {})
+        raw_failed_pages = doc_confidence.get("failed_pages")
+        if raw_failed_pages is None:
+            failed_pages = sorted(
+                {
+                    int(err["page_no"])
+                    for err in conversion_errors
+                    if isinstance(err, dict)
+                    and err.get("page_no") is not None
+                    and not isinstance(err.get("page_no"), bool)
+                }
+            )
+        else:
+            failed_pages = list(raw_failed_pages)
+
+        doc_confidence["docling_version"] = docling_version
+        doc_confidence["conversion_status"] = conversion_status
+        doc_confidence["error_count"] = len(conversion_errors) if conversion_errors else int(
+            doc_confidence.get("error_count", 0)
+        )
+        doc_confidence["failed_pages"] = failed_pages
+        doc_confidence["conversion_errors"] = conversion_errors
+        doc_confidence["parse_elapsed_seconds"] = parse_elapsed_seconds
+
+        partial_warnings: list[str] = []
+        if conversion_status == "partial_success" or conversion_errors:
+            error_count = doc_confidence["error_count"]
+            pages_label = (
+                ", ".join(str(page) for page in failed_pages)
+                if failed_pages
+                else "unspecified"
+            )
+            summary_parts: list[str] = []
+            for err in conversion_errors[:5]:
+                if not isinstance(err, dict):
+                    continue
+                page_part = (
+                    f"page {err['page_no']}"
+                    if err.get("page_no") is not None
+                    else "document"
+                )
+                category = str(
+                    err.get("category") or err.get("component_type") or "error"
+                )
+                message = str(err.get("error_message") or "").strip()
+                if len(message) > 160:
+                    message = message[:157] + "..."
+                summary_parts.append(
+                    f"[{page_part}] {category}: {message}"
+                    if message
+                    else f"[{page_part}] {category}"
+                )
+            if len(conversion_errors) > 5:
+                summary_parts.append(f"... (+{len(conversion_errors) - 5} more)")
+            detail_suffix = (
+                f" Details: {'; '.join(summary_parts)}" if summary_parts else ""
+            )
+            partial_warnings.append(
+                f"Docling conversion completed with status '{conversion_status}' "
+                f"({error_count} error(s); failed page(s): {pages_label})."
+                f"{detail_suffix}"
+            )
+            document_logger(__name__, document_id).warning(
+                "Docling conversion %s: %d error(s), failed_pages=%s",
+                sanitize_for_log(conversion_status),
+                error_count,
+                sanitize_for_log(failed_pages),
+            )
 
         stage(3, "Detecting document structure")
-        warnings = annotate_pdf_artifacts(raw_document, pdf_path)
-        _relabel_misclassified_page_furniture(raw_document)
-        _synthesize_missing_pictures(raw_document, pdf_path)
-        _exclude_repeating_decorative_pictures(raw_document)
-        _recover_page_number_pictures(raw_document, pdf_path)
-        _exclude_repeating_chapter_divider_pictures(raw_document)
-        _exclude_decorative_heading_accent_pictures(raw_document)
+        warnings = partial_warnings + annotate_pdf_artifacts(working_document, pdf_path)
+        _relabel_misclassified_page_furniture(working_document)
+        _synthesize_missing_pictures(working_document, pdf_path)
+        _exclude_repeating_decorative_pictures(working_document)
+        _recover_page_number_pictures(working_document, pdf_path)
+        _exclude_repeating_chapter_divider_pictures(working_document)
+        _exclude_decorative_heading_accent_pictures(working_document)
         excluded_diagram_text = _exclude_diagram_text_fragments(
-            raw_document, pdf_path, self.settings.claude_api_key
+            working_document, pdf_path, self.settings.claude_api_key
         )
         if excluded_diagram_text:
             warnings.append(
@@ -1806,17 +2474,17 @@ class KonverterPipeline:
         quote_regions, quote_warnings = detect_quote_regions(pdf_path)
         warnings.extend(quote_warnings)
         confidence_by_ref = self._confidence_by_reference(
-            raw_document, cluster_confidences
+            working_document, cluster_confidences
         )
         blocks, hierarchy_warnings = self._blocks_from_document(
-            raw_document,
+            working_document,
             confidence_by_ref,
             pdf_path,
         )
         warnings.extend(hierarchy_warnings)
         blocks = _split_merged_footnotes(blocks)
-        blocks = _merge_indented_footnote_continuations(blocks)
         blocks = _repair_split_footnote_markers(blocks)
+        blocks = _merge_indented_footnote_continuations(blocks)
         blocks = _reorder_inverted_adjacent_footnotes(blocks)
         blocks = _recover_orphaned_footnote_markers(blocks, pdf_path)
         blocks = _relabel_footnote_lists(blocks, callout_regions)
@@ -1824,44 +2492,131 @@ class KonverterPipeline:
         blocks = group_quote_blocks(blocks, quote_regions)
         blocks = _flag_orphaned_captions(blocks)
 
-        return raw_document, blocks, doc_confidence, warnings
+        return raw_docling_snapshot, working_document, blocks, doc_confidence, warnings
 
     def _run_docling_remote(
         self,
         pdf_path: Path,
         stage: StageCallback,
         document_id: str,
+        cancel_check: Callable[[], bool] | None = None,
     ) -> dict[str, Any]:
+        if cancel_check is not None and cancel_check():
+            raise InterruptedError("Processing was stopped")
+
+        log = document_logger(__name__, document_id)
+        if (
+            self.settings.runpod_job_timeout_seconds
+            > storage_bucket.SUPABASE_SIGNED_UPLOAD_TTL_SECONDS
+        ):
+            log.warning(
+                "KONVERTER_RUNPOD_JOB_TIMEOUT_SECONDS (%.0fs) exceeds Supabase's "
+                "fixed %ds signed-upload URL expiry; jobs queued longer than %ds "
+                "may fail result upload.",
+                self.settings.runpod_job_timeout_seconds,
+                storage_bucket.SUPABASE_SIGNED_UPLOAD_TTL_SECONDS,
+                storage_bucket.SUPABASE_SIGNED_UPLOAD_TTL_SECONDS,
+            )
+
         ttl = self.settings.signed_url_ttl
-        source_key = storage_bucket.upload_pdf(self.settings, document_id, pdf_path)
-        download_url = storage_bucket.signed_download_url(
-            self.settings, source_key, ttl
-        )
-        result_key = f"{document_id}/docling.json"
-        upload_target = storage_bucket.signed_upload_target(
-            self.settings, result_key, ttl
-        )
-        job_id = runpod_client.submit(
-            self.settings.docling_endpoint_url,
-            self.settings.runpod_api_key,
-            {
-                "pdf_download_url": download_url,
-                "result_upload": upload_target,
-                "options": {
-                    "do_ocr": self.settings.do_ocr,
-                    "do_table_structure": self.settings.do_table_structure,
-                    "device": "cuda",
+        attempt_id = uuid.uuid4().hex[:12]
+        result_key = f"{document_id}/{attempt_id}/docling.json"
+        cleanup_keys: list[str] = []
+        remote_started = time.monotonic()
+
+        try:
+            source_key = storage_bucket.upload_pdf(self.settings, document_id, pdf_path)
+            cleanup_keys.append(source_key)
+            download_url = storage_bucket.signed_download_url(
+                self.settings, source_key, ttl
+            )
+            upload_target = storage_bucket.signed_upload_target(
+                self.settings, result_key, ttl
+            )
+            cleanup_keys.append(result_key)
+            job_id = runpod_client.submit(
+                self.settings.docling_endpoint_url,
+                self.settings.runpod_api_key,
+                {
+                    "pdf_download_url": download_url,
+                    "result_upload": upload_target,
+                    "options": {
+                        "do_ocr": self.settings.do_ocr,
+                        "do_table_structure": self.settings.do_table_structure,
+                        "device": self.settings.docling_remote_device,
+                        "document_timeout": self.settings.docling_timeout_seconds,
+                        "table_mode": self.settings.docling_table_mode,
+                    },
                 },
-            },
+            )
+            try:
+                job_output = runpod_client.poll(
+                    self.settings.docling_endpoint_url,
+                    self.settings.runpod_api_key,
+                    job_id,
+                    on_progress=lambda: stage(2, "Waiting for remote GPU worker"),
+                    timeout_seconds=self.settings.runpod_job_timeout_seconds,
+                )
+            except InterruptedError:
+                raise
+            except Exception as exc:
+                self._raise_with_upload_expiry_hint(exc, remote_started)
+
+            if isinstance(job_output, dict) and job_output.get("ok") is False:
+                err_msg = f"Remote Docling worker reported failure for job {job_id}: {job_output}"
+                self._raise_with_upload_expiry_hint(
+                    RuntimeError(err_msg), remote_started
+                )
+
+            payload = storage_bucket.download_json(self.settings, result_key)
+            return _validate_remote_docling_result(
+                payload,
+                job_id=job_id,
+                worker_meta=job_output if isinstance(job_output, dict) else None,
+            )
+        finally:
+            if cleanup_keys:
+                try:
+                    storage_bucket.delete_objects(self.settings, cleanup_keys)
+                except Exception as exc:
+                    log.warning(
+                        "Failed to clean up remote storage objects %s: %s",
+                        sanitize_for_log(cleanup_keys),
+                        sanitize_for_log(exc),
+                    )
+
+    @staticmethod
+    def _raise_with_upload_expiry_hint(exc: Exception, remote_started: float) -> None:
+        message = str(exc)
+        lowered = message.lower()
+        upload_related = "upload" in lowered and any(
+            token in lowered
+            for token in (
+                "400",
+                "401",
+                "403",
+                "expired",
+                "token",
+                "signature",
+                "invalidjwt",
+                "signed",
+            )
         )
-        runpod_client.poll(
-            self.settings.docling_endpoint_url,
-            self.settings.runpod_api_key,
-            job_id,
-            on_progress=lambda: stage(2, "Waiting for remote GPU worker"),
-            timeout_seconds=self.settings.runpod_job_timeout_seconds,
+        expired_signed = "expired" in lowered and "signed" in lowered
+        elapsed_past_ttl = (
+            time.monotonic() - remote_started
+            >= storage_bucket.SUPABASE_SIGNED_UPLOAD_TTL_SECONDS
+            and "upload" in lowered
         )
-        return storage_bucket.download_json(self.settings, result_key)
+        if upload_related or expired_signed or elapsed_past_ttl:
+            ttl_limit = storage_bucket.SUPABASE_SIGNED_UPLOAD_TTL_SECONDS
+            raise RuntimeError(
+                f"{message} (Note: Supabase signed upload URLs expire after "
+                f"{ttl_limit}s regardless of KONVERTER_SIGNED_URL_TTL; if the "
+                f"RunPod job queued longer than {ttl_limit}s, the worker's result "
+                "upload will fail.)"
+            ) from exc
+        raise exc
 
     @classmethod
     def _confidence_by_reference(
@@ -2115,17 +2870,20 @@ class KonverterPipeline:
             label = resolver.label_for(item)
             text = resolver.output_text(item)
             if label == "picture" and not text:
-                text = str(item.get("caption", "")).strip()
-            blocks.append(
-                {
-                    "id": reference,
-                    "label": label,
-                    "text": text,
-                    "page": _first_page(item),
-                    "confidence": confidence_by_ref.get(reference),
-                    "source_bounds": self._combined_source_bounds(document, [item]),
-                }
-            )
+                text = self._item_caption(item, all_items)
+            block: dict[str, Any] = {
+                "id": reference,
+                "label": label,
+                "text": text,
+                "page": _first_page(item),
+                "confidence": confidence_by_ref.get(reference),
+                "source_bounds": self._combined_source_bounds(document, [item]),
+            }
+            if label == "checkbox":
+                block["checked"] = raw_label == "checkbox_selected" or bool(
+                    item.get("checked")
+                )
+            blocks.append(block)
 
         for reference in ordered_references:
             visit(reference)
@@ -2863,38 +3621,39 @@ class KonverterPipeline:
         if pdf_path is None:
             return self._build_review_items_with_textpages(blocks, None)
 
-        try:
-            pdf_document = pdfium.PdfDocument(str(pdf_path))
-        except Exception:
-            return self._build_review_items_with_textpages(blocks, None)
+        with pdfium_lock:
+            try:
+                pdf_document = pdfium.PdfDocument(str(pdf_path))
+            except Exception:
+                return self._build_review_items_with_textpages(blocks, None)
 
-        textpage_cache: dict[int, Any] = {}
-        page_cache: dict[int, Any] = {}
+            textpage_cache: dict[int, Any] = {}
+            page_cache: dict[int, Any] = {}
 
-        def footnote_textpage(page_number: int) -> Any:
-            if page_number not in textpage_cache:
-                try:
-                    textpage_cache[page_number] = pdf_document[
-                        page_number - 1
-                    ].get_textpage()
-                except Exception:
-                    textpage_cache[page_number] = None
-            return textpage_cache[page_number]
+            def footnote_textpage(page_number: int) -> Any:
+                if page_number not in textpage_cache:
+                    try:
+                        textpage_cache[page_number] = pdf_document[
+                            page_number - 1
+                        ].get_textpage()
+                    except Exception:
+                        textpage_cache[page_number] = None
+                return textpage_cache[page_number]
 
-        def footnote_page(page_number: int) -> Any:
-            if page_number not in page_cache:
-                try:
-                    page_cache[page_number] = pdf_document[page_number - 1]
-                except Exception:
-                    page_cache[page_number] = None
-            return page_cache[page_number]
+            def footnote_page(page_number: int) -> Any:
+                if page_number not in page_cache:
+                    try:
+                        page_cache[page_number] = pdf_document[page_number - 1]
+                    except Exception:
+                        page_cache[page_number] = None
+                return page_cache[page_number]
 
-        try:
-            return self._build_review_items_with_textpages(
-                blocks, footnote_textpage, footnote_page
-            )
-        finally:
-            pdf_document.close()
+            try:
+                return self._build_review_items_with_textpages(
+                    blocks, footnote_textpage, footnote_page
+                )
+            finally:
+                pdf_document.close()
 
     def _build_review_items_with_textpages(
         self,
@@ -2932,6 +3691,7 @@ class KonverterPipeline:
             if footnote_page is not None
             else None
         )
+        in_sequence_footnote_ids = _in_sequence_footnote_block_ids(blocks)
 
         items: list[dict[str, Any]] = []
         for block in blocks:
@@ -3081,6 +3841,11 @@ class KonverterPipeline:
                 # passing the text cross-check below wouldn't make it any
                 # more trustworthy as a *footnote*.
                 footnote_verified = False
+            elif (
+                _footnote_has_valid_numbered_body(text) is None
+                or str(block.get("id", "")) not in in_sequence_footnote_ids
+            ):
+                footnote_verified = False
             elif footnote_textpage is None:
                 # No PDF available to check against at all (e.g. these
                 # blocks didn't come from a real on-disk PDF) — that's
@@ -3092,6 +3857,22 @@ class KonverterPipeline:
                 ) and _footnote_text_is_trustworthy(
                     footnote_textpage(page), block.get("source_bounds") or {}, text
                 )
+            if footnote_verified:
+                continue
+            if label != "footnote" and _non_footnote_block_is_verified(
+                label=label,
+                confidence=confidence,
+                medium_threshold=self.settings.medium_confidence_threshold,
+                is_orphaned_caption=is_orphaned_caption,
+                is_vlm_assisted=is_vlm_assisted,
+                bounds=block.get("source_bounds"),
+                raw_text=text,
+                extracted_text=extracted_text,
+                page_textpage=footnote_textpage(page) if footnote_textpage is not None else None,
+                page_obj=footnote_page(page) if footnote_page is not None else None,
+                body_text_font_size=body_text_font_size,
+            ):
+                continue
             items.append(
                 {
                     "id": f"review-{len(items) + 1}",

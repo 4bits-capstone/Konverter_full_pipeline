@@ -952,6 +952,15 @@ def _box_section_publication_content(
             output.append({"type": "formula", "text": text, "page": child_page})
         elif label == "caption":
             output.append({"type": "caption", "text": text, "page": child_page})
+        elif label == "checkbox":
+            output.append(
+                {
+                    "type": "checkbox",
+                    "text": text,
+                    "checked": bool(child.get("checked")),
+                    "page": child_page,
+                }
+            )
         elif label == "form":
             output.append(
                 {
@@ -1195,6 +1204,17 @@ def build_publication(
             current["blocks"].append(quote)
             continue
 
+        if label == "checkbox":
+            current["blocks"].append(
+                {
+                    "type": "checkbox",
+                    "text": text,
+                    "checked": bool(block.get("checked")),
+                    "page": page,
+                }
+            )
+            continue
+
         if label == "form":
             current["blocks"].append(
                 {
@@ -1387,7 +1407,11 @@ def _accessibility_properties(publication: dict[str, Any]) -> dict[str, Any]:
         for section in publication.get("sections", [])
         for figure in figures_in(section.get("blocks", []))
     ]
-    all_figures_captioned = all(str(f.get("caption", "")).strip() for f in figures)
+    all_figures_captioned = all(
+        bool(caption) and caption.lower() != "figure"
+        for f in figures
+        for caption in [str(f.get("caption", "")).strip()]
+    )
     features = ["structuralNavigation", "tableOfContents", "readingOrder"]
     if all_figures_captioned:
         features.append("alternativeText")
